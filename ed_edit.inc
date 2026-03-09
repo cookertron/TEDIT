@@ -204,6 +204,11 @@ insert_char PROC
 
 .ic_insert_before:
     ; Insert new piece at index BX (before current piece)
+    ; BX >= pt_count here: cursor was past all pieces, so
+    ; chkpt_adjust_insert will incorrectly bump checkpoints
+    ; that pointed to the (non-existent) sentinel position.
+    ; Mark meta dirty so rebuild_meta corrects them.
+    MOV     BYTE [meta_dirty], 1
     CALL    pt_insert
     JC      .ic_done
 

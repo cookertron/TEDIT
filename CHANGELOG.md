@@ -1,5 +1,56 @@
 # TEDIT Changelog
 
+## Phase 5 — Mouse Support + Polish (2026-03-09 ~10:07 UTC)
+
+### Changes to ed_mouse.inc
+- Replaced stubs with full implementations:
+  - `tui_ed_mouse_press`: computes editor-relative coordinates from click cell, sets `cur_line`/`cur_col` with clamping to line length and total_lines, resets `last_ins_pi`, starts control drag (`MSF_CTRL_DRAG`), requests redraw
+  - `tui_ed_mouse_drag`: same coordinate logic with additional negative-row/col clamping, calls `scroll_to_cursor` for auto-scrolling when dragging outside text area
+
+### Changes to ed_draw.inc
+- **Wrap mode rendering**: added `.row_done_wrap` / `.row_next_wrap` path — when column count hits ED_COLS in wrap mode, stores piece position, pads row, increments screen row (`rnd_row`) without incrementing logical line counter (BP), continues rendering same logical line on next screen row
+- **Status bar polish**: added column display (`Col N`, 1-based) and wrap indicator (`[WRAP]`) between line count and `[Modified]` indicator
+
+### Changes to TEDIT.ASM
+- Added `CALL tui_mouse_init` after `tui_init` in `.start_tui` — enables INT 33h mouse driver for menu/dialog/editor mouse interaction
+- Added status bar strings: `s_stat_col` ("  Col "), `s_stat_wrap` ("  [WRAP]")
+- Added Info menu strings: `m_str_about` ("About..."), `m_str_about_msg` ("TEDIT - TUI Text Editor")
+- Added `m_info_entries` dropdown (1 entry: About with hotkey 'A')
+- Added Info item to `m_menu_items` (MI_X=6, MI_W=6, Alt+I = scan code 17h)
+- Updated `m_menubar` count from 1 to 2
+- Added `menu_about_handler`: shows `tui_dlg_msgbox` with title "Info"
+
+### Tests Passing
+1. Mouse click cursor positioning — click at cell (5,3) moves to Line 3 Col 6
+2. Mouse click + type — click then insert character at correct position
+3. Mouse drag cursor tracking — drag updates cursor continuously
+4. Mouse menu interaction — click Info opens dropdown, click About shows dialog
+5. Status bar Col display — shows `Col N` (1-based) after all navigation
+6. Status bar [WRAP] indicator — shown when `--wrap` flag active
+7. Wrap mode rendering — 120-char line wraps to 2 screen rows (80+40)
+8. Info > About dialog — "TEDIT - TUI Text Editor" with OK button
+9. Alt+I keyboard access — opens Info dropdown via keyboard
+
+### Known Limitations
+1. Mouse click in wrap mode targets logical lines incorrectly when wrapped lines span multiple screen rows
+2. No text selection — drag tracks cursor only
+3. No horizontal scroll via mouse
+4. Wrap mode cursor past column 79 not visible (matches TEXTEDIT.ASM behavior)
+
+---
+
+## Post-Phase 5 Fix: Empty Document First-Keystroke Rendering (2026-03-09 ~10:30 UTC)
+
+**Bug**: Typing in a new empty document (or after deleting all text) didn't show characters on screen. Cursor moved but the first line stayed blank. Only pressing Enter made text appear.
+
+**Root cause**: `ed_new_doc` seeds `chkpt_pi[0]=0` as a "start of document" sentinel. When `insert_char` inserts the first piece at index 0 via `pt_insert`, `chkpt_adjust_insert` bumps `chkpt_pi[0]` from 0 to 1 (because `0 >= 0`). But piece 1 doesn't exist — only piece 0 does. So `seek_to_line(0)` sets `rnd_pi=1`, which is `>= pt_count(1)`, and the renderer draws a blank row. Enter works because `ed_keys.inc` sets `meta_dirty=1` after `insert_crlf`, triggering `rebuild_meta` which corrects the checkpoint.
+
+**Fix in `ed_edit.inc`**: Set `meta_dirty=1` in insert_char's `.ic_insert_before` path (taken when `BX >= pt_count`, i.e., cursor past all pieces). This triggers one `rebuild_meta` on the next render, correcting the stale checkpoint. Subsequent keystrokes use the fast path (extending the tracked piece) so no further rebuilds occur.
+
+**Performance impact**: One `rebuild_meta` call per "start typing at a new end-of-document position" — not per keystroke. The fast path avoids repeated rebuilds.
+
+---
+
 ## Phase 4 — File Operations: Open, Save As, Quit Confirmation (2026-03-08 ~23:29 UTC)
 
 ### New Files

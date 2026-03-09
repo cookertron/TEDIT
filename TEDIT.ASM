@@ -33,6 +33,8 @@ s_nomem:     DB 'Error: out of memory', 0Dh, 0Ah, '$'
 ; ---- Status bar strings (null-terminated, for shadow_buf writing) ----
 s_stat_ln:   DB ' Line ', 0
 s_stat_of:   DB ' of ', 0
+s_stat_col:  DB '  Col ', 0
+s_stat_wrap: DB '  [WRAP]', 0
 s_stat_mod:  DB '  [Modified]', 0
 
 ; ============================================================
@@ -82,6 +84,8 @@ m_str_quit:     DB 'Quit', 0
 m_str_acc_cs:   DB 'Ctrl+S', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
 m_str_info:      DB 'Info', 0
+m_str_about:     DB 'About...', 0
+m_str_about_msg: DB 'TEDIT - TUI Text Editor', 0
 m_str_open_ttl:  DB 'Open File', 0
 m_str_save_ttl:  DB 'Save As', 0
 m_str_save_pr:   DB 'Filename:', 0
@@ -111,6 +115,12 @@ m_file_entries:
     DW m_str_acc_aq
     DB 10h, 0
 
+m_info_entries:
+    DW m_str_about, menu_about_handler
+    DB 0, 'A'
+    DW 0
+    DB 0, 0
+
 m_menu_items:
     DW m_str_file
     DB 0, 6
@@ -118,8 +128,14 @@ m_menu_items:
     DB 3, 20
     DB 0, 21h
 
+    DW m_str_info
+    DB 6, 6
+    DW m_info_entries
+    DB 1, 12
+    DB 0, 17h
+
 m_menubar:
-    DB 1, 0FFh, 0, 0FFh
+    DB 2, 0FFh, 0, 0FFh
     DB CLR_MENUBAR, CLR_MENU_SEL
     DW m_menu_items
 
@@ -306,6 +322,16 @@ menu_save_handler:
     POP     SI
     RET
 
+menu_about_handler:
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, m_str_about_msg
+    MOV     DI, m_str_info
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    RET
+
 ; ============================================================
 ; MAIN
 ; ============================================================
@@ -363,6 +389,7 @@ main:
 
     ; ---- Initialize TUI ----
     CALL    tui_init
+    CALL    tui_mouse_init
     MOV     WORD [fw_state + FW_MENUBAR], m_menubar
 
     ; ---- Create editor window ----

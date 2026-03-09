@@ -151,9 +151,9 @@ tui_ctrl_draw_editor:
     JMP     .row_pad
 
 .row_done:
-    ; In non-wrap mode: skip remaining bytes until LF (truncate long line)
+    ; Wrap mode: continue on next screen row without advancing logical line
     CMP     BYTE CS:[wrap_mode], 0
-    JNE     .row_done_store
+    JNE     .row_done_wrap
 .skip_to_lf:
     CMP     SI, CS:[rnd_len]
     JAE     .skip_adv_piece
@@ -216,6 +216,28 @@ tui_ctrl_draw_editor:
     REP     STOSW
     JMP     .row_next
 
+.row_done_wrap:
+    ; ---- Wrap mode: line continues on next screen row ----
+    ; Store current piece position
+    PUSH    AX
+    MOV     AX, SI
+    SUB     AX, CS:[rnd_base]
+    MOV     CS:[rnd_off], AX
+    POP     AX
+    ; Pad remainder of screen row (CX == ED_COLS so usually nothing to pad)
+    PUSH    CS
+    POP     DS
+    MOV     AX, ED_COLS
+    SUB     AX, CX
+    MOV     CX, AX
+    JCXZ    .row_next_wrap
+    MOV     AX, ED_ATTR_NORM * 256 + 20h
+    REP     STOSW
+.row_next_wrap:
+    ; Advance screen row but NOT logical line (BP stays same)
+    INC     WORD [rnd_row]
+    JMP     .row_loop
+
 .blank_row:
     MOV     CX, ED_COLS
     MOV     AX, ED_ATTR_NORM * 256 + 20h
@@ -275,6 +297,20 @@ ed_draw_status_line PROC
 
     MOV     AX, [total_lines]
     CALL    ed_wdec
+
+    ; Column display
+    MOV     SI, s_stat_col
+    CALL    ed_wstr
+    MOV     AX, [cur_col]
+    INC     AX                      ; 1-based display
+    CALL    ed_wdec
+
+    ; Wrap indicator
+    CMP     BYTE [wrap_mode], 0
+    JE      .no_wrap
+    MOV     SI, s_stat_wrap
+    CALL    ed_wstr
+.no_wrap:
 
     CMP     BYTE [dirty], 0
     JE      .no_mod
