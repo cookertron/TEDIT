@@ -41,3 +41,8 @@ MAX_CHKPT       EQU 2048
 
 ; ---- Memory shrink size ----
 SHRINK_PARA     EQU 1000h       ; keep 64 KB for COM segment
+
+; ---- Multi-document support ----
+MAX_DOCS        EQU 8           ; max simultaneous open documents
+DOC_CTX_SIZE    EQU DOC_CTX_END - DOC_CTX   ; bytes per document context block
+DOC_SAVE_PARA   EQU (DOC_CTX_SIZE + 15) / 16 ; paragraphs per save segment

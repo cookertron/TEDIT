@@ -56,6 +56,12 @@ INCLUDE ed_edit.inc
 INCLUDE ed_file.inc
 
 ; ============================================================
+; Multi-Document Management
+; ============================================================
+
+INCLUDE ed_multidoc.inc
+
+; ============================================================
 ; Editor Rendering
 ; ============================================================
 
@@ -339,55 +345,29 @@ menu_about_handler:
 main:
     CALL    shrink_mem
 
+    ; ---- Initialize multi-doc state ----
+    MOV     BYTE [doc_count], 0
+    MOV     BYTE [doc_active], 0
+
     ; ---- Parse command line ----
     CALL    parse_args
     JC      .no_file
 
-    ; ---- Open and load file ----
-    CALL    open_file
+    ; ---- Open file into first document slot ----
+    ; parse_args already set [filename]
+    CALL    doc_open
     JC      .err_nofile
-
-    CALL    load_file
-    JC      .err_nomem
-
-    ; Close file handle (data is in memory now)
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
-
-    ; ---- Initialize piece table ----
-    CALL    pt_init
-    JC      .err_nomem
-
-    ; ---- Allocate add buffer ----
-    MOV     BX, ADD_BUF_PARA
-    MOV     AH, 48h
-    INT     21h
-    JC      .err_nomem
-    MOV     [add_seg], AX
-    MOV     WORD [add_used], 0
-
-    ; ---- Build metadata ----
-    CALL    rebuild_meta
-    CALL    clamp_cursor
-    MOV     BYTE [meta_dirty], 0
     JMP     .start_tui
 
 .no_file:
-    ; No filename given — start with empty document
-    CALL    ed_new_doc
+    ; No filename given — create empty document
+    CALL    doc_new
     JC      .err_nomem
-    JMP     .start_tui
 
 .start_tui:
-    ; ---- Initialize cursor / editor state ----
-    MOV     WORD [top_line], 0
-    MOV     WORD [cur_line], 0
-    MOV     WORD [cur_col], 0
-    MOV     BYTE [dirty], 0
-    MOV     WORD [last_ins_pi], 0FFFFh
-
     ; ---- Initialize TUI ----
+    ; doc_new / doc_open already initialized all editor state
+    ; (cursor, scroll, dirty flag, piece table, etc.)
     CALL    tui_init
     CALL    tui_mouse_init
     MOV     WORD [fw_state + FW_MENUBAR], m_menubar
@@ -420,40 +400,67 @@ main:
 ; BSS — All uninitialized data at end of file
 ; ============================================================
 
-; ---- Editor state (ed_state struct: top_line then total_lines) ----
-; These two MUST be adjacent — CTRL_ED_STATE points here
-ed_state:
-top_line:       RESW 1          ; ED_SCROLLY  (offset 0)
-total_lines:    RESW 1          ; ED_LINECOUNT (offset 2)
+; ============================================================
+; DOCUMENT CONTEXT — contiguous block, swappable in Phase 2
+; DOC_CTX through DOC_CTX_END will be copied as a unit.
+;
+; CONSTRAINT: top_line (ED_SCROLLY) must be at offset 0 and
+; total_lines (ED_LINECOUNT) at offset 2 from ed_state,
+; because CTRL_ED_STATE points here and the TUI framework
+; reads these fields by offset.
+; ============================================================
 
-; ---- Editor BSS ----
-filename:       RESB 128
-open_file_buf:  RESB 14
-wrap_mode:      RESB 1
-file_hnd:       RESW 1
-orig_count:     RESW 1
-orig_seg:       RESW MAX_ORIG   ; 2048 bytes
-orig_len:       RESW MAX_ORIG   ; 2048 bytes
-add_seg:        RESW 1
-add_used:       RESW 1
-pt_seg:         RESW 1
-pt_count:       RESW 1
-chkpt_num:      RESW 1
-chkpt_pi:       RESW MAX_CHKPT  ; 4096 bytes
-chkpt_po:       RESW MAX_CHKPT  ; 4096 bytes
-cur_line:       RESW 1
-cur_col:        RESW 1
-dirty:          RESB 1
-meta_dirty:     RESB 1
-rnd_pi:         RESW 1
-rnd_off:        RESW 1
-rnd_base:       RESW 1
-rnd_len:        RESW 1
-rnd_seg:        RESW 1
-rnd_row:        RESW 1
-stl_col:        RESW 1
-last_ins_pi:    RESW 1
-ed_abs_row:     RESB 1
+ed_state:
+DOC_CTX:
+top_line:       RESW 1          ; +0   ED_SCROLLY
+total_lines:    RESW 1          ; +2   ED_LINECOUNT
+filename:       RESB 128        ; +4   current file path
+orig_count:     RESW 1          ; +132
+orig_seg:       RESW MAX_ORIG   ; +134  (2048 bytes)
+orig_len:       RESW MAX_ORIG   ; +2182 (2048 bytes)
+add_seg:        RESW 1          ; +4230
+add_used:       RESW 1          ; +4232
+pt_seg:         RESW 1          ; +4234
+pt_count:       RESW 1          ; +4236
+chkpt_num:      RESW 1          ; +4238
+chkpt_pi:       RESW MAX_CHKPT  ; +4240 (4096 bytes)
+chkpt_po:       RESW MAX_CHKPT  ; +8336 (4096 bytes)
+cur_line:       RESW 1          ; +12432
+cur_col:        RESW 1          ; +12434
+dirty:          RESB 1          ; +12436
+meta_dirty:     RESB 1          ; +12437
+last_ins_pi:    RESW 1          ; +12438
+DOC_CTX_END:                    ; +12440
+
+; ---- Compile-time verification ----
+PRINT "DOC_CTX_SIZE = ", DOC_CTX_END - DOC_CTX
+
+; ============================================================
+; TRANSIENT / GLOBAL — not part of document context
+; These are scratch variables recomputed on every use, or
+; shared global state. Not swapped between documents.
+; ============================================================
+
+open_file_buf:  RESB 14         ; temp buffer for file dialog
+file_hnd:       RESW 1          ; file handle during load (closed after)
+wrap_mode:      RESB 1          ; global --wrap flag
+rnd_pi:         RESW 1          ; render/seek scratch
+rnd_off:        RESW 1          ; render/seek scratch
+rnd_base:       RESW 1          ; render/seek/save scratch
+rnd_len:        RESW 1          ; render/save scratch
+rnd_seg:        RESW 1          ; render scratch
+rnd_row:        RESW 1          ; render scratch
+stl_col:        RESW 1          ; seek/rebuild scratch
+ed_abs_row:     RESB 1          ; render scratch
+
+; ============================================================
+; MULTI-DOC MANAGEMENT — Phase 2+ will use these.
+; Zeroed by RESB/RESW. Unused in Phase 1.
+; ============================================================
+
+doc_count:      RESB 1          ; number of open documents (0–MAX_DOCS)
+doc_active:     RESB 1          ; index of active document (0-based)
+doc_segs:       RESW MAX_DOCS   ; save-buffer segment for each doc slot
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000

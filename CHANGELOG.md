@@ -1,6 +1,110 @@
 # TEDIT Changelog
 
-## Phase 5 — Mouse Support + Polish (2026-03-09 ~10:07 UTC)
+## v0.7.0 — Multi-Document Phase 2: Swap Mechanism & Core Infrastructure (2026-03-10 ~01:15 UTC)
+
+Second phase of multi-document architecture. Adds the swap mechanism, document creation/switching procedures, and keyboard shortcuts.
+
+### New Files
+- `ed_multidoc.inc` — 6 procedures for multi-document management:
+  - `doc_save_active`: copies live BSS DOC_CTX block to active doc's save segment via REP MOVSW
+  - `doc_load_into_bss`: copies a save segment back into live BSS DOC_CTX block
+  - `doc_swap`: saves current context + loads target context + updates doc_active + triggers redraw
+  - `doc_new`: allocates save segment, initializes empty document via ed_new_doc, manages doc_count/doc_active; CF=1 on failure with full rollback
+  - `doc_open`: allocates save segment, opens file via open_file/load_file/pt_init, manages doc_count/doc_active; CF=1 on failure with full rollback
+  - `doc_switch_next`: cycles to next document (wrapping), no-op if doc_count <= 1
+
+### Changes to ed_const.inc
+- Added `DOC_CTX_SIZE EQU DOC_CTX_END - DOC_CTX` — bytes per document context block (12440)
+- Added `DOC_SAVE_PARA EQU (DOC_CTX_SIZE + 15) / 16` — paragraphs per save segment
+
+### Changes to TEDIT.ASM
+- Added `INCLUDE ed_multidoc.inc` between ed_file.inc and ed_draw.inc
+- Reworked `main` startup:
+  - Added `doc_count=0, doc_active=0` initialization before parse_args
+  - Replaced inline file-load sequence (open_file, load_file, close, pt_init, alloc add buffer, rebuild_meta) with `CALL doc_open`
+  - Replaced `CALL ed_new_doc` with `CALL doc_new`
+  - Removed 5-line cursor/state init block from `.start_tui` (now handled inside doc_new/doc_open)
+
+### Changes to ed_keys.inc
+- Added Ctrl+N (ASCII 0Eh) handler in normal-key dispatch → calls `doc_new`
+- Added Ctrl+Tab (scan 94h) handler in extended-key dispatch → calls `doc_switch_next`
+- Both handlers placed before existing dispatch fallthrough points
+
+### Design Notes
+- `doc_new` zeroes `filename` before calling `ed_new_doc` so new documents don't inherit the previous document's filename
+- No error dialogs in doc_new/doc_open — they return CF only. Called from `main` before `tui_init`, so TUI dialogs would crash. Phase 3 menu handlers will add TUI error reporting.
+- Zero segment fields (pt_seg, add_seg, orig_count) after save-out so error cleanup only frees newly allocated segments, not the saved document's segments.
+
+### Tests Passing (all 14)
+1. Build succeeds (size 41072)
+2. Empty doc startup + typing ("Hello", L1/C6)
+3. File load startup (3 lines, L1/C1)
+4. Ctrl+N creates new empty doc (L1/C1, no [Modified])
+5. Ctrl+Tab switches back ("Hello", C6, [Modified])
+6. Round-trip wrap-around (AAA→BBB→back, "BBB" C4)
+7. Dirty flag preserved across switch ("X", [Modified])
+8. Cursor position preserved (L3/C4 after switch round-trip)
+9. File + empty doc combination (test.txt content, L1/C1, no [Modified])
+10. Three documents with cycling ("CCC" after full cycle)
+11. Editing after switch ("HelloWorld", C11)
+12. Enter + Backspace after switch ("AB", L1/1)
+13. Save after switch (no [Modified] after Ctrl+S)
+14. Mouse click regression (cursor at clicked position)
+
+---
+
+## v0.6.0 — Multi-Document Phase 1: BSS Reorganization (2026-03-09 ~23:43 UTC)
+
+First phase of multi-document architecture. Declarations only — zero code changes.
+
+### Changes to ed_const.inc
+- Added `MAX_DOCS EQU 8` — maximum simultaneous open documents
+
+### Changes to TEDIT.ASM (BSS section only)
+- Grouped all per-document state into contiguous `DOC_CTX`/`DOC_CTX_END` block (12440 bytes):
+  top_line, total_lines, filename, orig_count, orig_seg, orig_len, add_seg, add_used,
+  pt_seg, pt_count, chkpt_num, chkpt_pi, chkpt_po, cur_line, cur_col, dirty, meta_dirty, last_ins_pi
+- Moved transient/global variables outside the context block:
+  open_file_buf, file_hnd, wrap_mode, rnd_pi, rnd_off, rnd_base, rnd_len, rnd_seg, rnd_row, stl_col, ed_abs_row
+- Added multi-doc management placeholders (unused until Phase 2):
+  doc_count, doc_active, doc_segs
+- Added compile-time PRINT verification: `DOC_CTX_SIZE = 12440`
+
+### Why This Is Safe
+All code references variables by label name, never by offset from ed_state (except ED_SCROLLY=0 and ED_LINECOUNT=2, which are unchanged). Variables moved to different absolute addresses but all labels still resolve correctly.
+
+### Tests Passing (all 12 regression tests)
+1. Build succeeds, DOC_CTX_SIZE = 12440
+2. Empty doc startup + typing
+3. File load and display (3 lines)
+4. Arrow key navigation (Down×2, Right×3 → L3 C4)
+5. End key (→ Col 26)
+6. Type into loaded file (XY prepended)
+7. Enter + Backspace (round-trip)
+8. Ctrl+S save (file modified, [Modified] cleared)
+9. F10 menu opens
+10. Mouse click positions cursor (L3 C6)
+11. Info > About dialog
+12. Wrap mode flag ([WRAP] in status bar)
+
+### Testing Note
+The plan's `\\Cs\\C` event syntax for Ctrl+S doesn't work — the modifier toggle sets INT 16h flags but INT 21h AH=06h still receives literal 's'. Use `\u0013` (ASCII 19) instead.
+
+---
+
+## v0.5.1 — Fix: Empty Document First-Keystroke Rendering (2026-03-09 ~10:30 UTC)
+
+**Bug**: Typing in a new empty document (or after deleting all text) didn't show characters on screen. Cursor moved but the first line stayed blank. Only pressing Enter made text appear.
+
+**Root cause**: `ed_new_doc` seeds `chkpt_pi[0]=0` as a "start of document" sentinel. When `insert_char` inserts the first piece at index 0 via `pt_insert`, `chkpt_adjust_insert` bumps `chkpt_pi[0]` from 0 to 1 (because `0 >= 0`). But piece 1 doesn't exist — only piece 0 does. So `seek_to_line(0)` sets `rnd_pi=1`, which is `>= pt_count(1)`, and the renderer draws a blank row. Enter works because `ed_keys.inc` sets `meta_dirty=1` after `insert_crlf`, triggering `rebuild_meta` which corrects the checkpoint.
+
+**Fix in `ed_edit.inc`**: Set `meta_dirty=1` in insert_char's `.ic_insert_before` path (taken when `BX >= pt_count`, i.e., cursor past all pieces). This triggers one `rebuild_meta` on the next render, correcting the stale checkpoint. Subsequent keystrokes use the fast path (extending the tracked piece) so no further rebuilds occur.
+
+**Performance impact**: One `rebuild_meta` call per "start typing at a new end-of-document position" — not per keystroke. The fast path avoids repeated rebuilds.
+
+---
+
+## v0.5.0 — Phase 5: Mouse Support + Polish (2026-03-09 ~10:07 UTC)
 
 ### Changes to ed_mouse.inc
 - Replaced stubs with full implementations:
@@ -39,19 +143,7 @@
 
 ---
 
-## Post-Phase 5 Fix: Empty Document First-Keystroke Rendering (2026-03-09 ~10:30 UTC)
-
-**Bug**: Typing in a new empty document (or after deleting all text) didn't show characters on screen. Cursor moved but the first line stayed blank. Only pressing Enter made text appear.
-
-**Root cause**: `ed_new_doc` seeds `chkpt_pi[0]=0` as a "start of document" sentinel. When `insert_char` inserts the first piece at index 0 via `pt_insert`, `chkpt_adjust_insert` bumps `chkpt_pi[0]` from 0 to 1 (because `0 >= 0`). But piece 1 doesn't exist — only piece 0 does. So `seek_to_line(0)` sets `rnd_pi=1`, which is `>= pt_count(1)`, and the renderer draws a blank row. Enter works because `ed_keys.inc` sets `meta_dirty=1` after `insert_crlf`, triggering `rebuild_meta` which corrects the checkpoint.
-
-**Fix in `ed_edit.inc`**: Set `meta_dirty=1` in insert_char's `.ic_insert_before` path (taken when `BX >= pt_count`, i.e., cursor past all pieces). This triggers one `rebuild_meta` on the next render, correcting the stale checkpoint. Subsequent keystrokes use the fast path (extending the tracked piece) so no further rebuilds occur.
-
-**Performance impact**: One `rebuild_meta` call per "start typing at a new end-of-document position" — not per keystroke. The fast path avoids repeated rebuilds.
-
----
-
-## Phase 4 — File Operations: Open, Save As, Quit Confirmation (2026-03-08 ~23:29 UTC)
+## v0.4.0 — Phase 4: File Operations: Open, Save As, Quit Confirmation (2026-03-08 ~23:29 UTC)
 
 ### New Files
 - `ed_file.inc` — 2 helper procedures:
@@ -89,9 +181,7 @@
 
 ---
 
-## Post-Phase 3 Fixes
-
-### Fix: Column clamping on vertical cursor movement (2026-03-08 ~22:32 UTC)
+## v0.3.1 — Fix: Column Clamping on Vertical Cursor Movement (2026-03-08 ~22:32 UTC)
 
 **Bug**: Moving cursor vertically (Up, Down, PgUp, PgDn) did not clamp `cur_col` to the length of the destination line. E.g., pressing End on a 50-char line then Down to a 5-char line left `cur_col` at 50 — cursor drew on a blank cell and typing inserted at the wrong visual position.
 
@@ -103,7 +193,7 @@
 
 ---
 
-## Phase 3 — Text Editing + Save + Simplified Status Bar (2026-03-08 ~21:50 UTC)
+## v0.3.0 — Phase 3: Text Editing + Save + Simplified Status Bar (2026-03-08 ~21:50 UTC)
 
 ### New Files
 - `ed_edit.inc` — 5 editing procedures ported from TEXTEDIT.ASM:
@@ -135,7 +225,7 @@
 - `insert_crlf`, `delete_byte`, `delete_at`, `save_file`: verbatim copies (no render/update_cursor calls inside)
 
 ### Bugs Found & Fixed During Implementation
-1. ~~**Checkpoint staleness on insert_before/insert_after**~~: *Reverted* — the original TEXTEDIT.ASM was correct. `chkpt_adjust_insert` bumps checkpoint piece indices ≥ BX by +1, which keeps checkpoints valid without a full rebuild. Since `insert_char` only handles printable characters (20h–7Eh), line count never changes. The added `meta_dirty=1` was harmless but triggered an unnecessary `rebuild_meta` (full piece-table scan) on every first keystroke at a new cursor position — a performance penalty for large files.
+1. ~~**Checkpoint staleness on insert_before/insert_after**~~: *Reverted* — the original TEXTEDIT.ASM was correct. `chkpt_adjust_insert` bumps checkpoint piece indices >= BX by +1, which keeps checkpoints valid without a full rebuild. Since `insert_char` only handles printable characters (20h-7Eh), line count never changes. The added `meta_dirty=1` was harmless but triggered an unnecessary `rebuild_meta` (full piece-table scan) on every first keystroke at a new cursor position — a performance penalty for large files.
 2. **CRLF companion delete meta_dirty race** *(genuine fix)*: In delete_at, after deleting CR, `cursor_to_offset` triggers `ensure_meta` which clears `meta_dirty`. If companion LF is then deleted via `delete_byte`, `meta_dirty` stays 0, leaving stale `total_lines`. Fix: added `MOV BYTE [meta_dirty], 1` after each companion `delete_byte` call (3 locations in delete_at).
    - Root cause: TEXTEDIT.ASM didn't use checkpoints for rendering (its `render` walked pieces linearly). The TUI editor's renderer uses `seek_to_line` which depends on correct checkpoints.
 
@@ -153,7 +243,7 @@
 
 ---
 
-## Phase 2 — File Loading, Editor Display, Navigation (2026-03-08 ~18:00 UTC)
+## v0.2.0 — Phase 2: File Loading, Editor Display, Navigation (2026-03-08 ~18:00 UTC)
 
 ### New Files
 - `ed_const.inc` — All editor EQU constants (dimensions, attributes, piece table, memory sizing)
@@ -174,29 +264,29 @@
 - Replaced editor stubs with includes for ed_core, ed_draw, ed_keys, ed_mouse
 - Added ed_ctrl (CTYPE_EDITOR control with CTRL_ED_STATE pointer)
 - Window template now has ed_ctrl as WIN_FIRST and WIN_FOCUS
-- main: shrink_mem → parse_args → open_file → load_file → pt_init → tui_run
-- Empty document mode: no filename → pt_count=0, total_lines=1, seeded checkpoint
+- main: shrink_mem -> parse_args -> open_file -> load_file -> pt_init -> tui_run
+- Empty document mode: no filename -> pt_count=0, total_lines=1, seeded checkpoint
 - BSS: ed_state (top_line + total_lines adjacent), all editor variables
 
 ### Key Adaptations from TEXTEDIT.ASM
-- `SCREEN_COLS` → `ED_COLS` (80), `TEXT_ROWS` → `ED_TEXT_ROWS` (23)
-- `ATTR_NORM` (07h) → `ED_ATTR_NORM` (1Fh), `ATTR_STAT` (70h) → `ED_ATTR_STAT` (70h)
-- `0800h` shrink → `SHRINK_PARA` (1000h = 64 KB)
+- `SCREEN_COLS` -> `ED_COLS` (80), `TEXT_ROWS` -> `ED_TEXT_ROWS` (23)
+- `ATTR_NORM` (07h) -> `ED_ATTR_NORM` (1Fh), `ATTR_STAT` (70h) -> `ED_ATTR_STAT` (70h)
+- `0800h` shrink -> `SHRINK_PARA` (1000h = 64 KB)
 - Render target: shadow_buf (ES=CS) instead of VIDEO_SEG (B800h)
 - Status bar: null-terminated strings via ed_wstr instead of $-terminated via wstr_stat
 - Software cursor (nibble-swap) instead of hardware cursor (INT 10h)
 
 ### Tests Passing
 1. Load and display file (3-line test.txt)
-2. Arrow key navigation (Down×2 + Right×3 → L3/4 C4)
+2. Arrow key navigation (Down x2 + Right x3 -> L3/4 C4)
 3. PgDn/PgUp (clamp to document bounds)
-4. Home/End (End → C12, Home → C1)
+4. Home/End (End -> C12, Home -> C1)
 5. Empty document (L1/1 C1, no crash)
 6. Menu still works (File > Open dialog, Alt+Q exit)
 
 ---
 
-## Phase 1 — TUI Shell with Menu Bar (2026-03-06)
+## v0.1.0 — Phase 1: TUI Shell with Menu Bar (2026-03-06)
 
 ### New Files
 - `TEDIT.ASM` — Main file with TUI shell

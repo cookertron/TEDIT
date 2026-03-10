@@ -23,6 +23,10 @@ tui_ed_handle_key PROC
     CMP     AL, 13h
     JZ      .do_save
 
+    ; Ctrl+N (ASCII 0Eh = 14 decimal) — new document
+    CMP     AL, 0Eh
+    JZ      .do_new_doc
+
     ; Enter
     CMP     AL, KEY_ENTER
     JZ      .do_enter
@@ -127,6 +131,10 @@ tui_ed_handle_key PROC
     CMP     AL, KEY_DELETE
     JZ      .do_del
 
+    ; Ctrl+Tab (scan 94h) — next document
+    CMP     AL, 94h
+    JZ      .do_next_doc
+
     ; Unrecognized extended key
     STC
     RET
@@ -139,6 +147,22 @@ tui_ed_handle_key PROC
     CALL    delete_at
     CALL    scroll_to_cursor
     MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+; ============================================================
+; Ctrl+N — new document
+; ============================================================
+.do_new_doc:
+    CALL    doc_new
+    CLC
+    RET
+
+; ============================================================
+; Ctrl+Tab — switch to next document
+; ============================================================
+.do_next_doc:
+    CALL    doc_switch_next
     CLC
     RET
 
