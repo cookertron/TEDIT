@@ -1,5 +1,56 @@
 # TEDIT Changelog
 
+## v0.8.0 — Multi-Document Phase 3: Full Feature Completion (2026-03-10 ~03:30 UTC)
+
+Third phase of multi-document architecture. Expands the File menu to 7 entries, adds close/quit-all logic with save prompts, `[N/M]` status bar indicator, backward switching, and all remaining keyboard shortcuts. After this phase, multi-document editing is fully usable.
+
+### Changes to TEDIT.ASM
+- **Menu strings**: added `m_str_new`, `m_str_close`, `m_str_next`, `m_str_prev`, `m_str_acc_cn`, `m_str_acc_cw`, `m_str_acc_ct`, `m_str_acc_cpu`
+- **File menu expanded** from 3 to 7 entries: New (Ctrl+N), Open..., Close (Ctrl+W), Save (Ctrl+S), Next Doc (Ctrl+Tab), Prev Doc (Ctrl+PgUp), Quit (Alt+Q). `MI_ECOUNT=7`, `MI_DDW=22`
+- **New menu handlers**: `menu_new_handler` (calls doc_new, shows error dialog on failure), `menu_close_handler`, `menu_next_handler`, `menu_prev_handler`
+- **Rewritten `menu_open_handler`**: removed dirty-save prompt (old doc stays open), uses `doc_open` to open selected file in a new slot via `doc_fname_src` indirection, shows error dialog on failure
+- **Rewritten `menu_quit_handler`**: delegates entirely to `doc_quit_all`
+- **BSS**: added `doc_fname_src` (RESW 1) — pointer to filename source for doc_open
+- **main**: sets `doc_fname_src = filename` before `CALL doc_open`
+
+### Changes to ed_multidoc.inc
+- **`doc_open`**: added filename copy from `[doc_fname_src]` to `[filename]` after `doc_save_active` — ensures old document keeps its filename during save-out while new document gets the correct filename
+- **`doc_switch_prev`**: switch to previous document with wrapping (0 → count-1), no-op if doc_count <= 1
+- **`doc_close`**: close active document with dirty-save prompt (Yes/No/Cancel via `tui_dlg_confirm`), handles Save As for unnamed docs, frees DOS allocations + save segment, compacts `doc_segs` array, adjusts `doc_active`, auto-creates new empty doc if last document closed
+- **`doc_quit_all`**: iterates all documents from last to first, prompts to save each dirty doc, frees allocations, sets `FW_RUNNING=0` on success, aborts on Cancel with consistent state
+
+### Changes to ed_keys.inc
+- Added Ctrl+W (17h) → `.do_close_doc` → `doc_close`
+- Added Ctrl+PgDn (scan 76h) → `.do_next_doc` (alternative next-doc binding)
+- Added Ctrl+PgUp (scan 84h) → `.do_prev_doc` → `doc_switch_prev`
+- Changed `.do_new_doc` to call `menu_new_handler` (shows error dialog on failure)
+
+### Changes to ed_draw.inc
+- **Status bar**: prepended `[N/M]` document indicator before existing `Line N of M` display (1-based, e.g., `[1/2] Line 5 of 100  Col 12  [Modified]`)
+
+### Tests Passing (all 16)
+1. Build succeeds (size 41642)
+2. Status bar `[1/1]` on startup
+3. Status bar `[2/2]` after Ctrl+N
+4. Ctrl+Tab cycle — `[1/2]` + "Hello" preserved
+5. Ctrl+PgUp backward — `[2/3]` + "BBB"
+6. Ctrl+PgDn forward — `[1/2]` + "AAA"
+7. Ctrl+W closes clean doc → `[1/1]`
+8. Ctrl+W dirty doc, say No → discard + `[1/1]`
+9. Ctrl+W closes last doc, auto-creates → `[1/1]`
+10. File > Open in new slot → `[2/2]` with file content
+11. File > New menu → `[2/2]`
+12. File > Quit save all — both files saved, clean exit
+13. File > Quit cancel (Escape) aborts — `[2/2]` preserved
+14. Close middle doc — array compaction correct, `[1/2]`
+15. Phase 2 regression — switch round-trip preserves content
+16. Menu dropdown — 7 entries with accelerator text, correct width
+
+### Bug Found & Fixed (TUI framework)
+- `DLG_CANCEL` and `DLG_NO` were both `EQU 0` in `tui_const.inc`, making Escape indistinguishable from "No" in confirm dialogs. Fixed by giving `DLG_CANCEL` a distinct value. The `doc_close`/`doc_quit_all` three-way checks (Yes/No/Cancel) now work correctly.
+
+---
+
 ## v0.7.0 — Multi-Document Phase 2: Swap Mechanism & Core Infrastructure (2026-03-10 ~01:15 UTC)
 
 Second phase of multi-document architecture. Adds the swap mechanism, document creation/switching procedures, and keyboard shortcuts.

@@ -285,6 +285,37 @@ tui_ctrl_draw_editor:
 ; ============================================================
 
 ed_draw_status_line PROC
+    ; ---- Document indicator: [N/M] ----
+    MOV     AL, ' '
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    MOV     AL, '['
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    MOV     AL, [doc_active]
+    INC     AL                      ; 1-based display
+    XOR     AH, AH
+    CALL    ed_wdec
+
+    MOV     AL, '/'
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    MOV     AL, [doc_count]
+    XOR     AH, AH
+    CALL    ed_wdec
+
+    MOV     AL, ']'
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    ; ---- Line N of M (existing) ----
     MOV     SI, s_stat_ln
     CALL    ed_wstr
 

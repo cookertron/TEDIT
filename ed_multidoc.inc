@@ -253,6 +253,25 @@ doc_open PROC
     MOV     WORD [pt_seg], 0
     MOV     WORD [add_seg], 0
 
+    ; ---- Copy filename from source buffer ----
+    ; [doc_fname_src] points to the filename string.
+    ; For startup: points to [filename] (already set by parse_args).
+    ; For menu open: points to [open_file_buf] (set by file dialog).
+    ; Must happen AFTER doc_save_active so old doc keeps its filename.
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, [doc_fname_src]
+    MOV     DI, filename
+.do_copy_fn:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .do_copy_fn
+    POP     DI
+    POP     SI
+
     ; ---- Open file ----
     CALL    open_file
     JC      .do_err_cleanup
@@ -372,3 +391,275 @@ doc_switch_next PROC
 .dsn_done:
     RET
 doc_switch_next ENDP
+
+; ============================================================
+; doc_switch_prev — Switch to the previous document (wrapping).
+; No-op if doc_count <= 1.
+; ============================================================
+
+doc_switch_prev PROC
+    CMP     BYTE [doc_count], 2
+    JB      .dsp_done
+
+    PUSH    AX
+    MOV     AL, [doc_active]
+    OR      AL, AL
+    JNZ     .dsp_no_wrap
+    MOV     AL, [doc_count]        ; wrap: 0 → count-1
+.dsp_no_wrap:
+    DEC     AL
+    CALL    doc_swap
+    POP     AX
+
+.dsp_done:
+    RET
+doc_switch_prev ENDP
+
+; ============================================================
+; doc_close — Close the active document.
+; Prompts to save if dirty. On cancel, aborts close.
+; If last document is closed, auto-creates a new empty one.
+; ============================================================
+
+doc_close PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    SI
+    PUSH    DI
+    PUSH    ES
+
+    ; ---- If dirty, prompt to save ----
+    CMP     BYTE [dirty], 0
+    JE      .dc_do_close
+
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, m_str_quit_ask     ; "Save changes before closing?"
+    MOV     DI, m_str_quit_ttl     ; "Quit" title (reuse)
+    CALL    tui_dlg_confirm
+    POP     DI
+    POP     SI
+
+    CMP     AL, DLG_YES
+    JE      .dc_save
+    CMP     AL, DLG_NO
+    JE      .dc_do_close
+    ; Cancel (Escape) — abort close
+    JMP     .dc_done
+
+.dc_save:
+    ; Save the document (handle Save As if no filename)
+    CMP     BYTE [filename], 0
+    JE      .dc_save_as
+    CALL    save_file
+    JMP     .dc_do_close
+
+.dc_save_as:
+    PUSH    SI
+    PUSH    DI
+    PUSH    BX
+    PUSH    CX
+    MOV     SI, m_str_save_pr      ; "Filename:"
+    MOV     DI, m_str_save_ttl     ; "Save As"
+    MOV     BX, filename
+    MOV     CL, 80
+    CALL    tui_dlg_input
+    POP     CX
+    POP     BX
+    POP     DI
+    POP     SI
+    CMP     AL, DLG_OK
+    JNE     .dc_done               ; cancelled Save As → abort close
+    CMP     BYTE [filename], 0
+    JE      .dc_done               ; empty filename → abort close
+    CALL    save_file
+
+.dc_do_close:
+    ; ---- Free active document's DOS allocations ----
+    CALL    free_all
+
+    ; ---- Free active document's save-buffer segment ----
+    MOV     BL, [doc_active]
+    XOR     BH, BH
+    SHL     BX, 1
+    PUSH    ES
+    MOV     ES, [BX + doc_segs]
+    MOV     AH, 49h
+    INT     21h
+    POP     ES
+
+    ; ---- Compact doc_segs array ----
+    ; Shift entries [doc_active+1 .. doc_count-1] down by one
+    MOV     BL, [doc_active]
+    XOR     BH, BH
+.dc_compact:
+    MOV     AL, BL
+    INC     AL
+    CMP     AL, [doc_count]
+    JAE     .dc_compact_done
+    ; doc_segs[BL] = doc_segs[BL+1]
+    PUSH    BX
+    SHL     BX, 1                  ; BX = BL * 2 (word index)
+    MOV     AX, [BX + doc_segs + 2] ; next slot's segment
+    MOV     [BX + doc_segs], AX    ; shift down
+    POP     BX
+    INC     BL
+    JMP     .dc_compact
+.dc_compact_done:
+
+    ; ---- Decrement doc_count ----
+    DEC     BYTE [doc_count]
+
+    ; ---- If no documents left, auto-create empty ----
+    CMP     BYTE [doc_count], 0
+    JNE     .dc_load_another
+
+    ; Create a fresh empty document
+    CALL    doc_new
+    ; doc_new sets doc_active=0, doc_count=1, FW_DIRTY=1
+    JMP     .dc_done
+
+.dc_load_another:
+    ; ---- Adjust doc_active ----
+    ; If we closed the last slot, move back by one
+    MOV     AL, [doc_active]
+    CMP     AL, [doc_count]
+    JB      .dc_active_ok
+    DEC     AL
+    MOV     [doc_active], AL
+.dc_active_ok:
+
+    ; ---- Load the new active document from its save segment ----
+    MOV     AL, [doc_active]
+    CALL    doc_load_into_bss
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.dc_done:
+    POP     ES
+    POP     DI
+    POP     SI
+    POP     CX
+    POP     BX
+    POP     AX
+    RET
+doc_close ENDP
+
+; ============================================================
+; doc_quit_all — Close all documents and exit.
+; Prompts to save each dirty document. Cancel aborts quit.
+;
+; Algorithm: save active to its segment so all docs are in
+; save segments. Process from doc_count-1 down to 0: load
+; each into BSS, handle dirty, free. No array compaction
+; needed (always removing the last element).
+; ============================================================
+
+doc_quit_all PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    SI
+    PUSH    DI
+    PUSH    ES
+
+    ; ---- Save active context so all docs are in save segments ----
+    CALL    doc_save_active
+
+.dqa_loop:
+    CMP     BYTE [doc_count], 0
+    JE      .dqa_exit
+
+    ; ---- Load last document into BSS ----
+    MOV     AL, [doc_count]
+    DEC     AL
+    CALL    doc_load_into_bss
+    MOV     [doc_active], AL
+
+    ; ---- If dirty, prompt to save ----
+    CMP     BYTE [dirty], 0
+    JE      .dqa_not_dirty
+
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, m_str_quit_ask     ; "Save changes before closing?"
+    MOV     DI, m_str_quit_ttl     ; "Quit"
+    CALL    tui_dlg_confirm
+    POP     DI
+    POP     SI
+
+    CMP     AL, DLG_YES
+    JE      .dqa_save
+    CMP     AL, DLG_NO
+    JE      .dqa_not_dirty
+    ; Cancel — abort quit. Current doc is in BSS, state is consistent.
+    JMP     .dqa_cancel
+
+.dqa_save:
+    ; Save (handle Save As if no filename)
+    CMP     BYTE [filename], 0
+    JE      .dqa_save_as
+    CALL    save_file
+    JMP     .dqa_not_dirty
+
+.dqa_save_as:
+    PUSH    SI
+    PUSH    DI
+    PUSH    BX
+    PUSH    CX
+    MOV     SI, m_str_save_pr
+    MOV     DI, m_str_save_ttl
+    MOV     BX, filename
+    MOV     CL, 80
+    CALL    tui_dlg_input
+    POP     CX
+    POP     BX
+    POP     DI
+    POP     SI
+    CMP     AL, DLG_OK
+    JNE     .dqa_cancel            ; cancelled Save As → abort quit
+    CMP     BYTE [filename], 0
+    JE      .dqa_cancel            ; empty filename → abort quit
+    CALL    save_file
+
+.dqa_not_dirty:
+    ; ---- Free this document's DOS allocations ----
+    CALL    free_all
+
+    ; ---- Free its save-buffer segment ----
+    MOV     BL, [doc_active]
+    XOR     BH, BH
+    SHL     BX, 1
+    PUSH    ES
+    MOV     ES, [BX + doc_segs]
+    MOV     AH, 49h
+    INT     21h
+    POP     ES
+
+    ; ---- Decrement and loop ----
+    DEC     BYTE [doc_count]
+    JMP     .dqa_loop
+
+.dqa_exit:
+    ; All documents closed — exit application
+    MOV     BYTE [fw_state + FW_RUNNING], 0
+
+    POP     ES
+    POP     DI
+    POP     SI
+    POP     BX
+    POP     AX
+    RET
+
+.dqa_cancel:
+    ; Quit aborted. Current document is in BSS, doc_active and
+    ; doc_count are consistent (doc_count reflects remaining docs
+    ; that haven't been freed yet).
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    POP     ES
+    POP     DI
+    POP     SI
+    POP     BX
+    POP     AX
+    RET
+doc_quit_all ENDP
