@@ -297,7 +297,7 @@ CLR_BTN_PRESSED EQU 78h     ; dark gray on light gray (button pressed state)
 
 ; --- Dialog result constants ---
 DLG_OK      EQU 1
-DLG_CANCEL  EQU 0
+DLG_CANCEL  EQU 2
 DLG_YES     EQU 1
 DLG_NO      EQU 0
 DLG_REPL_ALL EQU 2
