@@ -1,145 +1,36 @@
 # TEDIT Changelog
 
-## v0.8.0 — Multi-Document Phase 3: Full Feature Completion (2026-03-10 ~03:30 UTC)
+## v0.11.0 — Buffer Compaction: Add Buffer Full Handler (2026-03-11)
 
-Third phase of multi-document architecture. Expands the File menu to 7 entries, adds close/quit-all logic with save prompts, `[N/M]` status bar indicator, backward switching, and all remaining keyboard shortcuts. After this phase, multi-document editing is fully usable.
+When the 64 KB add buffer fills up, the editor now shows a "Buffer Full" dialog instead of silently dropping keystrokes. The user can accept (save, reload from disk, reset buffer) or cancel (keystroke dropped but editor remains functional).
+
+### Changes to ed_const.inc
+- Added `ADD_BUF_BYTES EQU ADD_BUF_PARA * 16` — derived byte count for overflow checks
 
 ### Changes to TEDIT.ASM
-- **Menu strings**: added `m_str_new`, `m_str_close`, `m_str_next`, `m_str_prev`, `m_str_acc_cn`, `m_str_acc_cw`, `m_str_acc_ct`, `m_str_acc_cpu`
-- **File menu expanded** from 3 to 7 entries: New (Ctrl+N), Open..., Close (Ctrl+W), Save (Ctrl+S), Next Doc (Ctrl+Tab), Prev Doc (Ctrl+PgUp), Quit (Alt+Q). `MI_ECOUNT=7`, `MI_DDW=22`
-- **New menu handlers**: `menu_new_handler` (calls doc_new, shows error dialog on failure), `menu_close_handler`, `menu_next_handler`, `menu_prev_handler`
-- **Rewritten `menu_open_handler`**: removed dirty-save prompt (old doc stays open), uses `doc_open` to open selected file in a new slot via `doc_fname_src` indirection, shows error dialog on failure
-- **Rewritten `menu_quit_handler`**: delegates entirely to `doc_quit_all`
-- **BSS**: added `doc_fname_src` (RESW 1) — pointer to filename source for doc_open
-- **main**: sets `doc_fname_src = filename` before `CALL doc_open`
+- Added 3 string constants: `m_str_buf_ttl` ("Buffer Full"), `m_str_buf_ask` ("Save and reload to continue?"), `m_str_buf_err` ("Reload failed - file on disk")
 
-### Changes to ed_multidoc.inc
-- **`doc_open`**: added filename copy from `[doc_fname_src]` to `[filename]` after `doc_save_active` — ensures old document keeps its filename during save-out while new document gets the correct filename
-- **`doc_switch_prev`**: switch to previous document with wrapping (0 → count-1), no-op if doc_count <= 1
-- **`doc_close`**: close active document with dirty-save prompt (Yes/No/Cancel via `tui_dlg_confirm`), handles Save As for unnamed docs, frees DOS allocations + save segment, compacts `doc_segs` array, adjusts `doc_active`, auto-creates new empty doc if last document closed
-- **`doc_quit_all`**: iterates all documents from last to first, prompts to save each dirty doc, frees allocations, sets `FW_RUNNING=0` on success, aborts on Cancel with consistent state
+### Changes to ed_file.inc
+- **`ed_compact`**: saves cursor state, frees all document memory, reopens saved file, reloads chunks, rebuilds piece table + metadata, restores cursor position with clamping. On failure falls back to empty document with error dialog. Resets dirty, last_ins_pi, meta_dirty.
+- **`ed_buffer_full`**: shows confirm dialog, calls `menu_save_handler` (handles Save As if untitled), checks dirty flag to verify save succeeded, then calls `ed_compact`. Returns CF=0 on success, CF=1 on cancel/failure.
 
-### Changes to ed_keys.inc
-- Added Ctrl+W (17h) → `.do_close_doc` → `doc_close`
-- Added Ctrl+PgDn (scan 76h) → `.do_next_doc` (alternative next-doc binding)
-- Added Ctrl+PgUp (scan 84h) → `.do_prev_doc` → `doc_switch_prev`
-- Changed `.do_new_doc` to call `menu_new_handler` (shows error dialog on failure)
+### Changes to ed_edit.inc
+- **`insert_char`**: replaced `CMP DI, 0FFFFh` / `JAE .ic_done` (silent drop) with `CMP DI, ADD_BUF_BYTES - 1` / `JB .ic_have_space` + call to `ed_buffer_full`. After compact, ES and DI are reloaded from the fresh add buffer.
+- **`insert_crlf`**: same pattern — `CMP DI, 0FFFEh` / `JAE .icr_done` replaced with `CMP DI, ADD_BUF_BYTES - 2` / `JB .icr_have_space` + compact logic.
 
-### Changes to ed_draw.inc
-- **Status bar**: prepended `[N/M]` document indicator before existing `Line N of M` display (1-based, e.g., `[1/2] Line 5 of 100  Col 12  [Modified]`)
-
-### Tests Passing (all 16)
-1. Build succeeds (size 41642)
-2. Status bar `[1/1]` on startup
-3. Status bar `[2/2]` after Ctrl+N
-4. Ctrl+Tab cycle — `[1/2]` + "Hello" preserved
-5. Ctrl+PgUp backward — `[2/3]` + "BBB"
-6. Ctrl+PgDn forward — `[1/2]` + "AAA"
-7. Ctrl+W closes clean doc → `[1/1]`
-8. Ctrl+W dirty doc, say No → discard + `[1/1]`
-9. Ctrl+W closes last doc, auto-creates → `[1/1]`
-10. File > Open in new slot → `[2/2]` with file content
-11. File > New menu → `[2/2]`
-12. File > Quit save all — both files saved, clean exit
-13. File > Quit cancel (Escape) aborts — `[2/2]` preserved
-14. Close middle doc — array compaction correct, `[1/2]`
-15. Phase 2 regression — switch round-trip preserves content
-16. Menu dropdown — 7 entries with accelerator text, correct width
-
-### Bug Found & Fixed (TUI framework)
-- `DLG_CANCEL` and `DLG_NO` were both `EQU 0` in `tui_const.inc`, making Escape indistinguishable from "No" in confirm dialogs. Fixed by giving `DLG_CANCEL` a distinct value. The `doc_close`/`doc_quit_all` three-way checks (Yes/No/Cancel) now work correctly.
+### Tests Passing
+1. Normal typing regression — "Hello" at Col 6, no dialog
+2. File load + edit + Ctrl+S regression — "XY" prepended, saved
+3. Buffer full triggers dialog (tiny 32-byte buffer) — dialog appears at char 32
+4. Accept compact — save + reload, typing continues after compact ("More" at Col 37)
+5. Cancel compact (Escape) — keystroke dropped, editor remains functional
+6. CRLF triggers compact (insert_crlf path) — Enter at near-full buffer compacts, new line created
 
 ---
 
-## v0.7.0 — Multi-Document Phase 2: Swap Mechanism & Core Infrastructure (2026-03-10 ~01:15 UTC)
+## v0.10.0 — Multi-Doc Removal: Revert to Single-Document Editor (2026-03-11)
 
-Second phase of multi-document architecture. Adds the swap mechanism, document creation/switching procedures, and keyboard shortcuts.
-
-### New Files
-- `ed_multidoc.inc` — 6 procedures for multi-document management:
-  - `doc_save_active`: copies live BSS DOC_CTX block to active doc's save segment via REP MOVSW
-  - `doc_load_into_bss`: copies a save segment back into live BSS DOC_CTX block
-  - `doc_swap`: saves current context + loads target context + updates doc_active + triggers redraw
-  - `doc_new`: allocates save segment, initializes empty document via ed_new_doc, manages doc_count/doc_active; CF=1 on failure with full rollback
-  - `doc_open`: allocates save segment, opens file via open_file/load_file/pt_init, manages doc_count/doc_active; CF=1 on failure with full rollback
-  - `doc_switch_next`: cycles to next document (wrapping), no-op if doc_count <= 1
-
-### Changes to ed_const.inc
-- Added `DOC_CTX_SIZE EQU DOC_CTX_END - DOC_CTX` — bytes per document context block (12440)
-- Added `DOC_SAVE_PARA EQU (DOC_CTX_SIZE + 15) / 16` — paragraphs per save segment
-
-### Changes to TEDIT.ASM
-- Added `INCLUDE ed_multidoc.inc` between ed_file.inc and ed_draw.inc
-- Reworked `main` startup:
-  - Added `doc_count=0, doc_active=0` initialization before parse_args
-  - Replaced inline file-load sequence (open_file, load_file, close, pt_init, alloc add buffer, rebuild_meta) with `CALL doc_open`
-  - Replaced `CALL ed_new_doc` with `CALL doc_new`
-  - Removed 5-line cursor/state init block from `.start_tui` (now handled inside doc_new/doc_open)
-
-### Changes to ed_keys.inc
-- Added Ctrl+N (ASCII 0Eh) handler in normal-key dispatch → calls `doc_new`
-- Added Ctrl+Tab (scan 94h) handler in extended-key dispatch → calls `doc_switch_next`
-- Both handlers placed before existing dispatch fallthrough points
-
-### Design Notes
-- `doc_new` zeroes `filename` before calling `ed_new_doc` so new documents don't inherit the previous document's filename
-- No error dialogs in doc_new/doc_open — they return CF only. Called from `main` before `tui_init`, so TUI dialogs would crash. Phase 3 menu handlers will add TUI error reporting.
-- Zero segment fields (pt_seg, add_seg, orig_count) after save-out so error cleanup only frees newly allocated segments, not the saved document's segments.
-
-### Tests Passing (all 14)
-1. Build succeeds (size 41072)
-2. Empty doc startup + typing ("Hello", L1/C6)
-3. File load startup (3 lines, L1/C1)
-4. Ctrl+N creates new empty doc (L1/C1, no [Modified])
-5. Ctrl+Tab switches back ("Hello", C6, [Modified])
-6. Round-trip wrap-around (AAA→BBB→back, "BBB" C4)
-7. Dirty flag preserved across switch ("X", [Modified])
-8. Cursor position preserved (L3/C4 after switch round-trip)
-9. File + empty doc combination (test.txt content, L1/C1, no [Modified])
-10. Three documents with cycling ("CCC" after full cycle)
-11. Editing after switch ("HelloWorld", C11)
-12. Enter + Backspace after switch ("AB", L1/1)
-13. Save after switch (no [Modified] after Ctrl+S)
-14. Mouse click regression (cursor at clicked position)
-
----
-
-## v0.6.0 — Multi-Document Phase 1: BSS Reorganization (2026-03-09 ~23:43 UTC)
-
-First phase of multi-document architecture. Declarations only — zero code changes.
-
-### Changes to ed_const.inc
-- Added `MAX_DOCS EQU 8` — maximum simultaneous open documents
-
-### Changes to TEDIT.ASM (BSS section only)
-- Grouped all per-document state into contiguous `DOC_CTX`/`DOC_CTX_END` block (12440 bytes):
-  top_line, total_lines, filename, orig_count, orig_seg, orig_len, add_seg, add_used,
-  pt_seg, pt_count, chkpt_num, chkpt_pi, chkpt_po, cur_line, cur_col, dirty, meta_dirty, last_ins_pi
-- Moved transient/global variables outside the context block:
-  open_file_buf, file_hnd, wrap_mode, rnd_pi, rnd_off, rnd_base, rnd_len, rnd_seg, rnd_row, stl_col, ed_abs_row
-- Added multi-doc management placeholders (unused until Phase 2):
-  doc_count, doc_active, doc_segs
-- Added compile-time PRINT verification: `DOC_CTX_SIZE = 12440`
-
-### Why This Is Safe
-All code references variables by label name, never by offset from ed_state (except ED_SCROLLY=0 and ED_LINECOUNT=2, which are unchanged). Variables moved to different absolute addresses but all labels still resolve correctly.
-
-### Tests Passing (all 12 regression tests)
-1. Build succeeds, DOC_CTX_SIZE = 12440
-2. Empty doc startup + typing
-3. File load and display (3 lines)
-4. Arrow key navigation (Down×2, Right×3 → L3 C4)
-5. End key (→ Col 26)
-6. Type into loaded file (XY prepended)
-7. Enter + Backspace (round-trip)
-8. Ctrl+S save (file modified, [Modified] cleared)
-9. F10 menu opens
-10. Mouse click positions cursor (L3 C6)
-11. Info > About dialog
-12. Wrap mode flag ([WRAP] in status bar)
-
-### Testing Note
-The plan's `\\Cs\\C` event syntax for Ctrl+S doesn't work — the modifier toggle sets INT 16h flags but INT 21h AH=06h still receives literal 's'. Use `\u0013` (ASCII 19) instead.
+Reverted to single-document editor. Deleted `ed_multidoc.inc`, restored 3-entry File menu (Open/Save/Quit), kept filename in status bar and DOC_CTX layout.
 
 ---
 

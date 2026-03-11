@@ -26,8 +26,18 @@ insert_char PROC
     MOV     AX, [add_seg]
     MOV     ES, AX
     MOV     DI, [add_used]
-    CMP     DI, 0FFFFh        ; overflow check
-    JAE     .ic_done
+    CMP     DI, ADD_BUF_BYTES - 1    ; overflow check
+    JB      .ic_have_space
+
+    ; ---- Buffer full: save and reload to free space ----
+    CALL    ed_buffer_full
+    JC      .ic_done           ; user cancelled or compact failed
+    ; Compact succeeded — reload add_seg/add_used (both changed)
+    MOV     AX, [add_seg]
+    MOV     ES, AX
+    MOV     DI, [add_used]
+
+.ic_have_space:
     MOV     ES:[DI], CL
     INC     WORD [add_used]
 
@@ -308,8 +318,18 @@ insert_crlf PROC
     MOV     AX, [add_seg]
     MOV     ES, AX
     MOV     DI, [add_used]
-    CMP     DI, 0FFFEh
-    JAE     .icr_done
+    CMP     DI, ADD_BUF_BYTES - 2
+    JB      .icr_have_space
+
+    ; ---- Buffer full: save and reload to free space ----
+    CALL    ed_buffer_full
+    JC      .icr_done          ; user cancelled or compact failed
+    ; Compact succeeded — reload add_seg/add_used
+    MOV     AX, [add_seg]
+    MOV     ES, AX
+    MOV     DI, [add_used]
+
+.icr_have_space:
     MOV     BYTE ES:[DI], 0Dh
     MOV     BYTE ES:[DI+1], 0Ah
     ADD     WORD [add_used], 2

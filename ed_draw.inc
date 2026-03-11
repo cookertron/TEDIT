@@ -285,36 +285,56 @@ tui_ctrl_draw_editor:
 ; ============================================================
 
 ed_draw_status_line PROC
-    ; ---- Document indicator: [N/M] ----
+    ; ---- Filename or "Untitled" ----
     MOV     AL, ' '
     MOV     ES:[DI], AL
     MOV     BYTE ES:[DI+1], ED_ATTR_STAT
     ADD     DI, 2
 
-    MOV     AL, '['
+    CMP     BYTE [filename], 0
+    JE      .stat_untitled
+
+    ; Find the basename: scan backward from end for '\'
+    ; If no '\' found, use the whole filename string.
+    MOV     SI, filename
+    MOV     BX, SI                  ; BX = start of filename (default basename)
+.stat_scan_fn:
+    CMP     BYTE [SI], 0
+    JZ      .stat_fn_found
+    CMP     BYTE [SI], '\'
+    JNE     .stat_scan_next
+    ; Found backslash — basename starts after it
+    MOV     BX, SI
+    INC     BX
+.stat_scan_next:
+    INC     SI
+    JMP     .stat_scan_fn
+
+.stat_fn_found:
+    MOV     SI, BX                  ; SI = basename start
+    ; Write up to 20 characters of basename
+    MOV     CL, 20                  ; max chars to display
+.stat_fn_loop:
+    CMP     BYTE [SI], 0
+    JZ      .stat_fn_done
+    OR      CL, CL
+    JZ      .stat_fn_done
+    MOV     AL, [SI]
     MOV     ES:[DI], AL
     MOV     BYTE ES:[DI+1], ED_ATTR_STAT
     ADD     DI, 2
+    INC     SI
+    DEC     CL
+    JMP     .stat_fn_loop
 
-    MOV     AL, [doc_active]
-    INC     AL                      ; 1-based display
-    XOR     AH, AH
-    CALL    ed_wdec
+.stat_fn_done:
+    JMP     .stat_after_name
 
-    MOV     AL, '/'
-    MOV     ES:[DI], AL
-    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
-    ADD     DI, 2
+.stat_untitled:
+    MOV     SI, s_stat_untitled
+    CALL    ed_wstr
 
-    MOV     AL, [doc_count]
-    XOR     AH, AH
-    CALL    ed_wdec
-
-    MOV     AL, ']'
-    MOV     ES:[DI], AL
-    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
-    ADD     DI, 2
-
+.stat_after_name:
     ; ---- Line N of M (existing) ----
     MOV     SI, s_stat_ln
     CALL    ed_wstr

@@ -23,14 +23,6 @@ tui_ed_handle_key PROC
     CMP     AL, 13h
     JZ      .do_save
 
-    ; Ctrl+N (ASCII 0Eh = 14 decimal) — new document
-    CMP     AL, 0Eh
-    JZ      .do_new_doc
-
-    ; Ctrl+W (ASCII 17h = 23 decimal) — close document
-    CMP     AL, 17h
-    JZ      .do_close_doc
-
     ; Enter
     CMP     AL, KEY_ENTER
     JZ      .do_enter
@@ -135,18 +127,6 @@ tui_ed_handle_key PROC
     CMP     AL, KEY_DELETE
     JZ      .do_del
 
-    ; Ctrl+Tab (scan 94h) — next document
-    CMP     AL, 94h
-    JZ      .do_next_doc
-
-    ; Ctrl+PgDn (scan 76h) — next document (alternative)
-    CMP     AL, 76h
-    JZ      .do_next_doc
-
-    ; Ctrl+PgUp (scan 84h) — previous document
-    CMP     AL, 84h
-    JZ      .do_prev_doc
-
     ; Unrecognized extended key
     STC
     RET
@@ -159,38 +139,6 @@ tui_ed_handle_key PROC
     CALL    delete_at
     CALL    scroll_to_cursor
     MOV     BYTE [fw_state + FW_DIRTY], 1
-    CLC
-    RET
-
-; ============================================================
-; Ctrl+N — new document
-; ============================================================
-.do_new_doc:
-    CALL    menu_new_handler       ; shows error dialog on failure
-    CLC
-    RET
-
-; ============================================================
-; Ctrl+Tab — switch to next document
-; ============================================================
-.do_next_doc:
-    CALL    doc_switch_next
-    CLC
-    RET
-
-; ============================================================
-; Ctrl+W — close document
-; ============================================================
-.do_close_doc:
-    CALL    doc_close              ; handles its own save dialogs
-    CLC
-    RET
-
-; ============================================================
-; Ctrl+PgUp — switch to previous document
-; ============================================================
-.do_prev_doc:
-    CALL    doc_switch_prev
     CLC
     RET
 

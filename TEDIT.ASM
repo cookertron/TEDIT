@@ -36,6 +36,7 @@ s_stat_of:   DB ' of ', 0
 s_stat_col:  DB '  Col ', 0
 s_stat_wrap: DB '  [WRAP]', 0
 s_stat_mod:  DB '  [Modified]', 0
+s_stat_untitled: DB 'Untitled', 0
 
 ; ============================================================
 ; Editor Engine
@@ -54,12 +55,6 @@ INCLUDE ed_edit.inc
 ; ============================================================
 
 INCLUDE ed_file.inc
-
-; ============================================================
-; Multi-Document Management
-; ============================================================
-
-INCLUDE ed_multidoc.inc
 
 ; ============================================================
 ; Editor Rendering
@@ -84,18 +79,10 @@ INCLUDE ed_mouse.inc
 ; ============================================================
 
 m_str_file:     DB 'File', 0
-m_str_new:      DB 'New', 0
 m_str_open:     DB 'Open...', 0
-m_str_close:    DB 'Close', 0
 m_str_save:     DB 'Save', 0
-m_str_next:     DB 'Next Doc', 0
-m_str_prev:     DB 'Prev Doc', 0
 m_str_quit:     DB 'Quit', 0
-m_str_acc_cn:   DB 'Ctrl+N', 0
 m_str_acc_cs:   DB 'Ctrl+S', 0
-m_str_acc_cw:   DB 'Ctrl+W', 0
-m_str_acc_ct:   DB 'Ctrl+Tab', 0
-m_str_acc_cpu:  DB 'Ctrl+PgUp', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
@@ -108,46 +95,25 @@ m_str_quit_ask:  DB 'Save changes before closing?', 0
 m_str_error:     DB 'Error', 0
 m_str_err_open:  DB 'Cannot open file', 0
 m_str_err_mem:   DB 'Out of memory', 0
+m_str_buf_ttl:   DB 'Buffer Full', 0
+m_str_buf_ask:   DB 'Save and reload to continue?', 0
+m_str_buf_err:   DB 'Reload failed - file on disk', 0
 
 ; ============================================================
 ; Menu Data Structures
 ; ============================================================
 
 m_file_entries:
-    ; New
-    DW m_str_new, menu_new_handler
-    DB 0, 'N'                       ; hotkey index 0 = 'N'
-    DW m_str_acc_cn                 ; "Ctrl+N"
-    DB 0, 0                         ; accelkey=0 (handled by editor, not menu)
-
     ; Open...
     DW m_str_open, menu_open_handler
     DB 0, 'O'
     DW 0
     DB 0, 0
 
-    ; Close
-    DW m_str_close, menu_close_handler
-    DB 0, 'C'
-    DW m_str_acc_cw                 ; "Ctrl+W"
-    DB 0, 0
-
     ; Save
     DW m_str_save, menu_save_handler
     DB 0, 'S'
     DW m_str_acc_cs
-    DB 0, 0
-
-    ; Next Doc
-    DW m_str_next, menu_next_handler
-    DB 2, 'x'                       ; hotkey 'x' at index 2 in "Next Doc"
-    DW m_str_acc_ct                 ; "Ctrl+Tab"
-    DB 0, 0
-
-    ; Prev Doc
-    DW m_str_prev, menu_prev_handler
-    DB 0, 'P'
-    DW m_str_acc_cpu                ; "Ctrl+PgUp"
     DB 0, 0
 
     ; Quit
@@ -166,7 +132,7 @@ m_menu_items:
     DW m_str_file
     DB 0, 6                         ; MI_X=0, MI_W=6
     DW m_file_entries
-    DB 7, 22                        ; MI_ECOUNT=7, MI_DDW=22
+    DB 3, 16                        ; MI_ECOUNT=3, MI_DDW=16
     DB 0, 21h                       ; MI_HOTIDX=0, MI_ALTKEY=21h (Alt+F)
 
     DW m_str_info
@@ -217,38 +183,52 @@ ed_win_tmpl:
 ; Menu Handlers
 ; ============================================================
 
-menu_new_handler:
-    CALL    doc_new
-    ; CF result ignored — doc_new shows nothing (no TUI dialog).
-    ; If it failed, user is still on their current document.
-    ; Show error dialog here since TUI is active.
-    JNC     .new_done
+menu_quit_handler:
     PUSH    SI
     PUSH    DI
-    MOV     SI, m_str_err_mem
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    PUSH    BX
+    PUSH    CX
+
+    CMP     BYTE [dirty], 0
+    JE      .quit_now
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+
+    CMP     AL, DLG_YES
+    JE      .quit_save
+    CMP     AL, DLG_NO
+    JE      .quit_now
+    ; Cancel — abort quit
+    JMP     .quit_done
+
+.quit_save:
+    CMP     BYTE [filename], 0
+    JE      .quit_save_as
+    CALL    save_file
+    JMP     .quit_now
+
+.quit_save_as:
+    MOV     SI, m_str_save_pr
+    MOV     DI, m_str_save_ttl
+    MOV     BX, filename
+    MOV     CL, 80
+    CALL    tui_dlg_input
+    CMP     AL, DLG_OK
+    JNE     .quit_done
+    CMP     BYTE [filename], 0
+    JE      .quit_done
+    CALL    save_file
+
+.quit_now:
+    MOV     BYTE [fw_state + FW_RUNNING], 0
+
+.quit_done:
+    POP     CX
+    POP     BX
     POP     DI
     POP     SI
-.new_done:
-    RET
-
-menu_close_handler:
-    CALL    doc_close
-    RET
-
-menu_next_handler:
-    CALL    doc_switch_next
-    RET
-
-menu_prev_handler:
-    CALL    doc_switch_prev
-    RET
-
-menu_quit_handler:
-    CALL    doc_quit_all
-    ; doc_quit_all sets FW_RUNNING=0 on success,
-    ; or returns with FW_DIRTY=1 if user cancelled.
     RET
 
 menu_open_handler:
@@ -257,33 +237,50 @@ menu_open_handler:
     PUSH    BX
     PUSH    CX
 
-    ; ---- Show file selector dialog ----
-    ; No dirty-save prompt needed — current doc stays open.
+    ; ---- If dirty, ask to save first ----
+    CMP     BYTE [dirty], 0
+    JE      .open_dlg
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+
+    CMP     AL, DLG_YES
+    JE      .open_save
+    CMP     AL, DLG_NO
+    JE      .open_dlg
+    JMP     .open_done              ; Cancel — abort open
+
+.open_save:
+    CALL    menu_save_handler
+
+.open_dlg:
+    ; ---- Show file selector ----
     MOV     DI, m_str_open_ttl
     MOV     BX, open_file_buf
     MOV     CL, 13
     CALL    tui_dlg_file
     CMP     AL, DLG_OK
-    JNE     .open_cancel
+    JNE     .open_done
 
-    ; ---- Open selected file in a new document slot ----
-    ; Point doc_fname_src to the dialog result buffer.
-    ; doc_open will save the current context first, then copy
-    ; the filename from open_file_buf into [filename].
-    MOV     WORD [doc_fname_src], open_file_buf
-    CALL    doc_open
-    JNC     .open_cancel           ; success — done
-
-    ; ---- Open failed — show error ----
+    ; ---- Copy filename and load ----
     PUSH    SI
     PUSH    DI
-    MOV     SI, m_str_err_open
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    MOV     SI, open_file_buf
+    MOV     DI, filename
+.open_copy:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .open_copy
     POP     DI
     POP     SI
 
-.open_cancel:
+    CALL    ed_load_file
+
+.open_done:
     POP     CX
     POP     BX
     POP     DI
@@ -346,30 +343,53 @@ menu_about_handler:
 main:
     CALL    shrink_mem
 
-    ; ---- Initialize multi-doc state ----
-    MOV     BYTE [doc_count], 0
-    MOV     BYTE [doc_active], 0
-
     ; ---- Parse command line ----
     CALL    parse_args
     JC      .no_file
 
-    ; ---- Open file into first document slot ----
-    ; parse_args already set [filename]; point doc_fname_src to it
-    MOV     WORD [doc_fname_src], filename
-    CALL    doc_open
+    ; ---- Open and load file ----
+    CALL    open_file
     JC      .err_nofile
+
+    CALL    load_file
+    JC      .err_nomem
+
+    ; Close file handle
+    MOV     BX, [file_hnd]
+    MOV     AH, 3Eh
+    INT     21h
+
+    ; ---- Initialize piece table ----
+    CALL    pt_init
+    JC      .err_nomem
+
+    ; ---- Allocate add buffer ----
+    MOV     BX, ADD_BUF_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .err_nomem
+    MOV     [add_seg], AX
+    MOV     WORD [add_used], 0
+
+    ; ---- Build metadata ----
+    CALL    rebuild_meta
+    CALL    clamp_cursor
+    MOV     BYTE [meta_dirty], 0
     JMP     .start_tui
 
 .no_file:
-    ; No filename given — create empty document
-    CALL    doc_new
+    CALL    ed_new_doc
     JC      .err_nomem
 
 .start_tui:
+    ; ---- Initialize editor state ----
+    MOV     WORD [top_line], 0
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+
     ; ---- Initialize TUI ----
-    ; doc_new / doc_open already initialized all editor state
-    ; (cursor, scroll, dirty flag, piece table, etc.)
     CALL    tui_init
     CALL    tui_mouse_init
     MOV     WORD [fw_state + FW_MENUBAR], m_menubar
@@ -454,16 +474,6 @@ rnd_seg:        RESW 1          ; render scratch
 rnd_row:        RESW 1          ; render scratch
 stl_col:        RESW 1          ; seek/rebuild scratch
 ed_abs_row:     RESB 1          ; render scratch
-doc_fname_src:  RESW 1          ; pointer to filename source for doc_open
-
-; ============================================================
-; MULTI-DOC MANAGEMENT — Phase 2+ will use these.
-; Zeroed by RESB/RESW. Unused in Phase 1.
-; ============================================================
-
-doc_count:      RESB 1          ; number of open documents (0–MAX_DOCS)
-doc_active:     RESB 1          ; index of active document (0-based)
-doc_segs:       RESW MAX_DOCS   ; save-buffer segment for each doc slot
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000
