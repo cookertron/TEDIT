@@ -469,6 +469,21 @@ open dropdowns directly without triggering the toggle.
 
 ---
 
+## Shift-Flag Capture Infrastructure (2026-03-11)
+
+Added per-keypress modifier state capture so applications can disambiguate keys
+that share the same ASCII byte (e.g., Ctrl+Z vs Ctrl+Shift+Z, Backspace vs Ctrl+H).
+
+**Added:**
+- `_key_modifiers` (BYTE) — stores BIOS shift flags (INT 16h AH=02h) for the most recent keypress
+- In `tui_run` key-received path: `MOV [_key_modifiers], AL` after existing INT 16h AH=02h call
+- In `tui_run` `.no_key:` path: `MOV BYTE [_key_modifiers], 0` to clear stale flags on idle
+- Bit layout: 0+1 = Right/Left Shift, 2 = Ctrl, 3 = Alt
+
+**Files modified:** `tui_event.inc`
+
+---
+
 ## Phase 14 — CTYPE_EDITOR Dispatch in TUI Framework
 
 Extended the TUI control dispatch to support `CTYPE_EDITOR` (9), an

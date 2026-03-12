@@ -663,6 +663,7 @@ clamp_cursor ENDP
 ; ============================================================
 
 scroll_to_cursor PROC
+    ; ---- Vertical scroll ----
     MOV     AX, [cur_line]
     CMP     AX, [top_line]
     JB      .scroll_up
@@ -670,16 +671,45 @@ scroll_to_cursor PROC
     ADD     BX, ED_TEXT_ROWS
     CMP     AX, BX
     JAE     .scroll_down
-    RET
+    JMP     .vert_done
 
 .scroll_up:
     MOV     [top_line], AX
-    RET
+    JMP     .vert_done
 
 .scroll_down:
     SUB     AX, ED_TEXT_ROWS
     INC     AX
     MOV     [top_line], AX
+
+.vert_done:
+    ; ---- Horizontal scroll (non-wrap only) ----
+    CMP     BYTE [wrap_mode], 0
+    JNE     .done
+
+    MOV     AX, [cur_col]
+
+    ; If cur_col < left_col: scroll left so cursor is at left edge
+    CMP     AX, [left_col]
+    JB      .scroll_left
+
+    ; If cur_col >= left_col + ED_COLS: scroll right so cursor is at right edge
+    MOV     BX, [left_col]
+    ADD     BX, ED_COLS
+    CMP     AX, BX
+    JAE     .scroll_right
+
+    RET
+
+.scroll_left:
+    MOV     [left_col], AX          ; left_col = cur_col
+    RET
+
+.scroll_right:
+    SUB     AX, ED_COLS
+    INC     AX                      ; left_col = cur_col - ED_COLS + 1
+    MOV     [left_col], AX
+.done:
     RET
 scroll_to_cursor ENDP
 

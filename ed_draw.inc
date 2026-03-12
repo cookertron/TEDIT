@@ -6,6 +6,88 @@
 ; ============================================================
 
 ; ============================================================
+; ed_hscroll_skip — advance rnd_pi/rnd_off past CX visible chars
+;
+; Input:  CX = characters to skip
+;         rnd_pi/rnd_off = start of current line
+; Output: rnd_pi/rnd_off = position CX visible chars into line,
+;         or at LF/EOF if line is shorter than CX
+; Clobbers: AX, BX, CX, DX, SI, DI
+; DS must be CS on entry (preserved on return).
+; ============================================================
+
+ed_hscroll_skip PROC
+    JCXZ    .done
+
+.walk_piece:
+    MOV     BX, [rnd_pi]
+    CMP     BX, [pt_count]
+    JAE     .done
+    PUSH    CX
+    CALL    resolve_piece           ; AX=seg, SI=base, DX=piece_len
+    POP     CX
+    JC      .done
+
+    PUSH    DS
+    MOV     DS, AX
+    MOV     DI, SI                  ; DI = piece base
+    ADD     DX, SI                  ; DX = piece end (absolute)
+    ADD     SI, CS:[rnd_off]        ; SI = current read position
+
+.inner:
+    CMP     SI, DX
+    JAE     .next_piece
+    MOV     AL, [SI]
+    CMP     AL, 0Dh
+    JE      .skip_cr
+    CMP     AL, 0Ah
+    JE      .at_eol
+    ; Visible character — count it
+    INC     SI
+    DEC     CX
+    JZ      .found
+    JMP     .inner
+
+.skip_cr:
+    INC     SI
+    JMP     .inner
+
+.at_eol:
+    ; Line is shorter than left_col. Leave rnd_off pointing AT
+    ; the LF so char_loop reads it and pads the row with spaces.
+    POP     DS
+    MOV     AX, SI
+    SUB     AX, DI                  ; piece-relative offset of LF
+    MOV     [rnd_off], AX
+    RET
+
+.found:
+    ; Skipped enough. SI points to next char to be drawn.
+    POP     DS
+    CMP     SI, DX
+    JB      .found_in_piece
+    ; Exactly at piece end — advance to next piece
+    INC     WORD [rnd_pi]
+    MOV     WORD [rnd_off], 0
+    RET
+
+.found_in_piece:
+    MOV     AX, SI
+    SUB     AX, DI
+    MOV     [rnd_off], AX
+    RET
+
+.next_piece:
+    POP     DS
+    INC     WORD [rnd_pi]
+    MOV     WORD [rnd_off], 0
+    JMP     .walk_piece
+
+.done:
+    RET
+ed_hscroll_skip ENDP
+
+; ============================================================
 ; tui_ctrl_draw_editor
 ;
 ; Input:  BX = pointer to editor control struct
@@ -25,10 +107,15 @@ tui_ctrl_draw_editor:
     ; Save absolute row for cursor drawing
     MOV     [ed_abs_row], DH
 
+    ; ---- Init wrap-mode scroll adjustment ----
+    MOV     WORD [cur_vis_row], 0FFFFh
+    MOV     BYTE [wrap_retry], ED_TEXT_ROWS
+
+.render_restart:
     ; ---- Set up ES:DI for shadow_buf writing ----
     MOV     AX, CS
     MOV     ES, AX
-    MOV     BL, DH
+    MOV     BL, [ed_abs_row]
     XOR     BH, BH
     SHL     BX, 1
     MOV     DI, [BX + row_offsets]
@@ -48,6 +135,26 @@ tui_ctrl_draw_editor:
     MOV     AX, BP
     CMP     AX, [total_lines]
     JAE     .blank_row
+
+    ; ---- Capture cur_vis_row (first visual row of cur_line) ----
+    CMP     WORD [cur_vis_row], 0FFFFh
+    JNE     .vis_captured               ; already captured
+    CMP     AX, [cur_line]              ; AX = BP = current logical line
+    JNE     .vis_captured
+    MOV     AX, [rnd_row]
+    MOV     [cur_vis_row], AX
+.vis_captured:
+
+    ; ---- Horizontal scroll: skip left_col chars (non-wrap only) ----
+    CMP     BYTE [wrap_mode], 0
+    JNE     .no_hscroll
+    MOV     CX, [left_col]
+    JCXZ    .no_hscroll
+    PUSH    DI                      ; save shadow_buf write pointer
+    CALL    ed_hscroll_skip
+    POP     DI                      ; restore shadow_buf write pointer
+.no_hscroll:
+
     MOV     BX, [rnd_pi]
     CMP     BX, [pt_count]
     JAE     .blank_row
@@ -267,6 +374,47 @@ tui_ctrl_draw_editor:
     REP     STOSW
 
 .status_done:
+    ; ---- Wrap-mode scroll adjustment ----
+    CMP     BYTE [wrap_mode], 0
+    JE      .draw_cursor_now
+
+    ; Check if cursor's line was rendered at all
+    CMP     WORD [cur_vis_row], 0FFFFh
+    JE      .wrap_not_visible
+
+    ; Compute cursor's visual row: cur_vis_row + cur_col / ED_COLS
+    MOV     AX, [cur_col]
+    XOR     DX, DX
+    MOV     CX, ED_COLS
+    DIV     CX                          ; AX = extra_rows
+    ADD     AX, [cur_vis_row]           ; AX = cursor visual row
+    CMP     AX, ED_TEXT_ROWS
+    JB      .draw_cursor_now            ; on screen — draw it
+
+    ; Cursor off bottom: increment top_line and re-render
+    JMP     .wrap_adjust_down
+
+.wrap_not_visible:
+    ; cur_line wasn't rendered — set top_line = cur_line to bring it on screen
+    MOV     AX, [cur_line]
+    MOV     [top_line], AX
+    JMP     .wrap_re_render
+
+.wrap_adjust_down:
+    INC     WORD [top_line]
+    ; Clamp: top_line must not exceed cur_line
+    MOV     AX, [cur_line]
+    CMP     [top_line], AX
+    JBE     .wrap_re_render
+    MOV     [top_line], AX              ; safety clamp
+
+.wrap_re_render:
+    MOV     WORD [cur_vis_row], 0FFFFh  ; reset sentinel
+    DEC     BYTE [wrap_retry]
+    JZ      .draw_cursor_now            ; give up — max retries reached
+    JMP     .render_restart
+
+.draw_cursor_now:
     ; ---- Software cursor ----
     CALL    ed_draw_cursor
 
@@ -443,40 +591,78 @@ ed_draw_cursor PROC
     PUSH    AX
     PUSH    BX
     PUSH    CX
+    PUSH    DX
     PUSH    DI
 
-    ; Compute screen row of cursor
+    CMP     BYTE [wrap_mode], 0
+    JNE     .wrap_cursor
+
+    ; ============================================================
+    ; Non-wrap cursor (unchanged from Phase A)
+    ; ============================================================
     MOV     AX, [cur_line]
     SUB     AX, [top_line]
-    ; Check bounds: must be 0 <= AX < ED_TEXT_ROWS
     CMP     AX, ED_TEXT_ROWS
     JAE     .no_cursor
 
-    ; AX = row within text area; add abs_row_start to get screen row
     ADD     AL, [ed_abs_row]
     XOR     AH, AH
 
-    ; Compute shadow_buf offset for this row
     MOV     BX, AX
     SHL     BX, 1
     MOV     DI, [BX + row_offsets]
     ADD     DI, shadow_buf
 
-    ; Add column offset: cur_col * 2
     MOV     AX, [cur_col]
+    SUB     AX, [left_col]
     CMP     AX, ED_COLS
     JAE     .no_cursor
     SHL     AX, 1
     ADD     DI, AX
+    JMP     .swap_attr
 
-    ; Swap nibbles of attribute byte at DI+1
-    MOV     AL, [DI + 1]           ; read current attribute (DS=CS)
+    ; ============================================================
+    ; Wrap-mode cursor
+    ; ============================================================
+.wrap_cursor:
+    ; Check if cur_vis_row was captured during rendering
+    CMP     WORD [cur_vis_row], 0FFFFh
+    JE      .no_cursor
+
+    ; Compute: extra_rows = cur_col / ED_COLS, screen_col = cur_col % ED_COLS
+    MOV     AX, [cur_col]
+    XOR     DX, DX
+    MOV     CX, ED_COLS
+    DIV     CX                  ; AX = extra_rows, DX = screen_col
+
+    ; Visual row = cur_vis_row + extra_rows
+    ADD     AX, [cur_vis_row]
+    CMP     AX, ED_TEXT_ROWS
+    JAE     .no_cursor
+
+    ; Compute shadow_buf row offset
+    ADD     AL, [ed_abs_row]
+    XOR     AH, AH
+    MOV     BX, AX
+    SHL     BX, 1
+    MOV     DI, [BX + row_offsets]
+    ADD     DI, shadow_buf
+
+    ; Add column offset (DX = screen_col from DIV remainder)
+    MOV     AX, DX
+    SHL     AX, 1
+    ADD     DI, AX
+
+.swap_attr:
+    ; Swap fg/bg nibbles of attribute byte (block cursor)
+    MOV     AL, [DI + 1]
     MOV     CL, 4
-    ROL     AL, CL                 ; swap high and low nibbles
-    MOV     [DI + 1], AL           ; write back
+    ROL     AL, CL
+    MOV     [DI + 1], AL
 
 .no_cursor:
     POP     DI
+    POP     DX
     POP     CX
     POP     BX
     POP     AX

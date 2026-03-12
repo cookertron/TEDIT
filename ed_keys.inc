@@ -23,13 +23,37 @@ tui_ed_handle_key PROC
     CMP     AL, 13h
     JZ      .do_save
 
+    ; Ctrl+Z / Ctrl+Shift+Z (ASCII 1Ah)
+    CMP     AL, 1Ah
+    JZ      .do_undo_or_redo
+
+    ; Ctrl+X (ASCII 18h)
+    CMP     AL, 18h
+    JZ      .do_cut
+
+    ; Ctrl+C (ASCII 03h)
+    CMP     AL, 03h
+    JZ      .do_copy
+
+    ; Ctrl+V (ASCII 16h)
+    CMP     AL, 16h
+    JZ      .do_paste
+
+    ; Ctrl+F (ASCII 06h)
+    CMP     AL, 06h
+    JZ      .do_find
+
+    ; Ctrl+G (ASCII 07h)
+    CMP     AL, 07h
+    JZ      .do_goto
+
     ; Enter
     CMP     AL, KEY_ENTER
     JZ      .do_enter
 
-    ; Backspace
+    ; Backspace / Ctrl+H (both ASCII 08h)
     CMP     AL, KEY_BACKSPACE
-    JZ      .do_bksp
+    JZ      .do_bksp_or_replace
 
     ; Escape — not handled here (falls through to framework/menu)
     CMP     AL, KEY_ESCAPE
@@ -105,6 +129,56 @@ tui_ed_handle_key PROC
     RET
 
 ; ============================================================
+; Undo / Redo disambiguation (Ctrl+Z vs Ctrl+Shift+Z)
+; ============================================================
+.do_undo_or_redo:
+    TEST    BYTE [_key_modifiers], 03h  ; either Shift bit?
+    JNZ     .do_redo
+    ; fall through to .do_undo
+
+.do_undo:
+    CALL    menu_edit_stub
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_redo:
+    CALL    menu_edit_stub
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+; ============================================================
+; Backspace / Replace disambiguation (08h: Ctrl+H vs Backspace)
+; ============================================================
+.do_bksp_or_replace:
+    TEST    BYTE [_key_modifiers], 04h  ; Ctrl bit?
+    JNZ     .do_replace
+    JMP     .do_bksp                    ; existing Backspace handler
+
+.do_replace:
+    CALL    menu_edit_stub
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+; ============================================================
+; Remaining Edit menu shortcut stubs
+; ============================================================
+.do_cut:
+.do_copy:
+.do_paste:
+.do_find:
+.do_findnxt:
+.do_findprv:
+.do_goto:
+.do_timedate:
+    CALL    menu_edit_stub
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+; ============================================================
 ; Extended key dispatch (navigation + Delete)
 ; ============================================================
 .extended:
@@ -126,6 +200,18 @@ tui_ed_handle_key PROC
     JZ      .key_end
     CMP     AL, KEY_DELETE
     JZ      .do_del
+
+    ; F3 → Find Next (scan 3Dh)
+    CMP     AL, 3Dh
+    JZ      .do_findnxt
+
+    ; Shift+F3 → Find Prev (scan 54h)
+    CMP     AL, 54h
+    JZ      .do_findprv
+
+    ; F5 → Time/Date (scan 3Fh)
+    CMP     AL, 3Fh
+    JZ      .do_timedate
 
     ; Unrecognized extended key
     STC

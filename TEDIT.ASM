@@ -99,6 +99,34 @@ m_str_buf_ttl:   DB 'Buffer Full', 0
 m_str_buf_ask:   DB 'Save and reload to continue?', 0
 m_str_buf_err:   DB 'Reload failed - file on disk', 0
 
+; ---- Edit menu strings ----
+m_str_edit:      DB 'Edit', 0
+m_str_undo:      DB 'Undo', 0
+m_str_redo:      DB 'Redo', 0
+m_str_cut:       DB 'Cut', 0
+m_str_copy:      DB 'Copy', 0
+m_str_paste:     DB 'Paste', 0
+m_str_find:      DB 'Find...', 0
+m_str_findnxt:   DB 'Find Next', 0
+m_str_findprv:   DB 'Find Prev', 0
+m_str_replace:   DB 'Replace...', 0
+m_str_goto:      DB 'Goto...', 0
+m_str_timedate:  DB 'Time/Date', 0
+m_str_not_impl:  DB 'Not yet implemented', 0
+
+; ---- Edit menu accelerator display strings ----
+m_str_acc_cz:    DB 'Ctrl+Z', 0
+m_str_acc_csz:   DB 'Ctrl+Shift+Z', 0
+m_str_acc_cx:    DB 'Ctrl+X', 0
+m_str_acc_cc:    DB 'Ctrl+C', 0
+m_str_acc_cv:    DB 'Ctrl+V', 0
+m_str_acc_cf:    DB 'Ctrl+F', 0
+m_str_acc_f3:    DB 'F3', 0
+m_str_acc_sf3:   DB 'Shift+F3', 0
+m_str_acc_ch:    DB 'Ctrl+H', 0
+m_str_acc_cg:    DB 'Ctrl+G', 0
+m_str_acc_f5:    DB 'F5', 0
+
 ; ============================================================
 ; Menu Data Structures
 ; ============================================================
@@ -122,6 +150,73 @@ m_file_entries:
     DW m_str_acc_aq
     DB 10h, 0                       ; accelkey=10h (Alt+Q global dispatch)
 
+m_edit_entries:
+    ; Undo — hotidx=0, hotkey='U'
+    DW m_str_undo, menu_edit_stub
+    DB 0, 'U'
+    DW m_str_acc_cz
+    DB 0, 0
+
+    ; Redo — hotidx=0, hotkey='R'
+    DW m_str_redo, menu_edit_stub
+    DB 0, 'R'
+    DW m_str_acc_csz
+    DB 0, 0
+
+    ; Cut — hotidx=2, hotkey='T'
+    DW m_str_cut, menu_edit_stub
+    DB 2, 'T'
+    DW m_str_acc_cx
+    DB 0, 0
+
+    ; Copy — hotidx=0, hotkey='C'
+    DW m_str_copy, menu_edit_stub
+    DB 0, 'C'
+    DW m_str_acc_cc
+    DB 0, 0
+
+    ; Paste — hotidx=0, hotkey='P'
+    DW m_str_paste, menu_edit_stub
+    DB 0, 'P'
+    DW m_str_acc_cv
+    DB 0, 0
+
+    ; Find... — hotidx=0, hotkey='F'
+    DW m_str_find, menu_edit_stub
+    DB 0, 'F'
+    DW m_str_acc_cf
+    DB 0, 0
+
+    ; Find Next — hotidx=5, hotkey='N'
+    DW m_str_findnxt, menu_edit_stub
+    DB 5, 'N'
+    DW m_str_acc_f3
+    DB 0, 0
+
+    ; Find Prev — hotidx=8, hotkey='V'
+    DW m_str_findprv, menu_edit_stub
+    DB 8, 'V'
+    DW m_str_acc_sf3
+    DB 0, 0
+
+    ; Replace... — hotidx=3, hotkey='L'
+    DW m_str_replace, menu_edit_stub
+    DB 3, 'L'
+    DW m_str_acc_ch
+    DB 0, 0
+
+    ; Goto... — hotidx=0, hotkey='G'
+    DW m_str_goto, menu_edit_stub
+    DB 0, 'G'
+    DW m_str_acc_cg
+    DB 0, 0
+
+    ; Time/Date — hotidx=5, hotkey='D'
+    DW m_str_timedate, menu_edit_stub
+    DB 5, 'D'
+    DW m_str_acc_f5
+    DB 0, 0
+
 m_info_entries:
     DW m_str_about, menu_about_handler
     DB 0, 'A'
@@ -135,14 +230,21 @@ m_menu_items:
     DB 3, 16                        ; MI_ECOUNT=3, MI_DDW=16
     DB 0, 21h                       ; MI_HOTIDX=0, MI_ALTKEY=21h (Alt+F)
 
+    ; Edit menu (NEW)
+    DW m_str_edit
+    DB 6, 6                         ; MI_X=6, MI_W=6
+    DW m_edit_entries
+    DB 11, 24                       ; MI_ECOUNT=11, MI_DDW=24
+    DB 0, 12h                       ; MI_HOTIDX=0 ('E'), MI_ALTKEY=12h (Alt+E)
+
     DW m_str_info
-    DB 6, 6
+    DB 12, 6                        ; MI_X=12, MI_W=6
     DW m_info_entries
     DB 1, 12
     DB 0, 17h
 
 m_menubar:
-    DB 2, 0FFh, 0, 0FFh
+    DB 3, 0FFh, 0, 0FFh
     DB CLR_MENUBAR, CLR_MENU_SEL
     DW m_menu_items
 
@@ -326,6 +428,16 @@ menu_save_handler:
     POP     SI
     RET
 
+menu_edit_stub:
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, m_str_not_impl
+    MOV     DI, m_str_edit
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    RET
+
 menu_about_handler:
     PUSH    SI
     PUSH    DI
@@ -386,6 +498,7 @@ main:
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
     MOV     WORD [cur_col], 0
+    MOV     WORD [left_col], 0
     MOV     BYTE [dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
 
@@ -474,6 +587,9 @@ rnd_seg:        RESW 1          ; render scratch
 rnd_row:        RESW 1          ; render scratch
 stl_col:        RESW 1          ; seek/rebuild scratch
 ed_abs_row:     RESB 1          ; render scratch
+left_col:       RESW 1          ; horizontal scroll offset (non-wrap)
+cur_vis_row:    RESW 1          ; visual screen row of cur_line (wrap mode)
+wrap_retry:     RESB 1          ; scroll-adjust retry counter (wrap mode)
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000

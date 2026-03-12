@@ -1,5 +1,132 @@
 # TEDIT Changelog
 
+## v0.14.0 — Wrap-Mode Cursor Positioning (2026-03-11)
+
+Fixed cursor visibility in wrap mode. Previously the cursor vanished when `cur_col >= 80` and scroll didn't account for wrapped lines consuming extra visual rows.
+
+### Changes to TEDIT.ASM
+- Added `cur_vis_row: RESW 1` and `wrap_retry: RESB 1` to BSS transient section (after `left_col`)
+
+### Changes to ed_draw.inc
+- **Renderer init**: added `cur_vis_row = FFFFh` sentinel and `wrap_retry = ED_TEXT_ROWS` guard; added `.render_restart` label after one-time setup (reads `ed_abs_row` from memory instead of DH for re-render safety)
+- **Row loop**: added `cur_vis_row` capture — stores `rnd_row` when renderer first encounters `cur_line` (runs in both modes, 3 comparisons per row)
+- **Post-render scroll adjustment**: after status bar, computes `cursor_row = cur_vis_row + cur_col / ED_COLS`; if off-screen bottom, increments `top_line` and jumps to `.render_restart`; if `cur_line` not rendered at all, sets `top_line = cur_line` and re-renders; `wrap_retry` counter prevents infinite loops
+- **ed_draw_cursor**: rewritten with dual code paths — non-wrap uses `cur_col - left_col` (unchanged from v0.13.0), wrap uses `DIV 80` to compute visual row (`cur_vis_row + quotient`) and screen column (remainder); now saves/restores DX for DIV remainder
+
+### No changes
+ed_core.inc, ed_keys.inc, ed_mouse.inc, ed_file.inc, ed_edit.inc, ed_const.inc, TUI framework files.
+
+## v0.13.0 — Horizontal Scroll for Non-Wrap Mode (2026-03-11)
+
+Added `left_col` horizontal scroll offset so the viewport pans when the cursor moves past column 80. In non-wrap mode, the screen displays columns `[left_col, left_col + 80)`. Wrap mode is unaffected (Phase B deferred).
+
+### Changes to TEDIT.ASM
+- Added `left_col: RESW 1` BSS variable in transient section (after `ed_abs_row`)
+- Added `MOV WORD [left_col], 0` in `.start_tui` initialization
+
+### Changes to ed_core.inc
+- Restructured `scroll_to_cursor`: vertical logic now falls through (via JMP `.vert_done`) to a new horizontal clamping block (non-wrap only)
+- Scroll right: `left_col = cur_col - ED_COLS + 1` (cursor at right edge)
+- Scroll left: `left_col = cur_col` (cursor at left edge)
+- Wrap mode skips horizontal logic entirely
+
+### Changes to ed_draw.inc
+- Added `ed_hscroll_skip` procedure (~60 lines): walks piece table past `CX` visible characters, updating `rnd_pi`/`rnd_off`. Handles CR skip, LF (short line), piece boundaries.
+- Renderer row_loop: inserted hscroll skip call between `total_lines` check and `resolve_piece`, with `PUSH DI`/`POP DI` to preserve shadow_buf write pointer
+- `ed_draw_cursor`: subtracts `left_col` from `cur_col` in non-wrap mode for correct screen column
+
+### Changes to ed_file.inc
+- Added `MOV WORD [left_col], 0` in `ed_load_file` and `ed_new_doc`
+- Added `left_col` save/restore in `ed_compact` (both success and fail-recover paths)
+
+### Changes to ed_mouse.inc
+- `tui_ed_mouse_press`: adds `left_col` to screen column for document column (non-wrap only)
+- `tui_ed_mouse_drag`: same adjustment
+
+### Bug Found & Fixed During Implementation
+- `ed_hscroll_skip` clobbers DI (used as piece base pointer), but the renderer uses DI as the shadow_buf write position. Caused memory corruption and invalid opcode crashes at unrelated addresses. Fixed by wrapping the call with `PUSH DI` / `POP DI`.
+
+### Tests Passing
+1. Type 85 X's — IDLE, Col 86, 79 X's visible (left_col=6)
+2. Down, End, Home on long line — Col 1, line starts from 'A' (left_col reset)
+3. End on 98-char line — Col 99, "EXTRA_TEXT_PAST_80" visible at right
+4. Home, Right×5 — Col 6, left_col=0
+5. End on long line, Down to short — Col 14, cursor visible
+6. Type AB, Backspace — Col 2, normal editing unaffected
+7. Mouse click on scrolled view — Col 20 (left_col + screen_col)
+8. Wrap mode unchanged — IDLE, left_col stays 0
+9. Navigation regression — all keys work on short lines
+10. Ctrl+Z regression — edit stub dialog appears
+
+---
+
+## v0.12.0 — Edit Menu with Placeholder Items (2026-03-11)
+
+Added an Edit menu between File and Info with 11 placeholder entries and keyboard shortcuts. Each entry shows a "Not yet implemented" dialog. Shortcuts work directly from the editor without opening the menu.
+
+### Menu Layout
+- File | **Edit** | Info
+- Edit dropdown: Undo (Ctrl+Z), Redo (Ctrl+Shift+Z), Cut (Ctrl+X), Copy (Ctrl+C), Paste (Ctrl+V), Find... (Ctrl+F), Find Next (F3), Find Prev (Shift+F3), Replace... (Ctrl+H), Goto... (Ctrl+G), Time/Date (F5)
+
+### Changes to TEDIT.ASM
+- Added 24 string constants: 12 menu entry labels, 11 accelerator display strings, 1 stub message ("Not yet implemented")
+- Added `m_edit_entries` (11 entries, 110 bytes) with dropdown hotkeys and accelerator text
+- Inserted Edit item in `m_menu_items` (MI_X=6, MI_W=6, MI_DDW=24, Alt+E = scan 12h)
+- Shifted Info MI_X from 6 to 12
+- Updated `m_menubar` count from 2 to 3
+- Added `menu_edit_stub` handler: shows msgbox with "Not yet implemented" / "Edit" title
+
+### Changes to ed_keys.inc
+- Added 7 Ctrl+key checks in normal-key dispatch: Ctrl+Z (1Ah), Ctrl+X (18h), Ctrl+C (03h), Ctrl+V (16h), Ctrl+F (06h), Ctrl+G (07h)
+- Added 3 extended-key checks: F3 (3Dh), Shift+F3 (54h), F5 (3Fh)
+- Added `.do_undo_or_redo` with `_key_modifiers` Shift-flag test for Ctrl+Z vs Ctrl+Shift+Z
+- Added `.do_bksp_or_replace` with `_key_modifiers` Ctrl-flag test for Backspace vs Ctrl+H
+- Added 8 stub labels (`.do_cut` through `.do_timedate`) sharing a single fall-through body
+
+### Tests Passing
+1. Menu bar shows File / Edit / Info (3 items)
+2. Alt+E opens dropdown with all 11 entries
+3. Dropdown hotkey 'G' activates Goto stub dialog
+4. Down×2 Enter activates Cut stub dialog
+5. Ctrl+Z — Undo placeholder dialog
+6. Ctrl+Shift+Z — Redo placeholder dialog (Shift-flag disambiguation)
+7. Ctrl+X — Cut placeholder dialog
+8. Ctrl+C — Copy placeholder dialog
+9. Ctrl+V — Paste placeholder dialog
+10. Ctrl+F — Find placeholder dialog
+11. F3 — Find Next placeholder dialog
+12. Shift+F3 — Find Prev placeholder dialog
+13. Ctrl+H — Replace placeholder dialog (Ctrl-flag disambiguation from Backspace)
+14. Ctrl+G — Goto placeholder dialog
+15. F5 — Time/Date placeholder dialog
+16. Typing regression — normal character insertion unaffected
+17. Backspace regression — plain 08h routes to delete, not Replace
+18. Ctrl+S regression — save still works
+19. Navigation regression — arrow keys still work
+20. Menu bar full cycle — File→Edit→Info→File wraps correctly
+
+---
+
+## v0.11.1 — Shift-Flag Capture Infrastructure (2026-03-11)
+
+Added `_key_modifiers` variable to `tui_event.inc` so `ed_keys.inc` can disambiguate keys that share the same ASCII byte (e.g., Ctrl+Z vs Ctrl+Shift+Z, Backspace vs Ctrl+H).
+
+### Changes to TUI\tui_event.inc
+- Added `_key_modifiers: DB 0` — stores BIOS shift flags (INT 16h AH=02h) for the most recent keypress
+- In `tui_run` key-received path: added `MOV [_key_modifiers], AL` after existing INT 16h AH=02h call
+- In `tui_run` `.no_key:` path: added `MOV BYTE [_key_modifiers], 0` to clear stale flags on idle
+
+### Tests Passing
+1. Ctrl+Shift+Z → `_key_modifiers` has Shift+Ctrl bits (07h)
+2. Plain Ctrl+Z → no Shift bits in `_key_modifiers`
+3. Ctrl+H → Ctrl bit set (04h) in `_key_modifiers`
+4. Plain Backspace → no Ctrl bit in `_key_modifiers`
+5. TEDIT regression — normal typing unaffected
+6. TEDIT regression — Backspace still works
+7. TEDIT regression — Ctrl+S still works
+
+---
+
 ## v0.11.0 — Buffer Compaction: Add Buffer Full Handler (2026-03-11)
 
 When the 64 KB add buffer fills up, the editor now shows a "Buffer Full" dialog instead of silently dropping keystrokes. The user can accept (save, reload from disk, reset buffer) or cancel (keystroke dropped but editor remains functional).

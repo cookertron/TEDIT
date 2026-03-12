@@ -56,8 +56,8 @@ is tracked in `WIN_FOCUS`.
 
 `tui_run` is the main loop:
 1. Poll keyboard (non-blocking via INT 21h/06h)
-2. If key pressed: check Alt modifier via INT 16h AH=02h (cancel Alt-release tracking if Alt+combo), dispatch key
-3. If no key: detect Alt-release transition (Alt was held last poll, not held now) and synthesize F10 keypress to toggle menu bar
+2. If key pressed: read BIOS shift flags via INT 16h AH=02h, store to `_key_modifiers`, check Alt (cancel Alt-release tracking if Alt+combo), dispatch key
+3. If no key: clear `_key_modifiers`, detect Alt-release transition (Alt was held last poll, not held now) and synthesize F10 keypress to toggle menu bar
 4. Poll mouse (INT 33h/0003h)
 5. If position/button changed, dispatch mouse event
 6. If `FW_DIRTY` flag is set, recompose and blit
@@ -1057,6 +1057,11 @@ the menu bar), poll mouse, dispatch mouse, recompose if dirty. Exits when
   for release detection. Set to 1 when Alt is held during idle polling, cleared
   on Alt-release (after synthesizing F10) or when Alt is held during a key press
   (Alt+combo cancels the toggle).
+- **Data:** `_key_modifiers` (BYTE) — BIOS shift flags (INT 16h AH=02h) captured
+  at the moment each key is consumed. Cleared to 0 on idle (no key). Bit layout:
+  0+1 = Right/Left Shift, 2 = Ctrl, 3 = Alt. Applications can read this to
+  disambiguate keys sharing the same ASCII code (e.g., Backspace vs Ctrl+H,
+  Ctrl+Z vs Ctrl+Shift+Z).
 
 ---
 

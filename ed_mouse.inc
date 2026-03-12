@@ -59,8 +59,12 @@ tui_ed_mouse_press:
     MOV     [cur_line], CX
 
     ; ---- Set cur_col, then clamp to line length ----
-    MOV     AL, AH                  ; AL = ed_col
+    MOV     AL, AH                  ; AL = ed_col (screen column)
     XOR     AH, AH
+    CMP     BYTE [wrap_mode], 0
+    JNE     .press_col_set          ; wrap: screen col = doc col
+    ADD     AX, [left_col]          ; non-wrap: doc col = left_col + screen col
+.press_col_set:
     MOV     [cur_col], AX
 
     CALL    line_length             ; AX = visible chars on cur_line
@@ -166,6 +170,10 @@ tui_ed_mouse_drag:
 
     MOV     AL, AH
     XOR     AH, AH
+    CMP     BYTE [wrap_mode], 0
+    JNE     .drag_col_set
+    ADD     AX, [left_col]
+.drag_col_set:
     MOV     [cur_col], AX
     CALL    line_length
     CMP     [cur_col], AX

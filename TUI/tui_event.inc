@@ -3,6 +3,7 @@
 ; ============================================================================
 
 _tui_alt_was_down: DB 0         ; nonzero if Alt was held on previous poll
+_key_modifiers:    DB 0         ; shift flags for most recent keypress
 
 ; ----------------------------------------------------------------------------
 ; tui_poll_key - Non-blocking keyboard poll using INT 21h/06h
@@ -254,10 +255,11 @@ tui_run: PROC
     CALL tui_poll_key
     JZ .no_key
 
-    ; Got a key — check if Alt is held during this key press
+    ; Got a key — capture modifier state for this keypress
     PUSH AX
     MOV AH, 02h
     INT 16h                     ; AL = shift flags
+    MOV [_key_modifiers], AL    ; store for ed_keys.inc disambiguation
     TEST AL, 08h                ; bit 3 = Alt held?
     POP AX
     JZ .key_no_alt
@@ -269,6 +271,7 @@ tui_run: PROC
     JMP .poll_mouse
 
 .no_key:
+    MOV BYTE [_key_modifiers], 0    ; no key → no modifiers
     ; --- Alt-release detection ---
     ; Check if Alt is currently held via BIOS shift flags
     PUSH AX

@@ -53,6 +53,7 @@ ed_load_file PROC
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
     MOV     WORD [cur_col], 0
+    MOV     WORD [left_col], 0
     MOV     BYTE [dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [fw_state + FW_DIRTY], 1
@@ -149,6 +150,7 @@ ed_new_doc PROC
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
     MOV     WORD [cur_col], 0
+    MOV     WORD [left_col], 0
     MOV     BYTE [dirty], 0
     MOV     BYTE [meta_dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
@@ -192,6 +194,8 @@ ed_compact PROC
     PUSH    AX
     MOV     AX, [top_line]
     PUSH    AX
+    MOV     AX, [left_col]
+    PUSH    AX
 
     ; ---- Free all document memory ----
     CALL    free_all
@@ -226,6 +230,8 @@ ed_compact PROC
     MOV     BYTE [meta_dirty], 0
 
     ; ---- Restore cursor state ----
+    POP     AX
+    MOV     [left_col], AX
     POP     AX
     MOV     [top_line], AX
     POP     AX
@@ -265,6 +271,8 @@ ed_compact PROC
     CALL    ed_new_doc
 
     ; Restore cursor (just to pop the stack cleanly; clamp will fix)
+    POP     AX
+    MOV     [left_col], AX
     POP     AX
     MOV     [top_line], AX
     POP     AX
