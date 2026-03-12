@@ -590,6 +590,9 @@ ed_abs_row:     RESB 1          ; render scratch
 left_col:       RESW 1          ; horizontal scroll offset (non-wrap)
 cur_vis_row:    RESW 1          ; visual screen row of cur_line (wrap mode)
 wrap_retry:     RESB 1          ; scroll-adjust retry counter (wrap mode)
+_row_to_line:   RESW ED_TEXT_ROWS ; screen row → logical line mapping (wrap mouse)
+total_vis_lines: RESW 1          ; total visual lines (wrap mode status bar)
+cur_vis_line:   RESW 1           ; visual line at start of cur_line (wrap mode)
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000

@@ -231,18 +231,92 @@ tui_ed_handle_key PROC
 ; ---- Navigation keys ----
 
 .key_up:
+    CMP     BYTE [wrap_mode], 0
+    JNE     .key_up_wrap
     CMP     WORD [cur_line], 0
     JE      .handled
     DEC     WORD [cur_line]
     JMP     .vert_moved
 
+.key_up_wrap:
+    ; Wrap mode: move up one visual row
+    MOV     AX, [cur_col]
+    CMP     AX, ED_COLS
+    JB      .up_prev_line
+    ; Same logical line — just move up one visual row
+    SUB     WORD [cur_col], ED_COLS
+    JMP     .cursor_moved
+
+.up_prev_line:
+    ; First visual row — move to last visual row of previous line
+    CMP     WORD [cur_line], 0
+    JE      .handled
+    PUSH    AX                      ; save screen_col (= cur_col < ED_COLS)
+    DEC     WORD [cur_line]
+    MOV     BYTE [meta_dirty], 1
+    CALL    line_length             ; AX = length of previous line
+    MOV     BX, AX                  ; BX = line_length
+    XOR     DX, DX
+    MOV     CX, ED_COLS
+    DIV     CX                      ; AX = line_length / ED_COLS
+    MUL     CX                      ; AX = last_vis_row_start
+    POP     CX                      ; CX = screen_col
+    ADD     AX, CX                  ; AX = target col
+    CMP     AX, BX
+    JBE     .up_set_col
+    MOV     AX, BX                  ; clamp to line_length
+.up_set_col:
+    MOV     [cur_col], AX
+    JMP     .cursor_moved
+
 .key_down:
+    CMP     BYTE [wrap_mode], 0
+    JNE     .key_down_wrap
     MOV     AX, [cur_line]
     INC     AX
     CMP     AX, [total_lines]
     JAE     .handled
     MOV     [cur_line], AX
     JMP     .vert_moved
+
+.key_down_wrap:
+    ; Wrap mode: move down one visual row
+    MOV     AX, [cur_col]
+    XOR     DX, DX
+    MOV     CX, ED_COLS
+    DIV     CX                      ; AX = cur_row_in_line, DX = screen_col
+    PUSH    DX                      ; save screen_col
+    INC     AX
+    MUL     CX                      ; AX = next_vis_row_start
+    MOV     BX, AX                  ; BX = next_vis_row_start
+    CALL    line_length             ; AX = current line length
+    CMP     BX, AX
+    JA      .down_next_line
+    ; Same line: next visual row
+    POP     CX                      ; CX = screen_col
+    ADD     BX, CX                  ; BX = target col
+    CMP     BX, AX                  ; AX still = line_length
+    JBE     .down_set_col
+    MOV     BX, AX                  ; clamp to line_length
+.down_set_col:
+    MOV     [cur_col], BX
+    JMP     .cursor_moved
+
+.down_next_line:
+    POP     CX                      ; CX = screen_col
+    MOV     AX, [cur_line]
+    INC     AX
+    CMP     AX, [total_lines]
+    JAE     .handled
+    MOV     [cur_line], AX
+    MOV     [cur_col], CX
+    MOV     BYTE [meta_dirty], 1
+    CALL    line_length             ; AX = new line length
+    CMP     [cur_col], AX
+    JBE     .down_col_ok
+    MOV     [cur_col], AX
+.down_col_ok:
+    JMP     .cursor_moved
 
 .key_left:
     CMP     WORD [cur_col], 0
@@ -286,6 +360,11 @@ tui_ed_handle_key PROC
     JMP     .cursor_moved
 
 .vert_moved:
+    ; In wrap mode, flag meta dirty so cur_vis_line gets recomputed
+    CMP     BYTE [wrap_mode], 0
+    JE      .vm_no_meta
+    MOV     BYTE [meta_dirty], 1
+.vm_no_meta:
     CALL    line_length
     CMP     [cur_col], AX
     JBE     .cursor_moved

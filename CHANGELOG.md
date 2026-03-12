@@ -1,5 +1,30 @@
 # TEDIT Changelog
 
+## v0.15.1 — Fix: Wrap-Mode Visual Line Navigation (2026-03-12)
+
+**Bug**: In wrap mode, UP/DOWN arrow keys navigated by logical line instead of visual line. With a 120-character line wrapping to 2 visual rows, pressing RETURN then UP skipped the second visual row entirely — cursor jumped from (1, 3) to (1, 1) instead of (1, 2).
+
+**Root cause**: `.key_up` and `.key_down` always moved `cur_line` by 1, which skips over wrapped visual rows within the same logical line.
+
+**Fix in `ed_keys.inc`**: Added wrap-mode branches (`.key_up_wrap`, `.key_down_wrap`) that navigate by visual row:
+- **UP within same line**: if `cur_col >= ED_COLS`, subtract `ED_COLS` (move up one visual row)
+- **UP to previous line**: if `cur_col < ED_COLS`, decrement `cur_line` and land on the last visual row of the previous line at the same screen column (`last_vis_row_start + screen_col`, clamped to `line_length`)
+- **DOWN within same line**: compute `next_vis_row_start`; if within `line_length`, move there at same screen column
+- **DOWN to next line**: if `next_vis_row_start > line_length`, increment `cur_line` and set `cur_col = screen_col` (first visual row), clamped to new `line_length`
+
+Non-wrap mode unchanged — still uses original logical-line navigation via `.vert_moved`.
+
+### Tests Passing
+1. 120 chars, UP — Line 2, Col 41 (moved up one visual row within line)
+2. 120 chars, UP UP — Line 1, Col 41 (top of document, can't go higher)
+3. 120 chars, UP DOWN — Line 2, Col 121 (round-trip back)
+4. 120 chars, Home, DOWN — Line 2, Col 81 (moved down to second visual row)
+5. 120 chars, Home, DOWN, UP — Line 1, Col 1 (round-trip back)
+6. 2x120 chars, UP×4 — walks all 4 visual rows correctly
+7. Original bug scenario: 120 chars + Enter + UP → Line 2, Col 81 (no longer skips visual row 2)
+
+---
+
 ## v0.14.0 — Wrap-Mode Cursor Positioning (2026-03-11)
 
 Fixed cursor visibility in wrap mode. Previously the cursor vanished when `cur_col >= 80` and scroll didn't account for wrapped lines consuming extra visual rows.

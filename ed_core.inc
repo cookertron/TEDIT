@@ -322,6 +322,8 @@ rebuild_meta PROC
     MOV     WORD [chkpt_pi], 0
     MOV     WORD [chkpt_po], 0
     MOV     WORD [chkpt_num], 1
+    MOV     WORD [total_vis_lines], 0
+    MOV     WORD [cur_vis_line], 0
     XOR     BP, BP
 .next_piece:
     CMP     BP, [pt_count]
@@ -331,14 +333,12 @@ rebuild_meta PROC
     JC      .done
     MOV     ES, AX
     MOV     [rnd_base], SI
-    MOV     DI, SI
-    ADD     DI, DX
     INC     BP
 
     CMP     BYTE [wrap_mode], 0
-    JNE     .byte_loop_wrap        ; wrap mode: use original byte loop
+    JNE     .rm_wrap_loop
 
-    ; ---- NON-WRAP FAST PATH: REPNE SCASB ----
+    ; ---- NON-WRAP: REPNE SCASB for LF scanning ----
     MOV     DI, SI                 ; DI = scan start = piece base
     ADD     DX, SI                 ; DX = piece end (absolute)
     MOV     AL, 0Ah                ; search for LF
@@ -373,43 +373,53 @@ rebuild_meta PROC
 .rm_exhaust:
     JMP     .end_walk
 
-    ; ---- WRAP MODE: original byte-by-byte loop ----
-.byte_loop_wrap:
-    CMP     SI, DI
+    ; ---- WRAP MODE: byte-by-byte with dual line counting ----
+.rm_wrap_loop:
+    ADD     DX, SI                 ; DX = piece end (absolute)
+    MOV     DI, DX                 ; DI = piece end (for record_chkpt)
+.rm_w_byte:
+    CMP     SI, DX
     JAE     .end_walk
     MOV     AL, ES:[SI]
     INC     SI
     CMP     AL, 0Dh
-    JE      .byte_loop_wrap
+    JE      .rm_w_byte             ; skip CR
     CMP     AL, 0Ah
-    JNE     .not_lf_wrap
+    JNE     .rm_w_not_lf
+    ; ---- LF: increment both counters ----
     MOV     WORD [stl_col], 0
     INC     WORD [total_lines]
+    INC     WORD [total_vis_lines]
+    ; Track cur_vis_line: when logical line count reaches cur_line
+    MOV     AX, [total_lines]
+    CMP     AX, [cur_line]
+    JNE     .rm_w_lf_no_cvl
+    MOV     AX, [total_vis_lines]
+    MOV     [cur_vis_line], AX
+.rm_w_lf_no_cvl:
     MOV     AX, [total_lines]
     TEST    AX, CHKPT_INTERVAL - 1
-    JNZ     .byte_loop_wrap
+    JNZ     .rm_w_byte
     CALL    .record_chkpt
-    JMP     .byte_loop_wrap
-.not_lf_wrap:
+    JMP     .rm_w_byte
+.rm_w_not_lf:
+    ; ---- Visible char: track column for visual wrap ----
     INC     WORD [stl_col]
     MOV     AX, [stl_col]
     CMP     AX, ED_COLS
-    JB      .byte_loop_wrap
+    JB      .rm_w_byte
     MOV     WORD [stl_col], 0
-    INC     WORD [total_lines]
-    MOV     AX, [total_lines]
-    TEST    AX, CHKPT_INTERVAL - 1
-    JNZ     .byte_loop_wrap
-    CALL    .record_chkpt
-    JMP     .byte_loop_wrap
+    INC     WORD [total_vis_lines]
+    JMP     .rm_w_byte
 
 .end_walk:
     JMP     .next_piece
 .done:
-    CMP     WORD [pt_count], 0
-    JE      .no_plus
     INC     WORD [total_lines]
-.no_plus:
+    CMP     BYTE [wrap_mode], 0
+    JE      .done_no_vis
+    INC     WORD [total_vis_lines]
+.done_no_vis:
     POP     ES
     POP     BP
     POP     DI
@@ -502,10 +512,7 @@ seek_to_line:
     MOV     [rnd_base], SI
     ADD     DX, SI                 ; DX = piece end (absolute)
 
-    CMP     BYTE [wrap_mode], 0
-    JNE     .stl_inner_wrap        ; wrap mode: use byte-by-byte loop
-
-    ; ---- NON-WRAP FAST PATH: REPNE SCASB for LF scanning ----
+    ; ---- REPNE SCASB for LF scanning (both wrap and non-wrap) ----
     PUSH    ES
     MOV     ES, AX                 ; ES = text segment
     MOV     DI, SI
@@ -553,54 +560,6 @@ seek_to_line:
     MOV     [rnd_off], AX
     JMP     .stl_done
 
-    ; ---- WRAP MODE: byte-by-byte walk ----
-.stl_inner_wrap:
-    PUSH    DS
-    MOV     DS, AX
-    MOV     SI, CS:[rnd_base]
-    ADD     SI, CS:[rnd_off]
-.stl_iw_byte:
-    CMP     SI, DX
-    JAE     .stl_iw_next_piece
-    MOV     AL, [SI]
-    INC     SI
-    CMP     AL, 0Dh
-    JE      .stl_iw_byte
-    CMP     AL, 0Ah
-    JNE     .stl_iw_not_lf
-    MOV     WORD CS:[stl_col], 0
-    DEC     CX
-    JZ      .stl_iw_found
-    JMP     .stl_iw_byte
-.stl_iw_not_lf:
-    INC     WORD CS:[stl_col]
-    MOV     AX, CS:[stl_col]
-    CMP     AX, ED_COLS
-    JB      .stl_iw_byte
-    MOV     WORD CS:[stl_col], 0
-    DEC     CX
-    JZ      .stl_iw_found
-    JMP     .stl_iw_byte
-.stl_iw_next_piece:
-    POP     DS
-    INC     WORD [rnd_pi]
-    MOV     WORD [rnd_off], 0
-    MOV     BX, [rnd_pi]
-    CMP     BX, [pt_count]
-    JAE     .stl_eof
-    JMP     .stl_walk_loop
-.stl_iw_found:
-    POP     DS
-    SUB     SI, [rnd_base]
-    MOV     AX, DX
-    SUB     AX, [rnd_base]         ; AX = piece length
-    CMP     SI, AX
-    JB      .stl_iw_found_ok
-    INC     WORD [rnd_pi]
-    MOV     WORD [rnd_off], 0
-    JMP     .stl_done
-.stl_iw_found_ok:
-    MOV     [rnd_off], SI
 .stl_done:
     POP     BP
     POP     DI

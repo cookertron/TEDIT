@@ -132,6 +132,12 @@ tui_ctrl_draw_editor:
     MOV     AX, [rnd_row]
     CMP     AX, ED_TEXT_ROWS
     JAE     .do_status
+
+    ; Store row-to-line mapping (for wrap-mode mouse support)
+    MOV     BX, AX
+    SHL     BX, 1
+    MOV     [BX + _row_to_line], BP
+
     MOV     AX, BP
     CMP     AX, [total_lines]
     JAE     .blank_row
@@ -483,20 +489,39 @@ ed_draw_status_line PROC
     CALL    ed_wstr
 
 .stat_after_name:
-    ; ---- Line N of M (existing) ----
+    ; ---- Line N of M ----
     MOV     SI, s_stat_ln
     CALL    ed_wstr
 
+    CMP     BYTE [wrap_mode], 0
+    JNE     .stat_vis_line
+
+    ; Non-wrap: logical line numbers
     MOV     AX, [cur_line]
     INC     AX
     CALL    ed_wdec
-
     MOV     SI, s_stat_of
     CALL    ed_wstr
-
     MOV     AX, [total_lines]
     CALL    ed_wdec
+    JMP     .stat_col
 
+.stat_vis_line:
+    ; Wrap: visual line numbers
+    ; N = cur_vis_line + cur_col / ED_COLS + 1
+    MOV     AX, [cur_col]
+    XOR     DX, DX
+    MOV     CX, ED_COLS
+    DIV     CX                      ; AX = cur_col / ED_COLS
+    ADD     AX, [cur_vis_line]
+    INC     AX                      ; 1-based
+    CALL    ed_wdec
+    MOV     SI, s_stat_of
+    CALL    ed_wstr
+    MOV     AX, [total_vis_lines]
+    CALL    ed_wdec
+
+.stat_col:
     ; Column display
     MOV     SI, s_stat_col
     CALL    ed_wstr

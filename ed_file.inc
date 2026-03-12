@@ -142,6 +142,8 @@ ed_new_doc PROC
 
     ; Seed metadata
     MOV     WORD [total_lines], 1
+    MOV     WORD [total_vis_lines], 1
+    MOV     WORD [cur_vis_line], 0
     MOV     WORD [chkpt_num], 1
     MOV     WORD [chkpt_pi], 0
     MOV     WORD [chkpt_po], 0
