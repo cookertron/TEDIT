@@ -966,10 +966,11 @@ free_all:
 .no_pt:
     MOV     AX, [add_seg]
     TEST    AX, AX
-    JZ      .done
+    JZ      .no_add
     MOV     ES, AX
     MOV     AH, 49h
     INT     21h
+.no_add:
 .done:
     POP     SI
     POP     CX

@@ -43,3 +43,33 @@ MAX_CHKPT       EQU 2048
 ; ---- Memory shrink size ----
 SHRINK_PARA     EQU 1000h       ; keep 64 KB for COM segment
 
+; ---- Undo / Redo ----
+UNDO_SEG_PARA   EQU 0800h          ; 32 KB undo segment (2048 paragraphs)
+
+; Undo record size and maximum
+UR_SIZE         EQU 10              ; bytes per undo record
+UNDO_MAX_RECORDS EQU (UNDO_SEG_PARA * 16) / UR_SIZE   ; = 3276
+
+; Record type codes (bits 0-3; bits 4-7 reserved for flags)
+UR_INS_CHAR     EQU 0              ; a character was inserted
+UR_INS_CRLF     EQU 1              ; a CR+LF pair was inserted
+UR_DEL_CHAR     EQU 2              ; a character was deleted
+UR_DEL_CRLF     EQU 3              ; a CR+LF pair was deleted
+
+; Record type mask and group flag (stored in UR_TYPE byte)
+UR_TYPE_MASK    EQU 0Fh            ; low nibble = record type
+URF_GROUP_CONT  EQU 80h            ; bit 7 of UR_TYPE = group continuation
+
+; Record field offsets within each 10-byte record
+UR_TYPE         EQU 0              ; BYTE  - type + flags
+UR_CHAR         EQU 1              ; BYTE  - character (full 0-255 range)
+UR_DOC_LINE     EQU 2              ; WORD  - document line of edit
+UR_DOC_COL      EQU 4              ; WORD  - document column of edit
+UR_CUR_LINE     EQU 6              ; WORD  - cursor line to restore on undo
+UR_CUR_COL      EQU 8              ; WORD  - cursor col to restore on undo
+
+; Compile-time verification
+ASSERT UR_SIZE, 10
+ASSERT UNDO_MAX_RECORDS
+PRINT "UNDO_MAX_RECORDS = ", UNDO_MAX_RECORDS
+

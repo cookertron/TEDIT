@@ -682,6 +682,8 @@ delete_at PROC
     JC      .da_done
 
     MOV     BYTE [dirty], 1
+    MOV     [undo_del_char], CL
+    MOV     BYTE [undo_del_crlf], 0
 
     ; ---- CRLF handling ----
     CMP     CL, 0Dh
@@ -713,6 +715,7 @@ delete_at PROC
     ; Delete the LF (rnd_pi/rnd_off already correct)
     CALL    delete_byte
     MOV     BYTE [meta_dirty], 1
+    MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
 .da_deleted_lf:
@@ -743,6 +746,7 @@ delete_at PROC
     MOV     [rnd_off], DX
     CALL    delete_byte
     MOV     BYTE [meta_dirty], 1
+    MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
 .da_lf_same_piece:
@@ -760,6 +764,7 @@ delete_at PROC
     DEC     WORD [rnd_off]
     CALL    delete_byte
     MOV     BYTE [meta_dirty], 1
+    MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
 .da_done:

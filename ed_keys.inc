@@ -74,8 +74,69 @@ tui_ed_handle_key PROC
 ; Insert printable character
 ; ============================================================
 .do_char:
+    ; ---- Save pre-cursor for undo ----
+    PUSH    AX
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+    POP     AX
+
     CALL    insert_char
-    ; insert_char handles: dirty, cur_col, scroll_to_cursor, FW_DIRTY
+
+    ; ---- Check if insert succeeded (cur_col must have advanced) ----
+    PUSH    AX
+    MOV     AX, [cur_col]
+    CMP     AX, [undo_pre_col]
+    POP     AX
+    JE      .do_char_skip               ; insert failed — skip recording
+
+    ; ---- Determine group flag ----
+    PUSH    AX                          ; save original char in AL
+    MOV     AL, UR_INS_CHAR
+    CMP     BYTE [undo_group_active], 0
+    JE      .no_group
+    PUSH    BX
+    MOV     BX, [undo_pre_line]
+    CMP     BX, [undo_group_line]
+    JNE     .no_group_pop
+    MOV     BX, [undo_group_col]
+    INC     BX
+    CMP     BX, [undo_pre_col]
+    JNE     .no_group_pop
+    OR      AL, URF_GROUP_CONT
+    POP     BX
+    JMP     .group_done
+.no_group_pop:
+    POP     BX
+.no_group:
+.group_done:
+    MOV     CL, AL                      ; CL = type byte with flag
+    POP     AX                          ; AL = original char
+
+    ; ---- Record undo entry ----
+    PUSH    AX
+    PUSH    SI
+    MOV     AH, AL                      ; AH = char
+    MOV     AL, CL                      ; AL = type (with possible group flag)
+    MOV     BX, [undo_pre_line]
+    MOV     CX, [undo_pre_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+    POP     SI
+    POP     AX
+
+    ; ---- Update group tracking ----
+    MOV     BYTE [undo_group_active], 1
+    PUSH    AX
+    MOV     AX, [undo_pre_line]
+    MOV     [undo_group_line], AX
+    MOV     AX, [undo_pre_col]
+    MOV     [undo_group_col], AX
+    POP     AX
+
+.do_char_skip:
     CLC
     RET
 
@@ -83,13 +144,44 @@ tui_ed_handle_key PROC
 ; Enter — insert CR+LF, move to start of next line
 ; ============================================================
 .do_enter:
+    ; ---- Save pre-cursor for undo ----
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+
+    ; ---- Save add_used to detect failure ----
+    MOV     AX, [add_used]
+    PUSH    AX
+
     CALL    insert_crlf
+
+    ; ---- Check if insert succeeded ----
+    POP     AX
+    CMP     AX, [add_used]
+    JE      .enter_skip                 ; unchanged -> insert failed
+
     INC     WORD [cur_line]
     MOV     WORD [cur_col], 0
     CALL    scroll_to_cursor
     MOV     BYTE [meta_dirty], 1
     MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    ; ---- Record undo entry ----
+    PUSH    SI
+    MOV     AL, UR_INS_CRLF
+    MOV     AH, 0
+    MOV     BX, [undo_pre_line]
+    MOV     CX, [undo_pre_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+    POP     SI
+
+.enter_skip:
     CLC
     RET
 
@@ -98,6 +190,14 @@ tui_ed_handle_key PROC
 ; ============================================================
 .do_bksp:
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+
+    ; ---- Save pre-cursor for undo (before any adjustment) ----
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
     ; If at col 0: merge with previous line
     MOV     AX, [cur_col]
     TEST    AX, AX
@@ -112,9 +212,42 @@ tui_ed_handle_key PROC
 .bksp_col:
     DEC     WORD [cur_col]
 .bksp_do:
+    MOV     BYTE [undo_del_crlf], 0FFh     ; sentinel: no delete yet
     CALL    delete_at
     CALL    scroll_to_cursor
     MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    ; ---- Record undo entry (only if delete succeeded) ----
+    CMP     BYTE [undo_del_crlf], 0FFh
+    JE      .bksp_done                      ; delete_at failed — skip
+
+    PUSH    SI
+    CMP     BYTE [undo_del_crlf], 0
+    JNE     .bksp_rec_crlf
+
+    ; Single character deleted
+    MOV     AL, UR_DEL_CHAR
+    MOV     AH, [undo_del_char]
+    MOV     BX, [cur_line]
+    MOV     CX, [cur_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+    JMP     .bksp_rec_done
+
+.bksp_rec_crlf:
+    ; CRLF pair deleted (line merge)
+    MOV     AL, UR_DEL_CRLF
+    MOV     AH, 0
+    MOV     BX, [cur_line]
+    MOV     CX, [cur_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+
+.bksp_rec_done:
+    POP     SI
+
 .bksp_done:
     CLC
     RET
@@ -124,6 +257,7 @@ tui_ed_handle_key PROC
 ; ============================================================
 .do_save:
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
     CALL    menu_save_handler
     CLC
     RET
@@ -137,14 +271,14 @@ tui_ed_handle_key PROC
     ; fall through to .do_undo
 
 .do_undo:
-    CALL    menu_edit_stub
-    MOV     BYTE [fw_state + FW_DIRTY], 1
+    MOV     BYTE [undo_group_active], 0
+    CALL    undo_execute
     CLC
     RET
 
 .do_redo:
-    CALL    menu_edit_stub
-    MOV     BYTE [fw_state + FW_DIRTY], 1
+    MOV     BYTE [undo_group_active], 0
+    CALL    redo_execute
     CLC
     RET
 
@@ -222,9 +356,50 @@ tui_ed_handle_key PROC
 ; ============================================================
 .do_del:
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+
+    ; ---- Save pre-cursor for undo ----
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
+    MOV     BYTE [undo_del_crlf], 0FFh     ; sentinel: no delete yet
     CALL    delete_at
     CALL    scroll_to_cursor
     MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    ; ---- Record undo entry (only if delete succeeded) ----
+    CMP     BYTE [undo_del_crlf], 0FFh
+    JE      .del_rec_done                   ; delete_at failed — skip
+
+    PUSH    SI
+    CMP     BYTE [undo_del_crlf], 0
+    JNE     .del_rec_crlf
+
+    ; Single character deleted
+    MOV     AL, UR_DEL_CHAR
+    MOV     AH, [undo_del_char]
+    MOV     BX, [undo_pre_line]
+    MOV     CX, [undo_pre_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+    JMP     .del_rec_done2
+
+.del_rec_crlf:
+    MOV     AL, UR_DEL_CRLF
+    MOV     AH, 0
+    MOV     BX, [undo_pre_line]
+    MOV     CX, [undo_pre_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+
+.del_rec_done2:
+    POP     SI
+
+.del_rec_done:
     CLC
     RET
 
@@ -372,6 +547,7 @@ tui_ed_handle_key PROC
 
 .cursor_moved:
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
     CALL    scroll_to_cursor
     MOV     BYTE [fw_state + FW_DIRTY], 1
 

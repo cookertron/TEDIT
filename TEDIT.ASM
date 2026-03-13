@@ -51,6 +51,12 @@ INCLUDE ed_core.inc
 INCLUDE ed_edit.inc
 
 ; ============================================================
+; Editor Undo/Redo Buffer
+; ============================================================
+
+INCLUDE ed_undo.inc
+
+; ============================================================
 ; Editor File Load/Reset Helpers
 ; ============================================================
 
@@ -152,13 +158,13 @@ m_file_entries:
 
 m_edit_entries:
     ; Undo — hotidx=0, hotkey='U'
-    DW m_str_undo, menu_edit_stub
+    DW m_str_undo, menu_undo_handler
     DB 0, 'U'
     DW m_str_acc_cz
     DB 0, 0
 
     ; Redo — hotidx=0, hotkey='R'
-    DW m_str_redo, menu_edit_stub
+    DW m_str_redo, menu_redo_handler
     DB 0, 'R'
     DW m_str_acc_csz
     DB 0, 0
@@ -309,6 +315,8 @@ menu_quit_handler:
     CMP     BYTE [filename], 0
     JE      .quit_save_as
     CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
     JMP     .quit_now
 
 .quit_save_as:
@@ -322,6 +330,8 @@ menu_quit_handler:
     CMP     BYTE [filename], 0
     JE      .quit_done
     CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
 
 .quit_now:
     MOV     BYTE [fw_state + FW_RUNNING], 0
@@ -400,6 +410,8 @@ menu_save_handler:
 
     ; ---- Direct save ----
     CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
     MOV     BYTE [fw_state + FW_DIRTY], 1
     JMP     .save_done
 
@@ -419,6 +431,8 @@ menu_save_handler:
 
     ; Save to the new filename
     CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
 .save_done:
@@ -426,6 +440,16 @@ menu_save_handler:
     POP     BX
     POP     DI
     POP     SI
+    RET
+
+menu_undo_handler:
+    MOV     BYTE [undo_group_active], 0
+    CALL    undo_execute
+    RET
+
+menu_redo_handler:
+    MOV     BYTE [undo_group_active], 0
+    CALL    redo_execute
     RET
 
 menu_edit_stub:
@@ -494,6 +518,17 @@ main:
     JC      .err_nomem
 
 .start_tui:
+    ; ---- Allocate undo buffer (if not already allocated) ----
+    CMP     WORD [undo_seg], 0
+    JNE     .undo_ready
+    MOV     BX, UNDO_SEG_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .err_nomem
+    MOV     [undo_seg], AX
+.undo_ready:
+    CALL    undo_init
+
     ; ---- Initialize editor state ----
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
@@ -516,6 +551,14 @@ main:
 
     ; ---- Cleanup and exit ----
     CALL    free_all
+    ; Free undo buffer (persistent — not freed by free_all)
+    MOV     AX, [undo_seg]
+    TEST    AX, AX
+    JZ      .exit
+    MOV     ES, AX
+    MOV     AH, 49h
+    INT     21h
+.exit:
     INT     20h
 
 .err_nofile:
@@ -593,6 +636,22 @@ wrap_retry:     RESB 1          ; scroll-adjust retry counter (wrap mode)
 _row_to_line:   RESW ED_TEXT_ROWS ; screen row → logical line mapping (wrap mouse)
 total_vis_lines: RESW 1          ; total visual lines (wrap mode status bar)
 cur_vis_line:   RESW 1           ; visual line at start of cur_line (wrap mode)
+
+; ---- Undo / Redo state ----
+undo_seg:       RESW 1          ; segment of undo buffer (DOS alloc)
+undo_pos:       RESW 1          ; write cursor - index of next record to write
+undo_count:     RESW 1          ; total valid records in buffer
+undo_max:       RESW 1          ; capacity (records that fit in segment)
+undo_recording: RESB 1          ; 1 = record edits, 0 = suppress during undo/redo
+undo_save_pos:  RESW 1          ; undo_pos at last save (Phase 5 dirty tracking)
+undo_pre_line:  RESW 1          ; scratch: cursor line before current edit
+undo_pre_col:   RESW 1          ; scratch: cursor col before current edit
+undo_del_char:  RESB 1          ; scratch: char deleted by last delete_at
+undo_del_crlf:  RESB 1          ; scratch: 1 if CRLF pair was deleted, 0FFh=no delete
+undo_group_active: RESB 1      ; 1 if last recorded op was INS_CHAR
+undo_group_line:   RESW 1      ; doc_line of last INS_CHAR
+undo_group_col:    RESW 1      ; doc_col of last INS_CHAR
+undo_last_type:    RESB 1      ; scratch: raw UR_TYPE of record being processed
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000
