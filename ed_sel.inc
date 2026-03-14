@@ -1,0 +1,214 @@
+; ============================================================
+; ed_sel.inc — Selection Helper Procedures
+;
+; Depends on: ed_core.inc (cur_line, cur_col BSS variables),
+;             TUI framework (fw_state, FW_DIRTY)
+; Must come before: ed_draw.inc, ed_keys.inc, ed_mouse.inc
+; ============================================================
+
+; ============================================================
+; sel_clear — Clear any active selection
+;
+; If sel_active is 0: immediate RET, no side effects.
+; If sel_active is 1: zeros it and requests redraw.
+; Preserves ALL registers.
+; ============================================================
+
+sel_clear PROC
+    CMP     BYTE [sel_active], 0
+    JE      .done
+    MOV     BYTE [sel_active], 0
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+.done:
+    RET
+sel_clear ENDP
+
+; ============================================================
+; sel_start_or_extend — Begin or extend a selection
+;
+; If sel_active == 0: snapshots (cur_line, cur_col) into anchor,
+;                     sets active.
+; If sel_active == 1: no-op (anchor stays where it was).
+; Preserves all registers except flags.
+; ============================================================
+
+sel_start_or_extend PROC
+    CMP     BYTE [sel_active], 0
+    JNE     .done
+    PUSH    AX
+    MOV     AX, [cur_line]
+    MOV     [sel_anchor_line], AX
+    MOV     AX, [cur_col]
+    MOV     [sel_anchor_col], AX
+    MOV     BYTE [sel_active], 1
+    POP     AX
+.done:
+    RET
+sel_start_or_extend ENDP
+
+; ============================================================
+; sel_normalize — Return selection range in document order
+;
+; Outputs: BX=start_line, CX=start_col, DX=end_line, SI=end_col
+; Start is always <= end in document order.
+; Caller MUST verify sel_active == 1 before calling.
+; Clobbers: BX, CX, DX, SI (all outputs). AX preserved.
+; ============================================================
+
+sel_normalize PROC
+    MOV     BX, [sel_anchor_line]
+    MOV     CX, [sel_anchor_col]
+    MOV     DX, [cur_line]
+    MOV     SI, [cur_col]
+    CMP     BX, DX
+    JB      .ordered
+    JA      .swap
+    CMP     CX, SI
+    JBE     .ordered
+.swap:
+    XCHG    BX, DX
+    XCHG    CX, SI
+.ordered:
+    RET
+sel_normalize ENDP
+
+; ============================================================
+; sel_delete — Delete the selected range
+;
+; Walks backward from selection end to start, calling delete_at
+; for each character. Each deletion is recorded as a grouped
+; undo record (first record plain, subsequent with URF_GROUP_CONT).
+;
+; If no selection active: returns CF=1 (caller proceeds normally).
+; If collapsed selection:  clears selection, returns CF=1.
+; If selection deleted:    returns CF=0, cursor at sel start.
+; Preserves: AX, BX, CX, DX, SI, BP, DI.
+; ============================================================
+
+sel_delete PROC
+    CMP     BYTE [sel_active], 0
+    JE      .sd_nothing
+
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+    PUSH    SI
+    PUSH    BP
+
+    ; ---- Get normalized range ----
+    CALL    sel_normalize           ; BX=s_line, CX=s_col, DX=e_line, SI=e_col
+
+    ; ---- Check for collapsed selection (start == end) ----
+    CMP     BX, DX
+    JNE     .sd_has_range
+    CMP     CX, SI
+    JNE     .sd_has_range
+    ; Collapsed — treat as no selection
+    CALL    sel_clear
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    STC
+    RET
+
+.sd_has_range:
+    ; ---- Save stop condition ----
+    MOV     [sd_s_line], BX
+    MOV     [sd_s_col], CX
+
+    ; ---- Position cursor at selection end ----
+    MOV     [cur_line], DX
+    MOV     [cur_col], SI
+
+    ; ---- First-record flag ----
+    MOV     BYTE [sd_first], 1
+
+.sd_loop:
+    ; ---- Check stop condition ----
+    MOV     AX, [cur_line]
+    CMP     AX, [sd_s_line]
+    JB      .sd_done
+    JA      .sd_continue
+    MOV     AX, [cur_col]
+    CMP     AX, [sd_s_col]
+    JBE     .sd_done
+
+.sd_continue:
+    ; ---- Save pre-position (before backward move) ----
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
+    ; ---- Move cursor backward by one position ----
+    CMP     WORD [cur_col], 0
+    JE      .sd_prev_line
+    DEC     WORD [cur_col]
+    JMP     .sd_do_del
+
+.sd_prev_line:
+    DEC     WORD [cur_line]
+    CALL    line_length
+    MOV     [cur_col], AX
+
+.sd_do_del:
+    MOV     BYTE [undo_del_crlf], 0FFh
+    CALL    delete_at
+
+    CMP     BYTE [undo_del_crlf], 0FFh
+    JE      .sd_done
+
+    ; ---- Build and push undo record ----
+    PUSH    SI
+
+    CMP     BYTE [undo_del_crlf], 0
+    JNE     .sd_rec_crlf
+    MOV     AL, UR_DEL_CHAR
+    MOV     AH, [undo_del_char]
+    JMP     .sd_rec_group
+.sd_rec_crlf:
+    MOV     AL, UR_DEL_CRLF
+    XOR     AH, AH
+
+.sd_rec_group:
+    CMP     BYTE [sd_first], 1
+    JE      .sd_no_group
+    OR      AL, URF_GROUP_CONT
+.sd_no_group:
+    MOV     BYTE [sd_first], 0
+
+    MOV     BX, [cur_line]
+    MOV     CX, [cur_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+
+    POP     SI
+    JMP     .sd_loop
+
+.sd_done:
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+
+    CALL    sel_clear
+    CALL    scroll_to_cursor
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [meta_dirty], 1
+
+    POP     AX              ; restore AX last (after scroll_to_cursor clobbers it)
+    CLC
+    RET
+
+.sd_nothing:
+    STC
+    RET
+sel_delete ENDP

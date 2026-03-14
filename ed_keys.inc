@@ -74,6 +74,7 @@ tui_ed_handle_key PROC
 ; Insert printable character
 ; ============================================================
 .do_char:
+    CALL    sel_delete              ; delete selection if any (preserves AX)
     ; ---- Save pre-cursor for undo ----
     PUSH    AX
     MOV     AX, [cur_line]
@@ -144,6 +145,7 @@ tui_ed_handle_key PROC
 ; Enter — insert CR+LF, move to start of next line
 ; ============================================================
 .do_enter:
+    CALL    sel_delete              ; delete selection if any
     ; ---- Save pre-cursor for undo ----
     MOV     AX, [cur_line]
     MOV     [undo_pre_line], AX
@@ -189,6 +191,8 @@ tui_ed_handle_key PROC
 ; Backspace — delete character before cursor
 ; ============================================================
 .do_bksp:
+    CALL    sel_delete
+    JNC     .bksp_done              ; selection deleted — skip normal backspace
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [undo_group_active], 0
 
@@ -316,6 +320,13 @@ tui_ed_handle_key PROC
 ; Extended key dispatch (navigation + Delete)
 ; ============================================================
 .extended:
+    ; Pre-capture anchor for Shift+nav (must be before cursor moves)
+    TEST    BYTE [_key_modifiers], 03h
+    JZ      .ext_dispatch
+    CMP     BYTE [sel_active], 0
+    JNE     .ext_dispatch
+    CALL    sel_start_or_extend
+.ext_dispatch:
     CMP     AL, KEY_UP
     JZ      .key_up
     CMP     AL, KEY_DOWN
@@ -355,6 +366,8 @@ tui_ed_handle_key PROC
 ; Delete key — delete character at cursor
 ; ============================================================
 .do_del:
+    CALL    sel_delete
+    JNC     .del_rec_done           ; selection deleted — skip normal delete
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [undo_group_active], 0
 
@@ -546,6 +559,14 @@ tui_ed_handle_key PROC
     MOV     [cur_col], AX
 
 .cursor_moved:
+    ; ---- Selection: Shift held = extend, no Shift = clear ----
+    TEST    BYTE [_key_modifiers], 03h      ; either Shift bit?
+    JNZ     .cm_shift
+    CALL    sel_clear
+    JMP     .cm_sel_done
+.cm_shift:
+    CALL    sel_start_or_extend
+.cm_sel_done:
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [undo_group_active], 0
     CALL    scroll_to_cursor

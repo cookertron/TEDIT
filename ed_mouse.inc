@@ -112,6 +112,16 @@ tui_ed_mouse_press:
     ; ---- Reset insert tracking ----
     MOV     WORD [last_ins_pi], 0FFFFh
 
+    ; ---- Clear any existing selection ----
+    CALL    sel_clear
+
+    ; ---- Save click position as potential anchor ----
+    MOV     AX, [cur_line]
+    MOV     [sel_anchor_line], AX
+    MOV     AX, [cur_col]
+    MOV     [sel_anchor_col], AX
+    ; NOTE: sel_active stays 0 — only drag activates selection
+
     ; ---- Start control drag (for continuous cursor tracking) ----
     MOV     [mouse_state + MS_PRESSED], BX
     OR      BYTE [mouse_state + MS_FLAGS], MSF_CTRL_DRAG
@@ -172,19 +182,23 @@ tui_ed_mouse_drag:
     ADD     AL, [BX + CTRL_X]
     MOV     DL, AL                  ; DL = abs_x
 
-    ; ed_row, ed_col
+    ; ---- Compute raw ed_row ----
     MOV     AL, [mouse_state + MS_ROW]
     SUB     AL, DH
-    ; Clamp ed_row: if negative (above editor), treat as 0
+
+    ; ---- Check: above editor? (negative -> unsigned >= 80h) ----
     CMP     AL, 80h
-    JB      .drag_row_not_neg
-    XOR     AL, AL
-.drag_row_not_neg:
+    JB      .drag_not_above
+    JMP     .drag_scroll_up
+
+.drag_not_above:
+    ; ---- Check: below editor? ----
     CMP     AL, ED_TEXT_ROWS
     JB      .drag_row_in_range
-    MOV     AL, ED_TEXT_ROWS
-    DEC     AL                      ; max row = 22
+    JMP     .drag_scroll_down
+
 .drag_row_in_range:
+    ; ---- In range: compute ed_col normally ----
     MOV     AH, [mouse_state + MS_COL]
     SUB     AH, DL
     CMP     AH, 80h
@@ -254,7 +268,78 @@ tui_ed_mouse_drag:
 .drag_col_ok:
     MOV     WORD [last_ins_pi], 0FFFFh
     CALL    scroll_to_cursor
+
+    ; ---- Activate selection if cursor differs from anchor ----
+    MOV     AX, [cur_line]
+    CMP     AX, [sel_anchor_line]
+    JNE     .drag_has_sel
+    MOV     AX, [cur_col]
+    CMP     AX, [sel_anchor_col]
+    JNE     .drag_has_sel
+    ; Same position as anchor — no selection
+    MOV     BYTE [sel_active], 0
+    JMP     .drag_sel_done
+.drag_has_sel:
+    MOV     BYTE [sel_active], 1
+.drag_sel_done:
     MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .drag_done
+
+; ---- Mouse above editor: scroll up ----
+.drag_scroll_up:
+    MOV     CX, [top_line]
+    TEST    CX, CX
+    JZ      .dsu_set
+    DEC     CX
+.dsu_set:
+    MOV     [cur_line], CX
+    ; Compute ed_col from mouse position
+    MOV     AL, [mouse_state + MS_COL]
+    SUB     AL, DL
+    CMP     AL, 80h
+    JB      .dsu_col_ok
+    XOR     AL, AL
+.dsu_col_ok:
+    XOR     AH, AH                  ; AX = ed_col
+    CMP     BYTE [wrap_mode], 0
+    JNE     .dsu_col_done
+    ADD     AX, [left_col]          ; non-wrap: add horizontal scroll
+.dsu_col_done:
+    JMP     .drag_col_set
+
+; ---- Mouse below editor: scroll down ----
+.drag_scroll_down:
+    CMP     BYTE [wrap_mode], 0
+    JNE     .dsd_wrap
+    ; Non-wrap: cur_line = top_line + ED_TEXT_ROWS
+    MOV     CX, [top_line]
+    ADD     CX, ED_TEXT_ROWS
+    JMP     .dsd_clamp
+.dsd_wrap:
+    ; Wrap: cur_line = _row_to_line[last_vis_row] + 1
+    MOV     BX, (ED_TEXT_ROWS - 1) * 2
+    MOV     CX, [BX + _row_to_line]
+    INC     CX
+.dsd_clamp:
+    CMP     CX, [total_lines]
+    JB      .dsd_set
+    MOV     CX, [total_lines]
+    DEC     CX
+.dsd_set:
+    MOV     [cur_line], CX
+    ; Compute ed_col from mouse position
+    MOV     AL, [mouse_state + MS_COL]
+    SUB     AL, DL
+    CMP     AL, 80h
+    JB      .dsd_col_ok
+    XOR     AL, AL
+.dsd_col_ok:
+    XOR     AH, AH                  ; AX = ed_col
+    CMP     BYTE [wrap_mode], 0
+    JNE     .dsd_col_done
+    ADD     AX, [left_col]          ; non-wrap: add horizontal scroll
+.dsd_col_done:
+    JMP     .drag_col_set
 
 .drag_done:
     POP     SI

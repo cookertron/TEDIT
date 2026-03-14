@@ -36,6 +36,7 @@ s_stat_of:   DB ' of ', 0
 s_stat_col:  DB '  Col ', 0
 s_stat_wrap: DB '  [WRAP]', 0
 s_stat_mod:  DB '  [Modified]', 0
+s_stat_sel:  DB '  [SEL]', 0
 s_stat_untitled: DB 'Untitled', 0
 
 ; ============================================================
@@ -61,6 +62,12 @@ INCLUDE ed_undo.inc
 ; ============================================================
 
 INCLUDE ed_file.inc
+
+; ============================================================
+; Editor Selection Helpers
+; ============================================================
+
+INCLUDE ed_sel.inc
 
 ; ============================================================
 ; Editor Rendering
@@ -536,6 +543,7 @@ main:
     MOV     WORD [left_col], 0
     MOV     BYTE [dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [sel_active], 0
 
     ; ---- Initialize TUI ----
     CALL    tui_init
@@ -652,6 +660,24 @@ undo_group_active: RESB 1      ; 1 if last recorded op was INS_CHAR
 undo_group_line:   RESW 1      ; doc_line of last INS_CHAR
 undo_group_col:    RESW 1      ; doc_col of last INS_CHAR
 undo_last_type:    RESB 1      ; scratch: raw UR_TYPE of record being processed
+
+; ---- Selection state ----
+sel_active:        RESB 1      ; 0 = no selection, 1 = selection active
+sel_anchor_line:   RESW 1      ; line where selection was initiated
+sel_anchor_col:    RESW 1      ; column where selection was initiated
+
+; ---- Selection rendering transients ----
+sel_s_line:        RESW 1      ; normalized start line (pre-render)
+sel_s_col:         RESW 1      ; normalized start col
+sel_e_line:        RESW 1      ; normalized end line
+sel_e_col:         RESW 1      ; normalized end col
+sel_rendering:     RESB 1      ; 1 = selection bounds valid for render
+rnd_doc_col:       RESW 1      ; document column (wrap-mode rendering)
+
+; ---- sel_delete transients ----
+sd_s_line:         RESW 1      ; sel_delete: stop line
+sd_s_col:          RESW 1      ; sel_delete: stop column
+sd_first:          RESB 1      ; sel_delete: first-record flag (1=first)
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000

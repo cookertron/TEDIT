@@ -56,6 +56,7 @@ ed_load_file PROC
     MOV     WORD [left_col], 0
     MOV     BYTE [dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [sel_active], 0
     CALL    undo_clear
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
@@ -157,6 +158,7 @@ ed_new_doc PROC
     MOV     BYTE [dirty], 0
     MOV     BYTE [meta_dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [sel_active], 0
     CALL    undo_clear
     MOV     BYTE [fw_state + FW_DIRTY], 1
 

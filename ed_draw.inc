@@ -111,6 +111,18 @@ tui_ctrl_draw_editor:
     MOV     WORD [cur_vis_row], 0FFFFh
     MOV     BYTE [wrap_retry], ED_TEXT_ROWS
 
+    ; ---- Selection pre-render setup ----
+    MOV     BYTE [sel_rendering], 0
+    CMP     BYTE [sel_active], 0
+    JE      .no_sel_setup
+    CALL    sel_normalize           ; BX=s_line, CX=s_col, DX=e_line, SI=e_col
+    MOV     [sel_s_line], BX
+    MOV     [sel_s_col], CX
+    MOV     [sel_e_line], DX
+    MOV     [sel_e_col], SI
+    MOV     BYTE [sel_rendering], 1
+.no_sel_setup:
+
 .render_restart:
     ; ---- Set up ES:DI for shadow_buf writing ----
     MOV     AX, CS
@@ -126,6 +138,7 @@ tui_ctrl_draw_editor:
     MOV     AX, [top_line]
     CALL    seek_to_line
     MOV     WORD [rnd_row], 0
+    MOV     WORD [rnd_doc_col], 0
 
     ; ---- Row loop ----
 .row_loop:
@@ -187,9 +200,38 @@ tui_ctrl_draw_editor:
     JE      .char_loop
     CMP     AL, 0Ah
     JE      .row_done_lf
+    ; ---- Per-character selection attribute ----
+    MOV     AH, ED_ATTR_NORM
+    CMP     BYTE CS:[sel_rendering], 0
+    JE      .cl_write
+    CMP     BYTE CS:[wrap_mode], 0
+    JNE     .cl_wrap_col
+    MOV     DX, CS:[left_col]
+    ADD     DX, CX
+    JMP     .cl_check
+.cl_wrap_col:
+    MOV     DX, CS:[rnd_doc_col]
+.cl_check:
+    CMP     BP, CS:[sel_s_line]
+    JB      .cl_write
+    JA      .cl_above_start
+    CMP     DX, CS:[sel_s_col]
+    JB      .cl_write
+.cl_above_start:
+    CMP     BP, CS:[sel_e_line]
+    JA      .cl_write
+    JB      .cl_sel
+    CMP     DX, CS:[sel_e_col]
+    JAE     .cl_write
+.cl_sel:
+    MOV     AH, ED_ATTR_SEL
+.cl_write:
     MOV     ES:[DI], AX
     ADD     DI, 2
     INC     CX
+    CMP     BYTE CS:[wrap_mode], 0
+    JE      .char_loop
+    INC     WORD CS:[rnd_doc_col]
     JMP     .char_loop
 
 .adv_piece:
@@ -359,6 +401,7 @@ tui_ctrl_draw_editor:
 .row_next:
     INC     WORD [rnd_row]
     INC     BP
+    MOV     WORD [rnd_doc_col], 0
     JMP     .row_loop
 
 ; ---- STATUS BAR ----
@@ -541,6 +584,12 @@ ed_draw_status_line PROC
     MOV     SI, s_stat_mod
     CALL    ed_wstr
 .no_mod:
+
+    CMP     BYTE [sel_active], 0
+    JE      .no_sel
+    MOV     SI, s_stat_sel
+    CALL    ed_wstr
+.no_sel:
 
     RET
 ed_draw_status_line ENDP
