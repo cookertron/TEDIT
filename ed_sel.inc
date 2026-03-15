@@ -73,11 +73,10 @@ sel_normalize PROC
 sel_normalize ENDP
 
 ; ============================================================
-; sel_delete — Delete the selected range
+; sel_delete — Delete the selected range (fast path)
 ;
-; Walks backward from selection end to start, calling delete_at
-; for each character. Each deletion is recorded as a grouped
-; undo record (first record plain, subsequent with URF_GROUP_CONT).
+; Attempts range deletion via range_delete_pieces (O(P)).
+; Falls back to sel_delete_legacy (O(N²)) on failure.
 ;
 ; If no selection active: returns CF=1 (caller proceeds normally).
 ; If collapsed selection:  clears selection, returns CF=1.
@@ -99,12 +98,11 @@ sel_delete PROC
     ; ---- Get normalized range ----
     CALL    sel_normalize           ; BX=s_line, CX=s_col, DX=e_line, SI=e_col
 
-    ; ---- Check for collapsed selection (start == end) ----
+    ; ---- Check for collapsed selection ----
     CMP     BX, DX
     JNE     .sd_has_range
     CMP     CX, SI
     JNE     .sd_has_range
-    ; Collapsed — treat as no selection
     CALL    sel_clear
     POP     BP
     POP     SI
@@ -116,6 +114,138 @@ sel_delete PROC
     RET
 
 .sd_has_range:
+    ; ---- Save selection endpoints and pre-cursor ----
+    MOV     [sel_s_line], BX
+    MOV     [sel_s_col], CX
+    MOV     [sel_e_line], DX
+    MOV     [sel_e_col], SI
+
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
+    ; ---- Convert start to byte offset ----
+    MOV     BX, [sel_s_line]
+    MOV     CX, [sel_s_col]
+    CALL    line_col_to_offset      ; DX:AX = start offset
+    JC      .sd_fallback
+    MOV     [rd_start_off], AX      ; save start offset (16-bit)
+
+    ; ---- Convert end to byte offset ----
+    MOV     BX, [sel_e_line]
+    MOV     CX, [sel_e_col]
+    CALL    line_col_to_offset      ; DX:AX = end offset
+    JC      .sd_fallback
+    ; AX = end offset
+
+    ; ---- Validate: start < end ----
+    MOV     DX, AX                  ; DX = end_off
+    MOV     AX, [rd_start_off]      ; AX = start_off
+    CMP     AX, DX
+    JAE     .sd_fallback
+
+    ; ---- Execute range delete ----
+    CALL    range_delete_pieces     ; AX=start_off, DX=end_off
+    JC      .sd_fallback
+
+    ; ---- Push single undo record ----
+    MOV     BX, [sel_s_line]
+    MOV     CX, [sel_s_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push_range
+
+    ; ---- Position cursor at selection start ----
+    MOV     AX, [sel_s_line]
+    MOV     [cur_line], AX
+    MOV     AX, [sel_s_col]
+    MOV     [cur_col], AX
+
+    ; ---- Clean up ----
+    CALL    sel_clear
+    CALL    scroll_to_cursor
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [meta_dirty], 1
+    MOV     BYTE [dirty], 1
+
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    CLC
+    RET
+
+.sd_fallback:
+    ; ---- Restore pre-cursor before legacy attempt ----
+    MOV     AX, [undo_pre_line]
+    MOV     [cur_line], AX
+    MOV     AX, [undo_pre_col]
+    MOV     [cur_col], AX
+
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+
+    ; ---- Fall through to legacy char-by-char deletion ----
+    JMP     sel_delete_legacy
+
+.sd_nothing:
+    STC
+    RET
+sel_delete ENDP
+
+; ============================================================
+; sel_delete_legacy — Delete the selected range (char-by-char fallback)
+;
+; Walks backward from selection end to start, calling delete_at
+; for each character. Each deletion is recorded as a grouped
+; undo record (first record plain, subsequent with URF_GROUP_CONT).
+;
+; If no selection active: returns CF=1 (caller proceeds normally).
+; If collapsed selection:  clears selection, returns CF=1.
+; If selection deleted:    returns CF=0, cursor at sel start.
+; Preserves: AX, BX, CX, DX, SI, BP, DI.
+; ============================================================
+
+sel_delete_legacy PROC
+    CMP     BYTE [sel_active], 0
+    JE      .sdl_nothing
+
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+    PUSH    SI
+    PUSH    BP
+
+    ; ---- Get normalized range ----
+    CALL    sel_normalize           ; BX=s_line, CX=s_col, DX=e_line, SI=e_col
+
+    ; ---- Check for collapsed selection (start == end) ----
+    CMP     BX, DX
+    JNE     .sdl_has_range
+    CMP     CX, SI
+    JNE     .sdl_has_range
+    ; Collapsed — treat as no selection
+    CALL    sel_clear
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    STC
+    RET
+
+.sdl_has_range:
     ; ---- Save stop condition ----
     MOV     [sd_s_line], BX
     MOV     [sd_s_col], CX
@@ -127,17 +257,17 @@ sel_delete PROC
     ; ---- First-record flag ----
     MOV     BYTE [sd_first], 1
 
-.sd_loop:
+.sdl_loop:
     ; ---- Check stop condition ----
     MOV     AX, [cur_line]
     CMP     AX, [sd_s_line]
-    JB      .sd_done
-    JA      .sd_continue
+    JB      .sdl_done
+    JA      .sdl_continue
     MOV     AX, [cur_col]
     CMP     AX, [sd_s_col]
-    JBE     .sd_done
+    JBE     .sdl_done
 
-.sd_continue:
+.sdl_continue:
     ; ---- Save pre-position (before backward move) ----
     MOV     AX, [cur_line]
     MOV     [undo_pre_line], AX
@@ -146,39 +276,39 @@ sel_delete PROC
 
     ; ---- Move cursor backward by one position ----
     CMP     WORD [cur_col], 0
-    JE      .sd_prev_line
+    JE      .sdl_prev_line
     DEC     WORD [cur_col]
-    JMP     .sd_do_del
+    JMP     .sdl_do_del
 
-.sd_prev_line:
+.sdl_prev_line:
     DEC     WORD [cur_line]
     CALL    line_length
     MOV     [cur_col], AX
 
-.sd_do_del:
+.sdl_do_del:
     MOV     BYTE [undo_del_crlf], 0FFh
     CALL    delete_at
 
     CMP     BYTE [undo_del_crlf], 0FFh
-    JE      .sd_done
+    JE      .sdl_done
 
     ; ---- Build and push undo record ----
     PUSH    SI
 
     CMP     BYTE [undo_del_crlf], 0
-    JNE     .sd_rec_crlf
+    JNE     .sdl_rec_crlf
     MOV     AL, UR_DEL_CHAR
     MOV     AH, [undo_del_char]
-    JMP     .sd_rec_group
-.sd_rec_crlf:
+    JMP     .sdl_rec_group
+.sdl_rec_crlf:
     MOV     AL, UR_DEL_CRLF
     XOR     AH, AH
 
-.sd_rec_group:
+.sdl_rec_group:
     CMP     BYTE [sd_first], 1
-    JE      .sd_no_group
+    JE      .sdl_no_group
     OR      AL, URF_GROUP_CONT
-.sd_no_group:
+.sdl_no_group:
     MOV     BYTE [sd_first], 0
 
     MOV     BX, [cur_line]
@@ -188,9 +318,9 @@ sel_delete PROC
     CALL    undo_push
 
     POP     SI
-    JMP     .sd_loop
+    JMP     .sdl_loop
 
-.sd_done:
+.sdl_done:
     POP     BP
     POP     SI
     POP     DX
@@ -208,7 +338,7 @@ sel_delete PROC
     CLC
     RET
 
-.sd_nothing:
+.sdl_nothing:
     STC
     RET
-sel_delete ENDP
+sel_delete_legacy ENDP

@@ -1,5 +1,645 @@
 # TEDIT Changelog
 
+## v0.30.0 — Range Delete Phase 5: Validation & Testing (2026-03-15)
+
+No code changes. Comprehensive validation of the Range Delete feature (Phases 1-4).
+Full results in `PHASE5_RESULTS.md`.
+
+### Performance validation
+- Select-all-delete on files from 100 to 2000 characters
+- Linear O(N) scaling confirmed: ~58 instructions per additional character
+- Baseline overhead ~165K instructions (IDLE loop + TUI rendering)
+
+### Edge case tests (9/9 pass)
+- Empty selection, single char, entire document, start/end of document
+- Delete via Backspace, type-replaces-selection, Enter-replaces-selection
+- All boundary conditions handled correctly
+
+### Undo/redo stress tests (3/3 pass)
+- Multi-level undo across multiple range deletes
+- Redo cycling (undo/redo/undo/redo)
+- Redo truncation after new edits
+
+### Multi-line selection tests (4/4 pass)
+- Mid-line to mid-line selection + delete + undo
+- Backward selection (anchor after cursor)
+- Mouse selection and delete
+
+### Wrap mode tests (2/2 pass)
+- Short lines (no wrapping triggered)
+- 90-char wrapped line: Shift+Down selects first visual row, delete removes 80 chars
+
+### Regression (3/3 pass)
+- Phase 1 (line_col_to_offset): `"executed":"OK"` — 2,899 instructions
+- Phase 2 (split_piece_at + range_delete_pieces): `"executed":"OK"` — 4,433 instructions
+- Phase 3 (UR_DEL_RANGE undo/redo): `"executed":"OK"` — 5,983 instructions
+
+---
+
+## v0.30.0 — Range Delete Phase 4: Wire into sel_delete (2026-03-15)
+
+Replaced the O(N²) character-by-character deletion in `sel_delete` with the
+Phase 1-3 range delete infrastructure. The new `sel_delete` (fast path) converts
+selection endpoints to byte offsets, calls `range_delete_pieces` for O(P)
+deletion, and pushes a single `UR_DEL_RANGE` undo record. On failure (overflow,
+too many pieces), it falls back to the original char-by-char loop renamed
+`sel_delete_legacy`.
+
+### Bug fix: ES register clobber in `range_delete_pieces`
+
+`split_piece_at` is documented as clobbering ES (sets it to `[pt_seg]`), but
+`range_delete_pieces` did not save/restore ES around its two `split_piece_at`
+calls. After the call, ES remained set to the piece table segment (e.g. 0x8E00).
+The TUI framework's screen buffer fill (`REP STOSW` at ES:DI) then wrote 4KB of
+attribute bytes into the adjacent ORIG buffer segment, destroying file content.
+
+Symptoms: loaded file content replaced with 0x17 bytes, `rebuild_meta` counted
+0 newlines, `total_lines` dropped to 1, screen displayed garbled CP437 0x17
+characters. Only affected ORIG-buffer pieces (file-loaded); ADD-buffer pieces
+(typed text) were unaffected because no adjacent ORIG allocation existed.
+
+### Changes to ed_sel.inc
+- Added `sel_delete PROC` (fast path, ~120 lines):
+  - Normalizes selection via `sel_normalize`
+  - Converts start/end to byte offsets via `line_col_to_offset`
+  - Calls `range_delete_pieces` for single-operation deletion
+  - Pushes `UR_DEL_RANGE` undo record via `undo_push_range`
+  - Positions cursor at selection start
+  - Cleanup: sel_clear, scroll_to_cursor, FW_DIRTY, last_ins_pi, undo_group_active, meta_dirty, dirty
+  - Falls back to `sel_delete_legacy` via JMP on any failure
+- Renamed existing `sel_delete` to `sel_delete_legacy`:
+  - All internal labels renamed `.sd_*` → `.sdl_*` to avoid collisions
+  - Code unchanged — serves as fallback path
+- Added `MOV BYTE [dirty], 1` to fast path cleanup (the fast path bypasses
+  `delete_at` which normally sets dirty)
+
+### Changes to ed_core.inc
+- `range_delete_pieces` step 6 (start split): wrapped `CALL split_piece_at`
+  with `PUSH ES` / `POP ES` (3 instructions added)
+- `range_delete_pieces` step 7 (end split): wrapped `CALL split_piece_at`
+  with `PUSH ES` / `POP ES` (3 instructions added)
+
+### Tests passing
+Phase 1-3 regression: 3/3 suites OK (test_phase1, test_phase2, test_phase3)
+Smoke tests: 2/2 IDLE (empty doc, file loaded)
+Integration tests: 11/11 PASS
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | Single-line select all, delete (typed) | PASS |
+| 2 | Multi-line range delete (typed) | PASS |
+| 3 | Delete then Undo (typed) | PASS |
+| 4 | Delete, Undo, Redo (typed) | PASS |
+| 5 | Mixed undo: range delete + char insert (typed) | PASS |
+| 6 | Regression: normal backspace (file loaded) | PASS |
+| 7 | Enter after selection delete (typed) | PASS |
+| 8 | Multi-line undo (typed) | PASS |
+| 9 | Multi-line undo+redo (typed) | PASS |
+| 10 | ORIG-buffer 1-char delete (file loaded) | PASS |
+| 11 | ORIG-buffer delete+undo (file loaded) | PASS |
+
+### Plan deviations
+- `ed_core.inc` modified despite plan saying "do not modify" — the ES clobber
+  bug in `range_delete_pieces` had to be fixed at the source; wrapping in
+  `sel_delete` would only mask the issue for one caller.
+- Added `dirty=1` to fast path cleanup — plan omission since `range_delete_pieces`
+  bypasses `delete_at` which normally sets the dirty flag.
+
+---
+
+## v0.29.0 — Range Delete Phase 3: UR_DEL_RANGE Undo/Redo (2026-03-15)
+
+Added undo/redo support for range deletions. A new `UR_DEL_RANGE` record type
+captures a range deletion as a single 10-byte undo record. On undo, the saved
+piece descriptors are re-inserted into the piece table via `pt_insert`. On redo,
+the pieces are saved back to `rd_save_buf` and removed again. A LIFO stack
+(`rd_save_used`) tracks multiple outstanding range deletes, flushed on
+`undo_discard_half` for safe degradation.
+
+### Changes to ed_const.inc
+- Added `UR_DEL_RANGE EQU 4` — range deletion record type
+
+### Changes to ed_core.inc
+- Modified `range_delete_pieces`: save destination changed from `rd_save_buf`
+  (fixed offset 0) to `rd_save_buf + rd_save_used * PT_DESC_SIZE` (LIFO stack
+  top). Required for multiple outstanding range deletes to coexist in the save
+  buffer. 4 instructions added (MOV/MOV/MUL/MOV+ADD replacing MOV).
+
+### Changes to ed_undo.inc
+- `undo_init`: added `MOV WORD [rd_save_used], 0`
+- `undo_clear`: added `MOV WORD [rd_save_used], 0`
+- `undo_discard_half`: added `MOV WORD [rd_save_used], 0` in `.done` — flushes
+  save buffer when oldest records are discarded
+- `undo_execute`: added `UR_DEL_RANGE` dispatch and `.u_del_range` handler
+  - Cleans 3 stacked values, checks save buffer validity
+  - Positions cursor via `cursor_to_offset`, re-inserts pieces via `pt_insert`
+  - Pops descriptors from save stack, sets `meta_dirty = 1`
+- `redo_execute`: added `UR_DEL_RANGE` dispatch and `.r_del_range` handler
+  - Saves piece count before `cursor_to_offset` (fixes plan bug: ES clobbered)
+  - Copies piece descriptors back to `rd_save_buf`, removes via `pt_remove`
+  - Capacity check: skips save if buffer full (graceful degradation)
+- Added `undo_push_range PROC` — convenience wrapper for pushing `UR_DEL_RANGE`
+  records. Input: BX=start_line, CX=start_col, DX=pre_cursor_line,
+  SI=pre_cursor_col; reads `[rd_save_count]`. Clobbers AX,BX,CX,DX,SI,DI.
+
+### Changes to TEDIT.ASM
+- Added `rd_save_used: RESW 1` in transient BSS section after `rd_same_piece`
+
+### Changes to test_phase2.asm
+- Added `rd_save_used: RESW 1` to BSS — required by `range_delete_pieces` change
+
+### New files
+- `test_phase3.asm` — standalone unit test harness (3 test cases)
+- `PHASE3_RESULTS.md` — test results summary
+
+### UR_DEL_RANGE record layout
+```
+Byte 0 (UR_TYPE):     UR_DEL_RANGE (4), may include URF_GROUP_CONT
+Byte 1 (UR_CHAR):     Piece count (1-102)
+Bytes 2-3 (UR_DOC_LINE): Delete start line (re-insertion point for undo)
+Bytes 4-5 (UR_DOC_COL):  Delete start column
+Bytes 6-7 (UR_CUR_LINE): Pre-delete cursor line (undo restore)
+Bytes 8-9 (UR_CUR_COL):  Pre-delete cursor column (undo restore)
+```
+
+### Plan deviations
+- `range_delete_pieces` modified despite plan saying "do not modify" — the LIFO
+  stack design requires writing at the correct offset; without it, a second
+  range delete overwrites the first's saved descriptors.
+- Redo handler: plan read `ES:[BX + UR_CHAR]` after `cursor_to_offset` which
+  clobbers ES. Fixed by saving piece count before the call.
+
+### agent86 observations
+- Unresolved symbol `rd_save_used` in test_phase2.asm (before fix) compiled
+  without error. May be an assembler bug — unresolved forward references should
+  produce a compile error.
+
+### Test results
+- 3/3 Phase 3 unit tests passing (test_phase3.asm --build_trace):
+  - Test 1: Delete [7,14) + undo → 21 bytes restored, 4 lines
+  - Test 2: Redo → 14 bytes, 3 lines
+  - Test 3: Two range deletes [0,7) + [7,12) then undo both → 21 bytes, 4 lines
+- 5/5 Phase 2 regression passing
+- 10/10 Phase 1 regression passing
+- TEDIT smoke test (with file): compiled OK, executed IDLE
+- TEDIT smoke test (empty): compiled OK, executed IDLE
+
+## v0.28.0 — Range Delete Phase 2: split_piece_at + range_delete_pieces (2026-03-15)
+
+Added core piece table range delete procedures to `ed_core.inc`. Given two byte
+offsets `[start_off, end_off)`, `range_delete_pieces` splits pieces at both
+boundaries, saves the removed descriptors for future undo restoration, and
+removes the pieces in reverse order.
+
+### Changes to ed_const.inc
+- Added `RD_MAX_PIECES EQU 102` — max pieces saveable in one range delete
+
+### Changes to ed_core.inc
+- Added `split_piece_at PROC` after `line_col_to_offset ENDP`, before `free_all:`
+  - Input: BX = piece index, SI = split offset within piece
+  - Splits piece into left (length = SI) and right (remainder) at BX+1
+  - Preserves BP, DI; clobbers AX, BX, CX, DX, SI, ES
+  - Extracted from inline split logic in insert_char / delete_byte
+- Added `range_delete_pieces PROC` after `split_piece_at ENDP`
+  - Input: AX = start_offset (inclusive), DX = end_offset (exclusive)
+  - 10-step algorithm: validate → walk to start → walk to end → detect
+    same-piece → bounds check → split at start → split at end → save
+    descriptors → remove pieces (reverse order) → set meta_dirty
+  - Critical same-piece fix: after start split, adjusts `rd_end_split`
+    by subtracting `rd_start_split` to prevent over-deletion
+  - Outputs: rd_save_buf[] (saved descriptors), rd_save_count, rd_save_start_pi
+  - Preserves BP, DI; clobbers AX, BX, CX, DX, SI
+
+### Changes to TEDIT.ASM
+- Added 11 BSS variables in transient section after `lco_off_hi`:
+  `rd_save_buf` (1020 bytes), `rd_save_count`, `rd_save_start_pi`,
+  `rd_start_off`, `rd_end_off`, `rd_start_pi`, `rd_end_pi`,
+  `rd_start_split`, `rd_end_split`, `rd_end_plen`, `rd_same_piece`
+
+### New files
+- `test_phase2.asm` — standalone unit test harness (5 test cases)
+- `PHASE2_PLAN_REVISED.md` — implementation plan (with same-piece fix)
+- `PHASE2_RESULTS.md` — test results summary
+
+### Test results
+- 5/5 unit tests passing (test_phase2.asm --build_trace):
+  - Test 1: Delete middle line [7,14) — 14 bytes remaining, 3 lines
+  - Test 2: Delete first line [0,7) — 14 bytes remaining, 3 lines
+  - Test 3: Same-piece critical [2,9) — 14 bytes remaining, 3 lines
+  - Test 4: Delete entire document [0,21) — 0 bytes, pt_count=0
+  - Test 5: Delete last chars [19,21) — 19 bytes remaining, 4 lines
+- TEDIT smoke test: compiled OK (46,450 bytes), executed IDLE — no regressions
+
+### Plan errata
+- PHASE2_PLAN_REVISED.md Test 3 expected 12 bytes remaining for [2,9); correct
+  value is 14 (exclusive end means 7 bytes deleted, not 9). Corrected in test.
+
+## v0.27.0 — Range Delete Phase 1: line_col_to_offset (2026-03-15)
+
+Added `line_col_to_offset` utility procedure to `ed_core.inc` — converts a
+`(line, col)` cursor position to a linear byte offset in the logical document.
+This is the foundation for the range delete operation in later phases.
+
+### Changes to ed_core.inc
+- Added `line_col_to_offset PROC` (106 lines) after `peek_at_cursor ENDP`,
+  before `free_all:`
+- Algorithm: seek_to_line → sum piece lengths before rnd_pi (32-bit) → add
+  rnd_off → walk visible characters up to target column (stops at CR/LF)
+- Preserves BX, BP, DI; clobbers AX, CX, DX, SI, rnd_pi, rnd_off
+- Returns DX:AX = byte offset, CF=0 success / CF=1 overflow (DX != 0)
+
+### Changes to TEDIT.ASM
+- Added 2 BSS variables: `lco_off_lo`, `lco_off_hi` (32-bit offset
+  accumulator scratch) in transient section after `cur_vis_line`
+
+### New files
+- `test_phase1.asm` — standalone unit test harness (ed_const.inc + ed_core.inc only)
+- `test_rd.txt` — 21-byte test data file (4 lines, CRLF endings)
+- `PHASE1_PLAN.md` — implementation plan
+- `PHASE1_RESULTS.md` — test results summary
+
+### Test results
+- 10/10 unit tests passing (test_phase1.asm --build_trace)
+- TEDIT smoke test: compiled OK (44799 bytes), executed IDLE — no regressions
+
+## v0.26.0 — Mouse Drag Auto-Scroll (2026-03-14)
+
+Dragging a mouse selection past the top or bottom of the editor text
+area now auto-scrolls the document in that direction. Previously the
+cursor clamped to the first/last visible row and the document stayed
+still.
+
+### Changes to ed_mouse.inc
+- Replaced row-clamping block in `tui_ed_mouse_drag` with above/below
+  detection that branches to `.drag_scroll_up` / `.drag_scroll_down`
+- **Scroll up** (mouse above editor): sets `cur_line = top_line - 1`
+  (clamped to 0). `scroll_to_cursor` scrolls the viewport up. Each
+  subsequent frame repeats if mouse stays above.
+- **Scroll down** (mouse below editor): sets `cur_line = top_line +
+  ED_TEXT_ROWS` (non-wrap) or `_row_to_line[last_row] + 1` (wrap),
+  clamped to `total_lines - 1`. `scroll_to_cursor` scrolls down.
+- **In-range path**: completely untouched — existing coordinate mapping
+  for both wrap and non-wrap modes.
+- Added `JMP .drag_done` after `.drag_sel_done` to prevent fall-through
+  into the new scroll handler blocks.
+- Column computed from mouse X in scroll paths; `left_col` added in
+  non-wrap mode. Column clamped via existing `.drag_col_set` path.
+
+### Test results
+- 16/16 drag-scroll tests passing (test_drag_scroll.sh)
+- 22/22 Phase 1 regression clean
+- Phase 2-4 regressions clean (pre-existing stale tests unrelated)
+
+## v0.25.0 — Selection Phase 5: Delete + Undo Grouping (2026-03-14)
+
+Selected text can now be deleted. Backspace and Delete on a selection
+remove the selected text. Typing a character or pressing Enter deletes
+the selection first, then inserts. All selection deletions are
+undoable as a single Ctrl+Z operation via grouped undo records.
+
+Also fixes a pre-existing selection anchor off-by-one bug where
+N Shift+arrow presses selected N-1 characters instead of N.
+
+### Changes to ed_sel.inc
+- sel_delete: replaced stub with real implementation. Backward walk
+  from selection end to start, calling delete_at per character.
+  Each deletion recorded as UR_DEL_CHAR or UR_DEL_CRLF with
+  URF_GROUP_CONT flag (first record plain, rest flagged). Handles
+  collapsed selections (start==end) by clearing and returning CF=1.
+  POP AX deferred after housekeeping calls (sel_clear,
+  scroll_to_cursor, FW_DIRTY, meta_dirty) so that scroll_to_cursor
+  does not clobber the caller's AX (critical for .do_char where AX
+  holds the typed character).
+
+### Changes to ed_keys.inc
+- .do_char: CALL sel_clear → CALL sel_delete (preserves AX)
+- .do_enter: CALL sel_clear → CALL sel_delete
+- .do_bksp: CALL sel_clear → CALL sel_delete + JNC .bksp_done
+- .do_del: CALL sel_clear → CALL sel_delete + JNC .del_rec_done
+- .extended: added anchor pre-capture — calls sel_start_or_extend
+  BEFORE any navigation key moves the cursor (5 lines). This fixes
+  the off-by-one bug where the anchor was captured at the post-move
+  position. Without this fix, Shift+Right from col 0 set anchor to
+  col 1 instead of col 0, causing all selection ranges to be 1
+  character short.
+
+### Changes to TEDIT.ASM
+- Added 3 BSS transient variables: sd_s_line (RESW), sd_s_col (RESW),
+  sd_first (RESB) — 5 bytes for sel_delete loop state.
+
+### Known limitation
+- Type-replaces-selection requires 2× Ctrl+Z (once for insert, once
+  for deletion group). Single-undo deferred to post-POC.
+
+### No changes
+ed_draw.inc, ed_mouse.inc, ed_const.inc, ed_core.inc, ed_edit.inc,
+ed_undo.inc, ed_file.inc, TUI framework.
+
+## v0.24.0 — Selection Phase 4: Mouse Selection (2026-03-14)
+
+Click-drag in the editor now creates a text selection with real-time
+visual highlighting. Clicking without dragging clears any existing
+selection (including keyboard selections from Phase 2).
+
+### Changes to ed_mouse.inc
+- tui_ed_mouse_press: added CALL sel_clear to dismiss any prior
+  selection, then saves (cur_line, cur_col) to sel_anchor_line/col
+  as a potential selection starting point. sel_active stays 0 until
+  drag moves cursor away from anchor.
+- tui_ed_mouse_drag: added selection activation logic after cursor
+  position is finalized. If (cur_line, cur_col) differs from anchor,
+  sel_active = 1 (highlighting appears). If cursor returns to anchor
+  position, sel_active = 0 (highlighting disappears).
+
+### Behavior
+- Click without drag: cursor positions, selection clears
+- Click + drag: selection from click point to drag position
+- Release: selection persists (can be extended with Shift+arrow)
+- Click after drag-select: previous selection clears
+- Keyboard select → click: keyboard selection clears
+- Drag back to start: selection deactivates
+
+### No changes
+ed_sel.inc, ed_draw.inc, ed_keys.inc, ed_const.inc, ed_core.inc,
+ed_edit.inc, ed_undo.inc, ed_file.inc, TEDIT.ASM, TUI framework.
+
+## v0.23.0 — Selection Phase 3: Selection Rendering (2026-03-13)
+
+Selected text now appears with a distinct visual highlight (blue on
+light gray, attribute 71h). The highlight covers all text characters
+between the selection anchor and cursor in document order.
+
+### Changes to ed_draw.inc
+- Pre-render: normalizes selection bounds into BSS transient vars
+  (sel_s_line, sel_s_col, sel_e_line, sel_e_col, sel_rendering)
+  once per draw call, before the render_restart loop
+- char_loop: per-character attribute check replaces the fixed
+  MOV ES:[DI], AX with a 17-instruction selection range test.
+  Fast path (no selection): 3 instructions (MOV AH, CMP, JE).
+  Uses free registers BX and DX — zero PUSH/POP overhead.
+- Wrap mode: added rnd_doc_col tracking — increments per visible
+  character, resets on new logical line. Used for selection column
+  comparison in wrap mode instead of left_col + CX.
+- row_next: resets rnd_doc_col to 0 on logical line advance
+
+### Changes to TEDIT.ASM
+- Added 6 BSS transient variables (11 bytes): sel_s_line, sel_s_col,
+  sel_e_line, sel_e_col, sel_rendering, rnd_doc_col
+
+### Visual behavior
+- Non-selected text: bright white on blue (1Fh) — unchanged
+- Selected text: blue on light gray (71h)
+- Cursor on selected text: visible (17h nibble-swap of 71h)
+- Padding spaces after line content: NOT highlighted (matches Notepad)
+- [SEL] status bar indicator: unchanged from Phase 2
+
+### No changes
+ed_sel.inc, ed_const.inc, ed_core.inc, ed_edit.inc, ed_undo.inc,
+ed_file.inc, ed_keys.inc, ed_mouse.inc, TUI framework files.
+
+## v0.22.0 — Selection Phase 2: Keyboard Selection (2026-03-13)
+
+Shift+arrow keys now create and extend text selections. The selection
+anchor is set at the cursor's position when Shift+nav first activates,
+and the cursor moves normally as subsequent Shift+nav keys are pressed.
+Releasing Shift and pressing a navigation key clears the selection.
+
+### Changes to ed_keys.inc
+- Replaced `CALL sel_clear` in `.cursor_moved` with Shift-conditional
+  logic: if Shift held (`_key_modifiers` bits 0+1) → `CALL sel_start_or_extend`,
+  else → `CALL sel_clear`. Zero changes to any navigation key handler.
+
+### Changes to ed_draw.inc
+- Added `[SEL]` indicator to status bar, shown when `sel_active == 1`.
+  Appears after `[Modified]` when both are active.
+
+### Changes to TEDIT.ASM
+- Added `s_stat_sel` string constant: `'  [SEL]'`
+
+### Keys With Shift Selection Support
+Up, Down, Left, Right, Home, End, PgUp, PgDn — all modes including
+wrap mode. No-op cases (e.g. Shift+Up at line 0) correctly produce
+no selection.
+
+### No changes
+ed_sel.inc, ed_const.inc, ed_core.inc, ed_edit.inc, ed_undo.inc,
+ed_file.inc, ed_mouse.inc, TUI framework files.
+
+## v0.21.0 — Selection Phase 1: Selection State Infrastructure (2026-03-13)
+
+Zero-visible-change infrastructure phase. Establishes the selection data model, helper procedures, and integration hooks that all subsequent selection phases depend on.
+
+### New Files
+- `ed_sel.inc` — 4 selection helper procedures:
+  - `sel_clear`: clears selection and requests redraw (no-op if already inactive)
+  - `sel_start_or_extend`: snapshots cursor to anchor on first call, no-op on subsequent calls
+  - `sel_normalize`: returns selection range in document order (BX/CX=start, DX/SI=end)
+  - `sel_delete`: Phase 1 stub — clears selection, returns CF=0 (Phase 5 replaces with real deletion)
+
+### Changes to ed_const.inc
+- Added `ED_ATTR_SEL EQU 71h` — blue on light gray (selected text highlight, inverts ED_ATTR_NORM 1Fh)
+
+### Changes to TEDIT.ASM
+- Added `INCLUDE ed_sel.inc` between ed_file.inc and ed_draw.inc
+- Added `MOV BYTE [sel_active], 0` in `.start_tui` initialization
+- Added 3 BSS variables in transient section: `sel_active` (BYTE), `sel_anchor_line` (WORD), `sel_anchor_col` (WORD) — 5 bytes total, outside DOC_CTX
+
+### Changes to ed_keys.inc
+- Added `CALL sel_clear` at 5 integration points (first instruction of each handler):
+  - `.do_char` — printable character insertion
+  - `.do_enter` — Enter key
+  - `.do_bksp` — Backspace (after Ctrl+H disambiguation)
+  - `.do_del` — Delete key
+  - `.cursor_moved` — shared exit for all navigation keys (Up/Down/Left/Right/Home/End/PgUp/PgDn + wrap variants)
+
+### Changes to ed_file.inc
+- Added `MOV BYTE [sel_active], 0` in `ed_load_file` (after state reset, before `undo_clear`)
+- Added `MOV BYTE [sel_active], 0` in `ed_new_doc` (after state reset, before `undo_clear`)
+
+### Tests Passing (22/22)
+**A: Startup** — A1: file load, A2: empty doc
+**B: Typing** — B1: type on file, B2: type on empty
+**C: Enter** — C1: split line, C2: at start of file
+**D: Backspace** — D1: delete char, D2: merge lines
+**E: Delete** — E1: remove char, E2: merge lines
+**F: Navigation** — F1: right arrow, F2: down, F3: up at top, F4: end, F4b: home, F5: pgdn
+**G: Undo/Redo** — G1: Ctrl+Z, G2: Ctrl+Shift+Z
+**H: Save** — H1: Ctrl+S clears modified
+**I: Menu** — I1: F10 open/Esc close
+**J: Mouse** — J1: click in text
+**K: Stress** — K1: type/nav/undo
+
+### Design Notes
+- DOC_CTX_SIZE unchanged at 12440 (selection state is transient, not part of document context)
+- `sel_clear` fast path: CMP + JE (taken 99.9% of the time) + RET — ~30 cycles overhead per keystroke
+- Phase 2 will split `.cursor_moved` into `.cursor_moved` (sel_clear) and `.cursor_moved_no_clear` (Shift+arrow)
+
+---
+
+## v0.20.0 — Undo Phase 5: Bug Fixes, Dirty Tracking & Operation Grouping (2026-03-12)
+
+Phase 5 completes the undo/redo system with three sub-phases: bug fixes, smart dirty flag tracking, and operation grouping.
+
+### Sub-Phase 5a: Bug Fixes
+
+- **Sentinel underflow in `undo_discard_half`** (ed_undo.inc): `undo_save_pos = 0FFFFh` (sentinel) was corrupted when `undo_discard_half` subtracted the half-count. Added sentinel guard (`CMP 0FFFFh / JE .done`) before the comparison.
+- **Ghost record on failed `insert_char`** (ed_keys.inc `.do_char`): Now checks if `cur_col` advanced after `insert_char`; skips undo recording on failure.
+- **Ghost record + cursor desync on failed `insert_crlf`** (ed_keys.inc `.do_enter`): Saves `add_used` before `insert_crlf` and compares after; skips cursor advance and undo recording if unchanged.
+
+### Sub-Phase 5b: Smart Dirty Flag Tracking
+
+Tracks `undo_save_pos` — the `undo_pos` at last save. After undo/redo, compares `undo_pos` to `undo_save_pos`; if equal, `[Modified]` clears.
+
+- **`undo_clear`** (ed_undo.inc): Sets `undo_save_pos = 0` (not `0FFFFh`) — position 0 = clean state for new/loaded docs.
+- **`undo_push`** (ed_undo.inc): Invalidates `undo_save_pos` to `0FFFFh` when redo tail is truncated and save_pos falls within the truncated range (timeline divergence).
+- **`undo_execute` / `redo_execute`** (ed_undo.inc): Smart dirty flag — sets `dirty=0` when `undo_pos == undo_save_pos`, `dirty=1` otherwise.
+- **`menu_save_handler` / `menu_quit_handler`** (TEDIT.ASM): Record `undo_save_pos = undo_pos` after every `save_file` call (4 sites total).
+
+### Sub-Phase 5c: Operation Grouping
+
+Consecutive character inserts on the same line with contiguous columns are grouped. One Ctrl+Z undoes the entire group; one Ctrl+Shift+Z redoes it.
+
+- **New BSS variables**: `undo_group_active` (1 if last op was INS_CHAR), `undo_group_line`, `undo_group_col` (tracking last insert position), `undo_last_type` (scratch for group loop).
+- **`.do_char` group flag logic** (ed_keys.inc): Sets `URF_GROUP_CONT` (bit 7 of UR_TYPE) when same line + contiguous column. Updates tracking vars after recording.
+- **Group breaks**: `MOV BYTE [undo_group_active], 0` added to `.do_enter`, `.do_bksp`, `.do_del`, `.do_save`, `.do_undo`, `.do_redo`, `.cursor_moved`, `menu_undo_handler`, `menu_redo_handler`, `undo_init`, `undo_clear`.
+- **`undo_execute` group loop** (ed_undo.inc): After undoing a record with `URF_GROUP_CONT`, continues to the previous record until one without the flag is reached.
+- **`redo_execute` group loop** (ed_undo.inc): After redoing a record, peeks at the NEXT record — if it has `URF_GROUP_CONT`, continues redoing.
+
+### Tests Passing (17/17)
+
+**5a regression:**
+1. Type A, undo, redo → "A" visible, Col 2
+
+**5b dirty tracking:**
+2. Type ABC, undo → no [Modified] (returns to save point)
+3. Type AB, save, type CD, undo → "AB", no [Modified]
+4. Type AB, save, undo → empty, [Modified]
+5. Type AB, save, undo, redo → "AB", no [Modified]
+6. Type AB, save, undo, type C → "C", [Modified] (divergence)
+
+**5c grouping:**
+7. Type ABCD, undo → empty (group undo)
+8. Type ABCD, undo, redo → "ABCD" (group redo)
+9. AB, Enter, CD, undo → AB + empty line 2 (CD group removed)
+10. AB, Enter, CD, undo x2 → AB on one line (CRLF undone)
+11. AB, Left, Right, CD, undo → AB (cursor move breaks group)
+12. AB, Bksp, CD, undo → A (backspace breaks group)
+13. Undo/redo on empty → no crash
+
+**Regression:**
+14. Bksp undo → AB restored
+15. Bksp undo+redo → A
+16. Enter undo → AB on one line
+17. Full round-trip (undo x3, redo x3) → AB + CD
+
+## v0.19.0 — Undo Phase 4: Single-Step Redo / Ctrl+Shift+Z (2026-03-12)
+
+Ctrl+Shift+Z now re-executes undone edits. Edit > Redo menu entry also wired. Full undo/redo cycle operational.
+
+### New: `redo_execute` procedure (ed_undo.inc)
+- Mirrors `undo_execute` structurally but re-executes the forward (original) operation:
+  - `UR_INS_CHAR` → `insert_char(UR_CHAR)` (re-insert character)
+  - `UR_INS_CRLF` → `insert_crlf` + manual cursor advance to next line col 0
+  - `UR_DEL_CHAR` → `delete_at` (re-delete character)
+  - `UR_DEL_CRLF` → `delete_at` (re-delete CRLF pair)
+- Reads record at `undo_pos` (before increment), increments `undo_pos` after execution
+- No cursor restore — uses natural post-operation position (matches original edit behavior)
+- Disables `undo_recording` during forward ops to prevent recursive recording
+- Sets `dirty=1`, `meta_dirty=1`, `last_ins_pi=FFFFh`, `FW_DIRTY=1`, calls `scroll_to_cursor`
+- Safe no-op when `undo_pos >= undo_count` (nothing to redo)
+
+### Changes to `ed_keys.inc`
+- `.do_redo` now calls `redo_execute` instead of `menu_edit_stub`
+
+### Changes to `TEDIT.ASM`
+- Added `menu_redo_handler` (calls `redo_execute`)
+- Edit > Redo menu entry points to `menu_redo_handler` instead of `menu_edit_stub`
+
+### Tests Passing (12/12)
+1. Redo single char insert → "A" visible, Col 2
+2. Redo 3 char inserts → "ABC", Col 4
+3. Redo Enter (CRLF) → Line 2 of 2, Col 1
+4. Redo Backspace (char delete) → "A" only, Col 2
+5. Redo Backspace (CRLF delete) → Line 1 of 1, Col 2
+6. Redo with nothing to redo → no crash
+7. Redo invalidation (new edit clears redo tail) → "ABD", Col 4
+8. Full round-trip (undo all, redo all) → "A"/"B" on 2 lines
+9. Partial undo then redo → "ABC", Col 4
+10. Menu Redo (Alt+E, R) → "A" visible, no stub dialog
+11. Interleaved undo/redo → "AB", Col 3
+12. Redo on loaded file → "XThe Chair", Col 2
+
+---
+
+## v0.18.0 — Undo Phase 3: Single-Step Undo / Ctrl+Z (2026-03-12)
+
+Ctrl+Z now executes the inverse of the most recent edit. Each press undoes one operation (character insert, CRLF insert, character delete, or CRLF delete). Edit > Undo menu entry also wired.
+
+### New: `undo_execute` procedure (ed_undo.inc)
+- Reads the top undo record, dispatches the inverse operation:
+  - `UR_INS_CHAR` → `delete_at` (undo character insertion)
+  - `UR_INS_CRLF` → `delete_at` (undo CRLF insertion / line split)
+  - `UR_DEL_CHAR` → `insert_char` (undo character deletion)
+  - `UR_DEL_CRLF` → `insert_crlf` (undo CRLF deletion / line merge)
+- Saves cursor-restore fields (`UR_CUR_LINE`/`UR_CUR_COL`) and doc position to stack before dispatching (since inverse ops clobber ES:BX)
+- Disables `undo_recording` during inverse ops to prevent recursive recording
+- Restores cursor to pre-edit position, sets `dirty=1`, `meta_dirty=1`, `last_ins_pi=FFFFh`, `FW_DIRTY=1`, calls `scroll_to_cursor`
+- Decrements `undo_pos` but preserves `undo_count` (undone records remain available for redo)
+- Safe no-op when `undo_pos == 0` (nothing to undo)
+
+### Changes to `ed_keys.inc`
+- `.do_undo` now calls `undo_execute` instead of `menu_edit_stub`
+
+### Changes to `TEDIT.ASM`
+- Added `menu_undo_handler` (calls `undo_execute`)
+- Edit > Undo menu entry points to `menu_undo_handler` instead of `menu_edit_stub`
+
+### Tests Passing (12/12)
+1. Undo single char insert → empty doc, Col 1
+2. Undo 3 char inserts → empty doc
+3. Undo char + Enter + char → empty doc, Line 1 of 1
+4. Undo Backspace (char delete) → "AB" restored, Col 3
+5. Undo Backspace (CRLF delete / line merge) → line break restored, Line 2 of 2
+6. Undo Delete key → "AB" restored, Col 1
+7. Undo with nothing to undo → no crash, empty doc
+8. Undo on loaded file → original content restored
+9. Multiple undo past all edits → no crash
+10. Undo preserves redo tail → "AB" visible after undoing "C"
+11. Edit menu Undo (Alt+E, U) → works, no stub dialog
+12. Type after undo → "ABD" visible (redo tail truncated by new edit)
+
+---
+
+## v0.17.0 — Undo Phase 2: Recording Edit Actions (2026-03-12)
+
+Every user edit now pushes an undo record into the buffer. Ctrl+Z still shows the placeholder dialog (Phase 3 replaces it).
+
+### Bug Fix: `free_all` no longer frees `undo_seg`
+- **Problem**: `free_all` freed `undo_seg` and zeroed it. Since `ed_load_file` and `ed_compact` call `free_all`, any subsequent typing after File>Open would write to segment 0 (IVT), causing a crash.
+- **Fix**: Removed `undo_seg` freeing from `free_all`. The undo buffer is now freed only at program exit.
+
+### `delete_at` exports deleted char info
+- Two new BSS scratch variables: `undo_del_char` (byte deleted), `undo_del_crlf` (1 if CRLF pair, 0 if single, 0FFh sentinel if no delete).
+- All CRLF companion deletion paths in `delete_at` set `undo_del_crlf = 1`.
+
+### Recording hooks in `ed_keys.inc`
+- `.do_char`: saves pre-cursor, calls `insert_char`, pushes `UR_INS_CHAR` with original character (AL preserved by `insert_char`).
+- `.do_enter`: saves pre-cursor, pushes `UR_INS_CRLF` after cursor advance.
+- `.do_bksp`: saves pre-cursor before adjustment, sets 0FFh sentinel, calls `delete_at`, pushes `UR_DEL_CHAR` or `UR_DEL_CRLF` (skips if sentinel unchanged = delete failed). Doc position = post-delete `cur_line`/`cur_col`; restore position = pre-backspace cursor.
+- `.do_del`: saves pre-cursor, sets 0FFh sentinel, calls `delete_at`, pushes `UR_DEL_CHAR` or `UR_DEL_CRLF`. Doc and restore positions both = pre-cursor.
+
+### Tests Passing
+- A: Type "ABC" → 3 INS_CHAR records ('A' 'B' 'C') at (0,0) (0,1) (0,2)
+- B: Type "A", Enter, "B" → INS_CHAR 'A', INS_CRLF, INS_CHAR 'B' at (1,0)
+- C: Type "AB", Backspace → INS 'A', INS 'B', DEL_CHAR 'B'
+- D: Type "A", Enter, Bksp col-0 → INS 'A', INS_CRLF, DEL_CRLF
+- E: Delete key on file → DEL_CHAR 'T' (first char of file)
+- F: Ctrl+Z → placeholder dialog, no crash
+- G: File menu interaction after typing → no crash (free_all fix)
+- H: Basic editing regression → IDLE, correct display
+
+---
+
 ## v0.15.1 — Fix: Wrap-Mode Visual Line Navigation (2026-03-12)
 
 **Bug**: In wrap mode, UP/DOWN arrow keys navigated by logical line instead of visual line. With a 120-character line wrapping to 2 visual rows, pressing RETURN then UP skipped the second visual row entirely — cursor jumped from (1, 3) to (1, 1) instead of (1, 2).
@@ -22,6 +662,72 @@ Non-wrap mode unchanged — still uses original logical-line navigation via `.ve
 5. 120 chars, Home, DOWN, UP — Line 1, Col 1 (round-trip back)
 6. 2x120 chars, UP×4 — walks all 4 visual rows correctly
 7. Original bug scenario: 120 chars + Enter + UP → Line 2, Col 81 (no longer skips visual row 2)
+
+---
+
+## v0.16.0 — Undo Phase 1: Buffer Infrastructure (2026-03-12)
+
+Added the undo/redo buffer subsystem — a separately allocated 32 KB segment holding fixed-size 10-byte records. Six primitives provide the foundation for Phases 2-5.
+
+### New Files
+- `ed_undo.inc` — 6 procedures: `undo_init`, `undo_push`, `undo_discard_half`, `undo_peek_undo`, `undo_peek_redo`, `undo_clear`
+
+### Changes to ed_const.inc
+- Added undo constants: `UNDO_SEG_PARA` (0800h = 32 KB), `UR_SIZE` (10), `UNDO_MAX_RECORDS` (3276)
+- Record type codes: `UR_INS_CHAR(0)`, `UR_INS_CRLF(1)`, `UR_DEL_CHAR(2)`, `UR_DEL_CRLF(3)`
+- Group continuation flag: `URF_GROUP_CONT(80h)` on bit 7 of `UR_TYPE`
+- Field offsets: `UR_TYPE(0)`, `UR_CHAR(1)`, `UR_DOC_LINE(2)`, `UR_DOC_COL(4)`, `UR_CUR_LINE(6)`, `UR_CUR_COL(8)`
+
+### Changes to TEDIT.ASM
+- Added `INCLUDE ed_undo.inc` between ed_edit.inc and ed_file.inc
+- Added undo BSS variables: `undo_seg`, `undo_pos`, `undo_count`, `undo_max`, `undo_recording`, `undo_save_pos`, `undo_pre_line`, `undo_pre_col`
+- Added undo segment allocation in `.start_tui` (DOS INT 21h AH=48h) + `undo_init` call
+- Added undo segment freeing in `free_all`
+
+### Architecture
+- `undo_push`: AL=type, AH=char, BX=doc_line, CX=doc_col, DX=cur_line, SI=cur_col; clobbers AX,BX,CX,DX,SI,DI
+- `undo_peek_undo`/`undo_peek_redo`: return ES:BX pointer; clobber AX,BX,ES
+- Buffer-full: `undo_discard_half` shifts newest half to position 0, adjusts `save_pos`
+- `undo_recording` flag (checked in `undo_push`) suppresses recording during undo/redo replay
+
+---
+
+## v0.15.0 — Wrap-Mode Visual Line Status Bar (2026-03-12)
+
+In wrap mode, the status bar now shows visual line numbers instead of logical line numbers. A 120-character line wrapping to 2 visual rows counts as 2 lines in the status bar.
+
+### Changes to TEDIT.ASM
+- Added `total_vis_lines: RESW 1` and `cur_vis_line: RESW 1` to BSS transient section
+
+### Changes to ed_core.inc
+- `rebuild_meta`: added dual-counting in wrap-mode byte loop — increments `total_vis_lines` on LF and on column wrap (`stl_col >= ED_COLS`), tracks `cur_vis_line` when logical line count reaches `cur_line`
+
+### Changes to ed_draw.inc
+- Status bar: in wrap mode, displays `cur_vis_line`/`total_vis_lines` instead of `cur_line`/`total_lines`
+
+---
+
+## v0.14.3 — Fix: Wrap-Mode Line Counting (2026-03-12)
+
+**Bug**: `rebuild_meta` and `seek_to_line` counted visual wrap boundaries as logical lines in wrap mode. A 120-character line wrapping to 2 visual rows was counted as 2 logical lines, causing `total_lines` to be inflated and navigation to skip lines.
+
+**Fix**: Both `rebuild_meta` and `seek_to_line` now count only LFs as logical line boundaries in all modes. Removed dead wrap-mode byte loops that incorrectly tracked visual wrap points as line breaks.
+
+---
+
+## v0.14.2 — Fix: Wrap-Mode Mouse Click (2026-03-12)
+
+**Bug**: Mouse clicks in wrap mode targeted incorrect lines because the renderer's screen row did not correspond to the logical line the user clicked on.
+
+**Fix**: Added `_row_to_line: RESW ED_TEXT_ROWS` BSS table populated during rendering. Mouse press and drag handlers now use this table for correct line+column mapping in wrap mode.
+
+---
+
+## v0.14.1 — Fix: Empty-Doc Mouse Click Crash (2026-03-12)
+
+**Bug**: Clicking in an empty document caused an unsigned underflow crash. `total_lines` was 0, and mouse clamp code computed `total_lines - 1` which wrapped to 65535.
+
+**Fix**: `rebuild_meta` now always ensures `total_lines >= 1`, preventing the underflow in mouse clamp code.
 
 ---
 

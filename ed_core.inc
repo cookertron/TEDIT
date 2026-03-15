@@ -939,6 +939,500 @@ peek_at_cursor PROC
 peek_at_cursor ENDP
 
 ; ============================================================
+; LINE_COL_TO_OFFSET — convert (line, col) to byte offset
+;
+; Input:  BX = target line (0-based)
+;         CX = target column (0-based, visible chars)
+; Output: DX:AX = byte offset in logical document
+;         CF=0 success, CF=1 overflow (DX != 0)
+; Preserves: BX, BP, DI
+; Clobbers:  AX, CX, DX, SI, rnd_pi, rnd_off
+; ============================================================
+
+line_col_to_offset PROC
+    PUSH    BP
+    PUSH    DI
+    PUSH    BX
+    PUSH    CX                      ; save target_col for step 4
+
+    ; ---- Step 1: Seek to target line ----
+    MOV     AX, BX
+    CALL    seek_to_line            ; sets rnd_pi, rnd_off
+
+    ; ---- Step 2: Sum piece lengths for pieces 0..rnd_pi-1 ----
+    XOR     AX, AX
+    XOR     DX, DX                  ; DX:AX = 0 (32-bit accumulator)
+    XOR     BP, BP                  ; BP = piece index
+
+    PUSH    ES
+    MOV     SI, [pt_seg]
+    MOV     ES, SI
+
+.lco_sum:
+    CMP     BP, [rnd_pi]
+    JAE     .lco_sum_done
+
+    ; Compute descriptor offset: DI = BP * 10
+    MOV     DI, BP
+    SHL     DI, 1
+    MOV     SI, DI
+    SHL     DI, 1
+    SHL     DI, 1
+    ADD     DI, SI                  ; DI = BP * 10
+
+    ; Read piece length (low word only; high word is always 0)
+    ADD     AX, ES:[DI + PT_F_LENGTH]
+    ADC     DX, 0                   ; propagate carry
+
+    INC     BP
+    JMP     .lco_sum
+
+.lco_sum_done:
+    POP     ES
+
+    ; ---- Step 3: Add rnd_off ----
+    ADD     AX, [rnd_off]
+    ADC     DX, 0
+
+    ; Save line-start offset to BSS scratch
+    MOV     [lco_off_lo], AX
+    MOV     [lco_off_hi], DX
+
+    ; ---- Step 4: Walk target_col visible characters ----
+    POP     CX                      ; restore target_col
+    PUSH    CX                      ; re-save (will be popped in epilogue)
+    XOR     BP, BP                  ; BP = column raw byte count
+
+    JCXZ    .lco_col_done           ; col == 0: no walk needed
+
+.lco_col_piece:
+    MOV     BX, [rnd_pi]
+    CMP     BX, [pt_count]
+    JAE     .lco_col_done           ; past all pieces: stop
+
+    PUSH    CX                      ; save remaining col count
+    CALL    resolve_piece           ; AX=seg, SI=base, DX=piece_len
+    POP     CX
+    JC      .lco_col_done
+
+    PUSH    DS
+    MOV     DS, AX
+    MOV     DI, SI                  ; DI = piece base
+    ADD     DX, SI                  ; DX = piece end (absolute)
+    ADD     SI, CS:[rnd_off]        ; SI = start position in piece
+
+.lco_col_inner:
+    CMP     SI, DX
+    JAE     .lco_col_next           ; piece exhausted
+
+    MOV     AL, [SI]
+    CMP     AL, 0Dh
+    JE      .lco_col_eol            ; CR = line ending, stop
+    CMP     AL, 0Ah
+    JE      .lco_col_eol            ; LF = line ending, stop
+
+    ; Visible character
+    INC     SI
+    INC     BP                      ; count raw byte
+    DEC     CX
+    JZ      .lco_col_found          ; walked enough visible chars
+    JMP     .lco_col_inner
+
+.lco_col_eol:
+    ; Hit line ending before target_col exhausted — stop
+    POP     DS
+    JMP     .lco_col_done
+
+.lco_col_found:
+    ; Walked exactly target_col visible chars
+    POP     DS
+    JMP     .lco_col_done
+
+.lco_col_next:
+    ; Piece exhausted, advance to next
+    POP     DS
+    INC     WORD [rnd_pi]
+    MOV     WORD [rnd_off], 0
+    JMP     .lco_col_piece
+
+.lco_col_done:
+    ; ---- Step 5: Add column bytes to line-start offset ----
+    MOV     AX, [lco_off_lo]
+    MOV     DX, [lco_off_hi]
+    ADD     AX, BP
+    ADC     DX, 0
+
+    ; ---- Overflow check ----
+    TEST    DX, DX
+    JNZ     .lco_overflow
+
+    POP     CX                      ; discard saved target_col
+    POP     BX
+    POP     DI
+    POP     BP
+    CLC
+    RET
+
+.lco_overflow:
+    POP     CX
+    POP     BX
+    POP     DI
+    POP     BP
+    STC
+    RET
+line_col_to_offset ENDP
+
+; ============================================================
+; SPLIT_PIECE_AT — split piece BX at byte offset SI
+;
+; Input:  BX = piece index to split
+;         SI = split offset within piece (0 < SI < piece.length)
+;
+; Output: CF=0 success: piece[BX] = left (length SI),
+;                        piece[BX+1] = new right piece (remainder)
+;         CF=1 if pt_insert fails (table full)
+;
+; Preserves: BP, DI
+; Clobbers:  AX, BX, CX, DX, SI, ES
+; ============================================================
+
+split_piece_at PROC
+    PUSH    BP
+    PUSH    DI
+
+    ; Load piece descriptor from pt_seg
+    MOV     AX, [pt_seg]
+    MOV     ES, AX
+
+    ; DI = BX * 10
+    MOV     DI, BX
+    SHL     DI, 1
+    MOV     AX, DI
+    SHL     DI, 1
+    SHL     DI, 1
+    ADD     DI, AX                  ; DI = BX * 10
+
+    ; Save fields for right piece
+    MOV     DX, ES:[DI + PT_F_LENGTH]
+    SUB     DX, SI                  ; DX = right_length
+    PUSH    DX                      ; [stk+6] right_length
+    MOV     AX, ES:[DI + PT_F_START + 2]
+    PUSH    AX                      ; [stk+4] start_hi
+    MOV     AX, ES:[DI + PT_F_START]
+    PUSH    AX                      ; [stk+2] start_lo
+    MOV     AL, ES:[DI + PT_F_SOURCE]
+    XOR     AH, AH
+    PUSH    AX                      ; [stk+0] source
+
+    ; Shrink left piece to length = SI
+    MOV     ES:[DI + PT_F_LENGTH], SI
+    MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+
+    ; Insert new piece at BX+1
+    INC     BX
+    CALL    pt_insert
+    JC      .spa_fail
+
+    ; Write right piece descriptor at slot BX
+    MOV     AX, [pt_seg]
+    MOV     ES, AX
+    MOV     DI, BX
+    SHL     DI, 1
+    MOV     AX, DI
+    SHL     DI, 1
+    SHL     DI, 1
+    ADD     DI, AX                  ; DI = BX * 10
+
+    POP     AX                      ; source
+    MOV     ES:[DI + PT_F_SOURCE], AL
+    MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
+
+    POP     AX                      ; start_lo
+    ADD     AX, SI                  ; right.start = orig_start + SI
+    MOV     ES:[DI + PT_F_START], AX
+    POP     AX                      ; start_hi
+    JNC     .spa_nc
+    INC     AX
+.spa_nc:
+    MOV     ES:[DI + PT_F_START + 2], AX
+
+    POP     AX                      ; right_length
+    MOV     ES:[DI + PT_F_LENGTH], AX
+    MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+
+    POP     DI
+    POP     BP
+    CLC
+    RET
+
+.spa_fail:
+    ADD     SP, 8                   ; discard 4 saved words
+    POP     DI
+    POP     BP
+    STC
+    RET
+split_piece_at ENDP
+
+; ============================================================
+; RANGE_DELETE_PIECES — delete byte range [start_off, end_off)
+;
+; Input:  AX = start_offset (byte offset, inclusive)
+;         DX = end_offset (byte offset, exclusive)
+;
+; Output: CF=0 success, CF=1 error
+;         [rd_save_count] = number of piece descriptors saved
+;         [rd_save_start_pi] = piece index of first removal
+;         rd_save_buf[] = saved descriptors in forward order
+;
+; Side effects: modifies piece table, sets meta_dirty = 1
+; Preserves: BP, DI
+; Clobbers:  AX, BX, CX, DX, SI
+; ============================================================
+
+range_delete_pieces PROC
+    PUSH    BP
+    PUSH    DI
+
+    ; ---- Step 1: Save inputs, validate ----
+    MOV     [rd_start_off], AX
+    MOV     [rd_end_off], DX
+    CMP     AX, DX
+    JAE     .rdp_error              ; start >= end: invalid
+
+    ; ---- Step 2: Walk pieces to find start_off ----
+    PUSH    ES
+    MOV     AX, [pt_seg]
+    MOV     ES, AX
+    XOR     CX, CX                 ; CX = accum (running byte total)
+    XOR     BX, BX                 ; BX = piece index
+    XOR     SI, SI                 ; SI = descriptor offset
+
+.rdp_find_start:
+    CMP     BX, [pt_count]
+    JAE     .rdp_pop_error          ; past all pieces: offset out of range
+
+    MOV     AX, ES:[SI + PT_F_LENGTH]
+    MOV     DX, CX
+    ADD     DX, AX                 ; DX = accum + plen
+    CMP     DX, [rd_start_off]
+    JA      .rdp_found_start       ; accum + plen > start_off
+    MOV     CX, DX                 ; accum += plen
+    ADD     SI, PT_DESC_SIZE
+    INC     BX
+    JMP     .rdp_find_start
+
+.rdp_found_start:
+    MOV     [rd_start_pi], BX
+    MOV     AX, [rd_start_off]
+    SUB     AX, CX                 ; start_split = start_off - accum
+    MOV     [rd_start_split], AX
+
+    ; ---- Step 3: Continue walking to find end_off ----
+    ; CX = accum, BX = pi, SI = descriptor offset — still valid
+.rdp_find_end:
+    CMP     BX, [pt_count]
+    JAE     .rdp_pop_error
+
+    MOV     AX, ES:[SI + PT_F_LENGTH]
+    MOV     DX, CX
+    ADD     DX, AX                 ; DX = accum + plen
+    CMP     DX, [rd_end_off]
+    JAE     .rdp_found_end         ; accum + plen >= end_off
+    MOV     CX, DX
+    ADD     SI, PT_DESC_SIZE
+    INC     BX
+    JMP     .rdp_find_end
+
+.rdp_found_end:
+    MOV     [rd_end_pi], BX
+    MOV     AX, [rd_end_off]
+    SUB     AX, CX                 ; end_split = end_off - accum
+    MOV     [rd_end_split], AX
+    MOV     AX, ES:[SI + PT_F_LENGTH]
+    MOV     [rd_end_plen], AX      ; save end piece length
+    POP     ES
+
+    ; ---- Step 4: Detect same-piece case ----
+    MOV     WORD [rd_same_piece], 0
+    MOV     AX, [rd_start_pi]
+    CMP     AX, [rd_end_pi]
+    JNE     .rdp_not_same
+    MOV     WORD [rd_same_piece], 1
+.rdp_not_same:
+
+    ; ---- Step 5: Bounds check ----
+    MOV     AX, [rd_end_pi]
+    SUB     AX, [rd_start_pi]
+    INC     AX                     ; count = end_pi - start_pi + 1
+    ADD     AX, 2                  ; worst case: both splits add a piece
+    CMP     AX, RD_MAX_PIECES
+    JA      .rdp_error
+
+    ; ---- Step 6: Split at start_off (if mid-piece) ----
+    CMP     WORD [rd_start_split], 0
+    JE      .rdp_no_start_split
+
+    MOV     BX, [rd_start_pi]
+    MOV     SI, [rd_start_split]
+    PUSH    ES
+    CALL    split_piece_at
+    POP     ES
+    JC      .rdp_error
+
+    ; piece[start_pi] = left (survives), piece[start_pi+1] = right (to delete)
+    INC     WORD [rd_start_pi]     ; first piece to delete shifts right
+    MOV     AX, [rd_start_pi]
+    MOV     [rd_save_start_pi], AX
+    INC     WORD [rd_end_pi]       ; end piece also shifted by the insert
+
+    ; CRITICAL: Same-piece adjustment
+    CMP     WORD [rd_same_piece], 1
+    JNE     .rdp_after_start_split
+    MOV     AX, [rd_start_split]
+    SUB     [rd_end_split], AX     ; end_split -= start_split
+    JMP     .rdp_after_start_split
+
+.rdp_no_start_split:
+    MOV     AX, [rd_start_pi]
+    MOV     [rd_save_start_pi], AX
+
+.rdp_after_start_split:
+
+    ; ---- Step 7: Split at end_off (if mid-piece) ----
+    MOV     AX, [rd_end_split]
+    TEST    AX, AX
+    JZ      .rdp_end_boundary
+
+    ; Check if end_split < end piece length
+    ; In same-piece case, re-read end piece length from pt_seg
+    CMP     WORD [rd_same_piece], 1
+    JNE     .rdp_end_check_len
+
+    ; Re-read end piece length after start split modified it
+    PUSH    ES
+    MOV     AX, [pt_seg]
+    MOV     ES, AX
+    MOV     BX, [rd_end_pi]
+    MOV     DI, BX
+    SHL     DI, 1
+    MOV     AX, DI
+    SHL     DI, 1
+    SHL     DI, 1
+    ADD     DI, AX
+    MOV     AX, ES:[DI + PT_F_LENGTH]
+    MOV     [rd_end_plen], AX
+    POP     ES
+
+    ; Re-check: rd_end_split must be < rd_end_plen
+    MOV     AX, [rd_end_split]
+    CMP     AX, [rd_end_plen]
+    JAE     .rdp_skip_end_split    ; whole piece deleted, no split needed
+
+.rdp_end_check_len:
+    MOV     AX, [rd_end_split]
+    CMP     AX, [rd_end_plen]
+    JAE     .rdp_skip_end_split    ; end_split == plen: whole piece deleted
+
+    MOV     BX, [rd_end_pi]
+    MOV     SI, [rd_end_split]
+    PUSH    ES
+    CALL    split_piece_at
+    POP     ES
+    JC      .rdp_error
+    ; piece[end_pi] = left (deleted), piece[end_pi+1] = right (survives)
+    ; rd_end_pi stays the same
+    JMP     .rdp_do_save
+
+.rdp_end_boundary:
+    ; end_off is exactly at a piece boundary — exclusive, so back up
+    DEC     WORD [rd_end_pi]
+    JMP     .rdp_do_save
+
+.rdp_skip_end_split:
+
+.rdp_do_save:
+    ; ---- Step 8: Save descriptors (forward order) ----
+    MOV     AX, [rd_end_pi]
+    SUB     AX, [rd_start_pi]
+    INC     AX                     ; count = end_pi - start_pi + 1
+    MOV     [rd_save_count], AX
+
+    ; Guard: if nothing to remove
+    TEST    AX, AX
+    JZ      .rdp_ok
+    CMP     WORD [rd_end_pi], 0FFFFh  ; end_pi wrapped below start_pi
+    JE      .rdp_ok
+
+    ; Verify end_pi >= start_pi
+    MOV     AX, [rd_end_pi]
+    CMP     AX, [rd_start_pi]
+    JB      .rdp_ok                ; nothing to remove
+
+    ; Copy descriptors: source = pt_seg:start_pi*10, dest = rd_save_buf
+    PUSH    ES
+    PUSH    DS
+    MOV     CX, [rd_save_count]
+    MOV     AX, PT_DESC_SIZE
+    MUL     CX                    ; AX = bytes to copy
+    SHR     AX, 1                 ; AX = words to copy
+    MOV     CX, AX
+
+    ; Source: pt_seg, offset = start_pi * 10
+    MOV     AX, [pt_seg]
+    MOV     DS, AX
+    MOV     SI, CS:[rd_start_pi]
+    SHL     SI, 1
+    MOV     AX, SI
+    SHL     SI, 1
+    SHL     SI, 1
+    ADD     SI, AX                ; SI = start_pi * 10
+
+    ; Dest: CS:rd_save_buf + rd_save_used * PT_DESC_SIZE (LIFO stack)
+    PUSH    CS
+    POP     ES
+    MOV     DI, CS:[rd_save_used]
+    MOV     AX, PT_DESC_SIZE
+    MUL     DI
+    MOV     DI, AX
+    ADD     DI, rd_save_buf
+
+    CLD
+    REP     MOVSW
+
+    POP     DS
+    POP     ES
+
+    ; ---- Step 9: Remove pieces (reverse order) ----
+    MOV     BX, [rd_end_pi]
+    MOV     CX, [rd_save_count]
+
+.rdp_remove_loop:
+    JCXZ    .rdp_finalize
+    CALL    pt_remove
+    DEC     BX
+    DEC     CX
+    JMP     .rdp_remove_loop
+
+.rdp_finalize:
+    ; ---- Step 10: Finalize ----
+    MOV     BYTE [meta_dirty], 1
+
+.rdp_ok:
+    POP     DI
+    POP     BP
+    CLC
+    RET
+
+.rdp_pop_error:
+    POP     ES
+.rdp_error:
+    POP     DI
+    POP     BP
+    STC
+    RET
+range_delete_pieces ENDP
+
+; ============================================================
 ; FREE_ALL
 ; ============================================================
 

@@ -44,6 +44,9 @@ MAX_CHKPT       EQU 2048
 ; ---- Memory shrink size ----
 SHRINK_PARA     EQU 1000h       ; keep 64 KB for COM segment
 
+; ---- Range delete ----
+RD_MAX_PIECES   EQU 102            ; max pieces saveable in one range delete
+
 ; ---- Undo / Redo ----
 UNDO_SEG_PARA   EQU 0800h          ; 32 KB undo segment (2048 paragraphs)
 
@@ -56,6 +59,7 @@ UR_INS_CHAR     EQU 0              ; a character was inserted
 UR_INS_CRLF     EQU 1              ; a CR+LF pair was inserted
 UR_DEL_CHAR     EQU 2              ; a character was deleted
 UR_DEL_CRLF     EQU 3              ; a CR+LF pair was deleted
+UR_DEL_RANGE    EQU 4              ; range deletion (pieces saved in rd_save_buf)
 
 ; Record type mask and group flag (stored in UR_TYPE byte)
 UR_TYPE_MASK    EQU 0Fh            ; low nibble = record type

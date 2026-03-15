@@ -645,6 +645,24 @@ _row_to_line:   RESW ED_TEXT_ROWS ; screen row → logical line mapping (wrap mo
 total_vis_lines: RESW 1          ; total visual lines (wrap mode status bar)
 cur_vis_line:   RESW 1           ; visual line at start of cur_line (wrap mode)
 
+; ---- line_col_to_offset scratch ----
+lco_off_lo:     RESW 1          ; byte offset accumulator (low word)
+lco_off_hi:     RESW 1          ; byte offset accumulator (high word)
+
+; ---- range_delete scratch ----
+rd_save_buf:      RESB RD_MAX_PIECES * PT_DESC_SIZE  ; 1020 bytes
+rd_save_count:    RESW 1        ; number of descriptors saved this operation
+rd_save_start_pi: RESW 1        ; piece index where deletion began (for undo)
+rd_start_off:     RESW 1        ; input start_offset
+rd_end_off:       RESW 1        ; input end_offset
+rd_start_pi:      RESW 1        ; piece index containing start_off
+rd_end_pi:        RESW 1        ; piece index containing end_off
+rd_start_split:   RESW 1        ; byte offset within start piece
+rd_end_split:     RESW 1        ; byte offset within end piece
+rd_end_plen:      RESW 1        ; length of end piece (for split check)
+rd_same_piece:    RESW 1        ; 1 if start/end in same original piece
+rd_save_used:     RESW 1        ; running count of descriptors in rd_save_buf (LIFO stack top)
+
 ; ---- Undo / Redo state ----
 undo_seg:       RESW 1          ; segment of undo buffer (DOS alloc)
 undo_pos:       RESW 1          ; write cursor - index of next record to write
