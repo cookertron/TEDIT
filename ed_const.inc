@@ -78,3 +78,13 @@ ASSERT UR_SIZE, 10
 ASSERT UNDO_MAX_RECORDS
 PRINT "UNDO_MAX_RECORDS = ", UNDO_MAX_RECORDS
 
+; ---- Clipboard ----
+CLIP_SEG_PARA   EQU 0400h          ; 16 KB clipboard segment (1024 paragraphs)
+CLIP_BUF_BYTES  EQU CLIP_SEG_PARA * 16   ; = 16384 usable bytes
+
+; ---- Paste undo ----
+UR_INS_RANGE    EQU 5              ; range insertion (paste)
+
+; ---- Selection grace period ----
+SEL_GRACE_TICKS EQU 9              ; ~500ms at 18.2 ticks/sec
+

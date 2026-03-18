@@ -235,6 +235,9 @@ ed_compact PROC
     CALL    rebuild_meta
     MOV     BYTE [meta_dirty], 0
 
+    ; ---- Clear undo (compaction invalidates all undo records) ----
+    CALL    undo_clear
+
     ; ---- Restore cursor state ----
     POP     AX
     MOV     [left_col], AX

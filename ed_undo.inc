@@ -325,6 +325,8 @@ undo_execute PROC
     JE      .u_del_crlf
     CMP     AL, UR_DEL_RANGE
     JE      .u_del_range
+    CMP     AL, UR_INS_RANGE
+    JE      .u_ins_range
     ; Unknown type — clean stack, skip
     ADD     SP, 6
     JMP     .u_finish
@@ -456,6 +458,55 @@ undo_execute PROC
     MOV     BYTE [meta_dirty], 1        ; pieces changed, metadata stale
     JMP     .u_restore                  ; restore cursor and finish
 
+    ; ---- UR_INS_RANGE: undo paste -> delete the pasted byte range ----
+.u_ins_range:
+    ADD     SP, 6                       ; discard doc_line/col/char from stack
+
+    ; Read byte count from record (UR_CUR_LINE was repurposed)
+    ; ES:BX still points to the record.
+    MOV     BP, ES:[BX + UR_CUR_LINE]  ; BP = byte count to delete
+
+    ; Read insertion point and override cursor restore values
+    ; (undo_pre_line currently holds byte count — must fix)
+    MOV     AX, ES:[BX + UR_DOC_LINE]
+    MOV     [undo_pre_line], AX         ; override: cursor restores here
+    MOV     [cur_line], AX
+
+    MOV     AX, ES:[BX + UR_DOC_COL]
+    MOV     [undo_pre_col], AX          ; override: cursor restores here
+    MOV     [cur_col], AX
+    MOV     CX, AX                      ; CX = col for line_col_to_offset
+
+    MOV     BX, [cur_line]              ; BX = line for line_col_to_offset
+
+    ; Convert insertion point to byte offset
+    ; line_col_to_offset: BX=line, CX=col -> DX:AX = byte offset
+    ; Preserves: BX, BP, DI. Clobbers: AX, CX, DX, SI.
+    CALL    line_col_to_offset
+    JC      .u_restore                  ; overflow (shouldn't happen)
+    TEST    DX, DX
+    JNZ     .u_restore                  ; >64K (shouldn't happen)
+
+    ; Set up range_delete_pieces register inputs:
+    ;   AX = start offset (already set from line_col_to_offset)
+    ;   DX = end offset = start + byte_count
+    MOV     DX, AX
+    ADD     DX, BP                      ; DX = end offset
+    ; AX = start offset (unchanged)
+
+    ; Delete the pasted range.
+    ; range_delete_pieces removes the pieces and writes them to
+    ; rd_save_buf internally, but we do NOT increment rd_save_used
+    ; and do NOT write piece count to UR_CHAR. This sacrifices
+    ; redo-of-paste to prevent LIFO save buffer corruption in the
+    ; paste-replaces-selection case.
+    CALL    range_delete_pieces
+
+    MOV     BYTE [meta_dirty], 1
+    MOV     WORD [last_ins_pi], 0FFFFh
+
+    JMP     .u_restore
+
     ; ---- Restore cursor and check for group continuation ----
 .u_restore:
     MOV     AX, [undo_pre_line]
@@ -550,6 +601,8 @@ redo_execute PROC
     JE      .r_del_crlf
     CMP     AL, UR_DEL_RANGE
     JE      .r_del_range
+    CMP     AL, UR_INS_RANGE
+    JE      .r_ins_range
     ; Unknown type — clean stack, skip
     ADD     SP, 6
     JMP     .r_finish
@@ -675,6 +728,14 @@ redo_execute PROC
 
 .r_dr_remove_done:
     MOV     BYTE [meta_dirty], 1
+    JMP     .r_advance
+
+    ; ---- UR_INS_RANGE: redo paste — no-op (redo sacrificed) ----
+    ; Redo of paste is not supported because the undo handler does not
+    ; push to rd_save_buf (to prevent LIFO corruption when paste
+    ; replaces a selection). UR_CHAR remains 0 from the original push.
+.r_ins_range:
+    ADD     SP, 6                       ; discard doc_line/col/char from stack
     JMP     .r_advance
 
     ; ---- Advance position and check for group continuation ----

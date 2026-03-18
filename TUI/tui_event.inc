@@ -6,34 +6,39 @@ _tui_alt_was_down: DB 0         ; nonzero if Alt was held on previous poll
 _key_modifiers:    DB 0         ; shift flags for most recent keypress
 
 ; ----------------------------------------------------------------------------
-; tui_poll_key - Non-blocking keyboard poll using INT 21h/06h
+; tui_poll_key - Non-blocking keyboard poll using INT 16h
 ; Output: If no key:        ZF=1
 ;         If normal key:    ZF=0, AH=KTYPE_NORMAL (0), AL=char
 ;         If extended key:  ZF=0, AH=KTYPE_EXTENDED (1), AL=scan code
+;
+; Uses INT 16h AH=01h (peek) + AH=00h (consume) to get the full
+; keystroke in one read, avoiding the INT 21h AH=06h two-byte protocol
+; which fails for E0h-prefixed keys (enhanced keyboard nav cluster)
+; on some DOS implementations including DOSBox-X.
 ; ----------------------------------------------------------------------------
 tui_poll_key: PROC
-    MOV AH, 06h
-    MOV DL, 0FFh
-    INT 21h
-    JZ .no_key              ; ZF=1 means no char available
+    MOV AH, 01h
+    INT 16h
+    JZ .no_key              ; ZF=1 means buffer empty
 
-    ; Got a byte in AL - check if it's an extended key prefix (00h or E0h)
+    ; Key available — consume it (AH=scan code, AL=ASCII)
+    MOV AH, 00h
+    INT 16h
+
+    ; Check for extended key (ASCII = 00h or E0h)
     OR AL, AL
     JZ .extended
-    CMP AL, 0E0h            ; enhanced keyboard prefix
+    CMP AL, 0E0h
     JZ .extended
 
-    ; Normal key: AH=0, AL=char, clear ZF
+    ; Normal key: AL=ASCII char
     MOV AH, KTYPE_NORMAL
     OR AL, AL              ; clear ZF (AL is nonzero since we checked above)
     RET
 
 .extended:
-    ; Read second byte (scan code)
-    MOV AH, 06h
-    MOV DL, 0FFh
-    INT 21h
-    ; AL = scan code now
+    ; Scan code is in AH from INT 16h — move to AL
+    MOV AL, AH
     MOV AH, KTYPE_EXTENDED
     OR AH, AH              ; clear ZF (AH=1, nonzero)
     RET

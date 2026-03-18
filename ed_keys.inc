@@ -303,15 +303,31 @@ tui_ed_handle_key PROC
 ; ============================================================
 ; Remaining Edit menu shortcut stubs
 ; ============================================================
-.do_cut:
-.do_copy:
-.do_paste:
 .do_find:
 .do_findnxt:
 .do_findprv:
 .do_goto:
 .do_timedate:
     CALL    menu_edit_stub
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_paste:
+    MOV     BYTE [undo_group_active], 0 ; break typing group
+    CALL    ed_paste
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_cut:
+    CALL    ed_cut
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_copy:
+    CALL    ed_copy
     MOV     BYTE [fw_state + FW_DIRTY], 1
     CLC
     RET
@@ -327,6 +343,48 @@ tui_ed_handle_key PROC
     JNE     .ext_dispatch
     CALL    sel_start_or_extend
 .ext_dispatch:
+    ; ---- Grace period: freeze cursor + selection during window ----
+    TEST    BYTE [_key_modifiers], 03h      ; Shift held?
+    JNZ     .ext_no_grace                   ; yes → normal dispatch
+    CMP     BYTE [sel_active], 0
+    JE      .ext_no_grace                   ; no selection → normal
+    ; Check if this is a nav key (not Delete or function keys)
+    CMP     AL, KEY_UP
+    JE      .ext_grace_chk
+    CMP     AL, KEY_DOWN
+    JE      .ext_grace_chk
+    CMP     AL, KEY_LEFT
+    JE      .ext_grace_chk
+    CMP     AL, KEY_RIGHT
+    JE      .ext_grace_chk
+    CMP     AL, KEY_PGDN
+    JE      .ext_grace_chk
+    CMP     AL, KEY_PGUP
+    JE      .ext_grace_chk
+    CMP     AL, KEY_HOME
+    JE      .ext_grace_chk
+    CMP     AL, KEY_END
+    JE      .ext_grace_chk
+    JMP     .ext_no_grace                   ; not a nav key → normal
+.ext_grace_chk:
+    ; Read BIOS tick and check grace window
+    PUSH    ES
+    PUSH    AX
+    MOV     AX, 0040h
+    MOV     ES, AX
+    MOV     AX, ES:[006Ch]
+    SUB     AX, [sel_shift_tick]
+    CMP     AX, SEL_GRACE_TICKS
+    POP     AX
+    POP     ES
+    JAE     .ext_grace_expired              ; grace over → clear + dispatch
+    ; Within grace period — eat the key entirely (no move, no change)
+    CLC
+    RET
+.ext_grace_expired:
+    ; Grace expired — clear selection, then dispatch nav key normally
+    CALL    sel_clear
+.ext_no_grace:
     CMP     AL, KEY_UP
     JZ      .key_up
     CMP     AL, KEY_DOWN
@@ -565,6 +623,15 @@ tui_ed_handle_key PROC
     CALL    sel_clear
     JMP     .cm_sel_done
 .cm_shift:
+    ; Record BIOS tick for grace period (only when Shift actually held)
+    PUSH    ES
+    PUSH    AX
+    MOV     AX, 0040h
+    MOV     ES, AX
+    MOV     AX, ES:[006Ch]
+    MOV     [sel_shift_tick], AX
+    POP     AX
+    POP     ES
     CALL    sel_start_or_extend
 .cm_sel_done:
     MOV     WORD [last_ins_pi], 0FFFFh

@@ -70,6 +70,12 @@ INCLUDE ed_file.inc
 INCLUDE ed_sel.inc
 
 ; ============================================================
+; Editor Clipboard (Copy, Cut, Paste)
+; ============================================================
+
+INCLUDE ed_clip.inc
+
+; ============================================================
 ; Editor Rendering
 ; ============================================================
 
@@ -111,6 +117,7 @@ m_str_err_mem:   DB 'Out of memory', 0
 m_str_buf_ttl:   DB 'Buffer Full', 0
 m_str_buf_ask:   DB 'Save and reload to continue?', 0
 m_str_buf_err:   DB 'Reload failed - file on disk', 0
+m_str_clip_full: DB 'Selection too large to copy', 0
 
 ; ---- Edit menu strings ----
 m_str_edit:      DB 'Edit', 0
@@ -177,19 +184,19 @@ m_edit_entries:
     DB 0, 0
 
     ; Cut — hotidx=2, hotkey='T'
-    DW m_str_cut, menu_edit_stub
+    DW m_str_cut, menu_cut_handler
     DB 2, 'T'
     DW m_str_acc_cx
     DB 0, 0
 
     ; Copy — hotidx=0, hotkey='C'
-    DW m_str_copy, menu_edit_stub
+    DW m_str_copy, menu_copy_handler
     DB 0, 'C'
     DW m_str_acc_cc
     DB 0, 0
 
     ; Paste — hotidx=0, hotkey='P'
-    DW m_str_paste, menu_edit_stub
+    DW m_str_paste, menu_paste_handler
     DB 0, 'P'
     DW m_str_acc_cv
     DB 0, 0
@@ -536,6 +543,17 @@ main:
 .undo_ready:
     CALL    undo_init
 
+    ; ---- Allocate clipboard buffer (if not already allocated) ----
+    CMP     WORD [clip_seg], 0
+    JNE     .clip_ready
+    MOV     BX, CLIP_SEG_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .err_nomem
+    MOV     [clip_seg], AX
+.clip_ready:
+    MOV     WORD [clip_used], 0
+
     ; ---- Initialize editor state ----
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
@@ -561,6 +579,14 @@ main:
     CALL    free_all
     ; Free undo buffer (persistent — not freed by free_all)
     MOV     AX, [undo_seg]
+    TEST    AX, AX
+    JZ      .free_clip
+    MOV     ES, AX
+    MOV     AH, 49h
+    INT     21h
+.free_clip:
+    ; Free clipboard buffer (persistent — not freed by free_all)
+    MOV     AX, [clip_seg]
     TEST    AX, AX
     JZ      .exit
     MOV     ES, AX
@@ -684,6 +710,8 @@ sel_active:        RESB 1      ; 0 = no selection, 1 = selection active
 sel_anchor_line:   RESW 1      ; line where selection was initiated
 sel_anchor_col:    RESW 1      ; column where selection was initiated
 
+sel_shift_tick:    RESW 1      ; BIOS tick of last Shift+nav (grace period)
+
 ; ---- Selection rendering transients ----
 sel_s_line:        RESW 1      ; normalized start line (pre-render)
 sel_s_col:         RESW 1      ; normalized start col
@@ -696,6 +724,24 @@ rnd_doc_col:       RESW 1      ; document column (wrap-mode rendering)
 sd_s_line:         RESW 1      ; sel_delete: stop line
 sd_s_col:          RESW 1      ; sel_delete: stop column
 sd_first:          RESB 1      ; sel_delete: first-record flag (1=first)
+
+; ---- Clipboard state ----
+clip_seg:          RESW 1      ; segment of clipboard buffer (DOS alloc)
+clip_used:         RESW 1      ; bytes currently in clipboard (0 = empty)
+clip_lines:        RESW 1      ; LF count in clipboard content
+clip_last_col:     RESW 1      ; visible column width of last line in clipboard
+
+; ---- ed_copy scratch (named to avoid stack-relative addressing) ----
+ec_s_line:         RESW 1      ; normalized selection start line
+ec_s_col:          RESW 1      ; normalized selection start col
+ec_e_line:         RESW 1      ; normalized selection end line
+ec_e_col:          RESW 1      ; normalized selection end col
+ec_save_line:      RESW 1      ; saved cursor line (restored after copy)
+ec_save_col:       RESW 1      ; saved cursor col (restored after copy)
+ec_byte_count:     RESW 1      ; total bytes to copy to clipboard
+
+; ---- ed_paste scratch ----
+ep_save_add:       RESW 1      ; saved add_used before paste append
 
 ; ---- TUI BSS ----
 shadow_buf:         RESB 4000
