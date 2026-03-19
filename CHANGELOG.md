@@ -1,5 +1,264 @@
 # TEDIT Changelog
 
+## v0.36.0 — Preventive fixes: 18 bug fixes across 9 phases (2026-03-19)
+
+Comprehensive preventive fix pass addressing 18 confirmed issues from the
+`TEDIT_PREVENTIVE_FIXES.md` audit. All fixes follow the same pattern: validate
+BEFORE modifying state, show an error dialog if the operation would fail, and
+abort cleanly. ~191 new instructions + ~300 bytes of strings.
+
+### Phase 1: Shared infrastructure
+- 8 new NUL-terminated error/warning strings added to `TEDIT.ASM`:
+  `s_err_save_fail`, `s_err_save_write`, `s_err_pt_full`, `s_err_undo_lost`,
+  `s_err_file_trunc`, `s_err_copy_big`, `s_err_paste_pt`, `s_err_redo_noop`
+- **M4 fix**: `m_str_buf_ask` updated from "Save and reload to continue?" to
+  "Save+reload? Undo history cleared." — warns user that undo history is lost
+
+### Phase 2: Save file error dialogs (H1)
+- File creation failure (INT 21h AH=3Ch CF=1): shows `s_err_save_fail` dialog,
+  `dirty` flag preserved, jumps to `.sf_done`
+- Partial write detection at 2 write sites (`.sf_break`, `.sf_flush`): checks
+  `CMP AX, CX` after INT 21h AH=40h, shows `s_err_save_write` dialog on
+  mismatch, closes file handle, `dirty` flag preserved
+
+### Phase 3: Piece table split pre-checks (C1, C4, H6)
+- 7 pre-check sites across 3 procedures in `ed_edit.inc`:
+  - S1: `insert_char` split path — 2-slot check, dialog, `JMP .ic_done`
+  - S2: `insert_char` insert_before — 1-slot check, dialog, `JMP .ic_done`
+  - S3: `insert_char` insert_after — 1-slot check, dialog, `JMP .ic_done`
+  - S4: `insert_crlf` split path — 2-slot check, dialog, `JMP .icr_done`
+  - S5: `insert_crlf` insert_before — 1-slot check, dialog, `JMP .icr_done`
+  - S6: `insert_crlf` insert_after — 1-slot check, dialog, `JMP .icr_done`
+  - S7: `delete_byte` split path — 1-slot check, `STC; RET` (no dialog, internal proc)
+- All checks fire BEFORE any piece descriptor is modified, preventing the
+  corruption where the left piece is shrunk but the right piece is never created
+
+### Phase 4: Range-delete save buffer overflow (C2)
+- Cumulative bounds check in `range_delete_pieces` Step 8: verifies
+  `rd_save_used + rd_save_count <= RD_MAX_PIECES` before copying descriptors
+  to `rd_save_buf`. Returns CF=1 on overflow instead of silently overwriting
+  past the buffer
+
+### Phase 5: Undo/redo robustness (C3, H4, H5, M5)
+- **C3**: `undo_execute` UR_DEL_RANGE handler shows `s_err_undo_lost` dialog
+  when `rd_save_used` has insufficient descriptors (piece count > 0). Records
+  with piece count = 0 (M5-invalidated) skip silently — cursor-restore only
+- **H4**: `redo_execute` UR_INS_RANGE handler shows `s_err_redo_noop` dialog
+  instead of silently advancing `undo_pos`. Record is consumed to prevent
+  stuck-in-loop on repeated Ctrl+Shift+Z
+- **H5**: `redo_execute` UR_DEL_RANGE handler refuses redo when
+  `rd_save_used + piece_count > RD_MAX_PIECES`. Shows `s_err_undo_lost` dialog,
+  skips deletion, advances `undo_pos`. Prevents creating irreversible operations
+- **M5**: `undo_discard_half` now scans surviving records after flushing
+  `rd_save_used = 0`. All surviving UR_DEL_RANGE records get `UR_CHAR = 0`
+  (piece count zeroed), preventing stale piece-count references. Uses
+  `TEST CX, CX / JZ` instead of `JCXZ` (avoids short-range limitation in
+  large binaries)
+
+### Phase 6: Paste failure handling (H2)
+- `ep_save_add` snapshot moved to top of `ed_paste` (before Stage 1), ensuring
+  rollback value is always valid — previously set only in Stage 3, leaving
+  `.ep_fail` paths from Stage 2 with a stale value
+- `.ep_fail` now rolls back `add_used` to `ep_save_add` and shows
+  `s_err_paste_pt` dialog before returning CF=1
+
+### Phase 7: Copy overflow dialog (M2, M4)
+- **M2**: New `.ec_offset_overflow` handler in `ed_copy` — when
+  `line_col_to_offset` returns CF=1 or DX != 0 (offset > 64K), shows
+  `s_err_copy_big` dialog instead of silently failing
+- **M4**: Buffer-full dialog text updated (done in Phase 1)
+
+### Phase 8: File truncation warning (H3)
+- `load_file` in `ed_core.inc`: after the loading loop, checks
+  `CMP BP, MAX_ORIG`. If the file filled all 1024 chunks (~32MB), shows
+  `s_err_file_trunc` warning dialog. File is still loaded (truncated) —
+  the dialog is informational
+
+### Phase 9: sel_delete_legacy pre-check (M3)
+- Before the character-by-character deletion loop, checks
+  `pt_count + 100 <= MAX_PT_PIECES`. If the piece table is within 100 slots
+  of capacity, shows `s_err_pt_full` dialog, calls `sel_clear`, returns CF=1.
+  This is a safety net for the rare case where the fast-path `sel_delete`
+  (which uses `range_delete_pieces`) falls through to the legacy path
+
+### Files changed
+- `TEDIT.ASM` — 8 error strings, `m_str_buf_ask` text update
+- `ed_edit.inc` — Phase 2 (save dialogs) + Phase 3 (7 pre-check sites)
+- `ed_core.inc` — Phase 4 (rd_save_buf bounds check) + Phase 8 (truncation warning)
+- `ed_undo.inc` — Phase 5 (C3, H4, H5, M5 — 4 code sites)
+- `ed_clip.inc` — Phase 6 (paste rollback) + Phase 7 (copy overflow dialog)
+- `ed_sel.inc` — Phase 9 (legacy delete capacity check)
+
+### New test harnesses
+- `test_pt_full.asm` — 6 tests: split refused (1 slot), boundary insert success,
+  boundary insert refused (0 slots), CRLF split refused, delete_byte CF=1,
+  normal operation
+- `test_undo_robust.asm` — 5 tests: redo paste dialog (H4), undo range-del
+  dialog (C3), invalidated record silent skip (C3+M5), redo refused (H5),
+  discard_half zeroes UR_CHAR (M5)
+
+### Test results
+- 3/3 existing regression tests pass (test_phase1, test_phase2, test_phase3)
+- 6/6 test_pt_full tests pass
+- 5/5 test_undo_robust tests pass
+- 7/7 smoke + integration tests pass (empty doc, file load, typing, save,
+  split insert, undo/redo cycle, select+delete+undo)
+- DOC_CTX_SIZE unchanged at 12440
+
+## v0.35.0 — Selection grace period (2026-03-18)
+
+### New features
+- **Selection grace period**: When holding Shift+Arrow to select text, releasing Shift
+  while still holding the arrow key now freezes both the selection and cursor for ~500ms.
+  This prevents accidental selection loss when Shift is released slightly before the
+  arrow key. During the grace window, nav keys are eaten entirely — no cursor movement,
+  no selection change. After ~500ms, the selection clears and cursor movement resumes
+  normally. Re-pressing Shift before the window expires resumes selection extension.
+
+### Implementation details
+- Grace period check at `.ext_dispatch` in `ed_keys.inc`, before nav key dispatch —
+  intercepts nav keys when no Shift + active selection + within tick window
+- Within grace: `CLC; RET` (key consumed, nothing happens)
+- Grace expired: `sel_clear` then normal nav dispatch
+- Shift held path records BIOS tick into `sel_shift_tick` for timer baseline
+- `SEL_GRACE_TICKS EQU 9` (~500ms at 18.2 ticks/sec)
+- Simplified `.cursor_moved` — removed redundant grace logic (now handled upstream)
+
+### Files changed
+- `ed_const.inc` — `SEL_GRACE_TICKS` changed from 5 to 9
+- `ed_keys.inc` — grace period check at `.ext_dispatch`, simplified `.cursor_moved`
+
+## v0.34.0 — INT 16h key polling fix (2026-03-17 10:40 UTC)
+
+### Bug fixes
+- **DOSBox-X nav-cluster key loss**: Arrow keys, Home, End, Delete, PgUp, PgDn on the
+  navigation cluster (E0h-prefixed) were intermittently lost in DOSBox-X. The root cause
+  is a race condition in DOSBox-X's `INT 21h AH=06h` two-byte protocol for E0h-prefixed
+  extended keys — between the two INT 21h calls, a keyboard interrupt can corrupt the
+  "extended pending" state, causing the second call to fail or return wrong data. Numpad
+  keys (00h prefix) were unaffected.
+- Replaced `tui_poll_key` implementation: switched from `INT 21h AH=06h` (two-call
+  protocol for extended keys) to `INT 16h AH=01h` (non-blocking peek) + `AH=00h`
+  (consume). INT 16h returns the complete keystroke (scan code + ASCII) in a single call,
+  eliminating the two-byte protocol entirely. Agent86 idle detection counts INT 16h
+  AH=01h polls, so no behavioral change there.
+
+### Files changed
+- `TUI/tui_event.inc` — `tui_poll_key` rewritten (INT 21h → INT 16h)
+
+## v0.33.0 — Clipboard Phase 3: Paste (2026-03-17)
+
+Paste inserts clipboard contents at the cursor position. If a selection is active,
+it is deleted first (paste-replaces-selection). Full Cut/Copy/Paste cycle now works
+end-to-end with undo support.
+
+### New features
+- `ed_paste` proc in `ed_clip.inc` — 5-stage pipeline: check clipboard → delete selection → check/compact add buffer → bulk copy + piece table insert (3 cases: before/after/split) → cursor advance + undo push
+- `menu_paste_handler` — Edit > Paste menu entry handler
+- Ctrl+V keyboard shortcut wired to `ed_paste`
+- Edit > Paste menu entry wired to `menu_paste_handler` (was stub)
+- Clipboard overflow dialog — `ed_copy` now shows "Selection too large to copy" msgbox when selection exceeds 16 KB (was silent failure)
+- `UR_INS_RANGE` (type 5) — new undo record type for paste operations
+
+### Bug fixes
+- Add buffer capacity check uses `JNC` (carry flag) instead of `CMP AX, ADD_BUF_BYTES`. `ADD_BUF_BYTES = 0x10000` wraps to 0 in 16-bit, causing every paste to trigger `ed_buffer_full` unnecessarily. Existing `insert_char` avoids this with `ADD_BUF_BYTES - 1` (= 0xFFFF).
+
+### Architecture
+- `ed_paste` creates a single piece in the piece table pointing to the add buffer, covering 3 insertion cases (before, after, split) matching `insert_char`'s existing patterns
+- Bulk copy: `clip_seg:0 → add_seg:add_used` via REP MOVSB with cross-segment discipline (DS=clip, ES=add, CS: for BSS)
+- Cursor advancement: single-line paste adds `clip_last_col` to `cur_col`; multi-line paste advances `cur_line` by `clip_lines` and sets `cur_col` to `clip_last_col`
+- Undo of paste calls `range_delete_pieces` to remove the pasted byte range
+- Redo of paste is a deliberate no-op — prevents LIFO `rd_save_buf` corruption in the paste-replaces-selection case
+- `.do_paste` in `ed_keys.inc` sets `undo_group_active = 0` to break typing group continuity
+
+### New constants (`ed_const.inc`)
+- `UR_INS_RANGE EQU 5` — range insertion (paste) undo record type
+
+### BSS additions (`TEDIT.ASM`, 2 bytes)
+- Paste scratch: `ep_save_add` (RESW 1) — saved `add_used` before paste append
+
+### New strings (`TEDIT.ASM`)
+- `m_str_clip_full` — "Selection too large to copy"
+
+### Known limitations
+- Redo of paste is a no-op (Ctrl+Shift+Z after undoing a paste does nothing)
+- Paste-replaces-selection requires 2x Ctrl+Z (consistent with type-over-selection)
+
+### Test results
+- 2/2 smoke tests passing
+- 10/10 integration tests passing (1 deferred: Ctrl+Home/End not in key dispatch)
+
+### Audits applied
+- Gemini audit: 1 rejected, 2 accepted (SI leak guard, capacity re-check)
+- Claude Code audit: 4 accepted (register calling convention fix, LIFO corruption prevention, group break, test deferral)
+
+## v0.32.0 — Clipboard Phase 2: Cut (2026-03-16)
+
+Cut = Copy + Delete. Ctrl+X copies selected text to clipboard, then deletes the
+selection. Single Ctrl+Z undoes the entire cut. No-op when no selection.
+
+### New features
+- `ed_cut` proc in `ed_clip.inc` — composes `ed_copy` + `sel_delete`
+- `menu_cut_handler` — Edit > Cut menu entry handler
+- Ctrl+X keyboard shortcut wired to `ed_cut`
+- Edit > Cut menu entry wired to `menu_cut_handler` (was stub)
+
+### Architecture
+- `ed_cut` is 5 instructions of glue: call ed_copy, check CF, call sel_delete, CLC, RET
+- No new BSS variables, constants, or undo record types
+- Undo: sel_delete pushes one UR_DEL_RANGE record; clipboard unaffected by undo
+
+## v0.31.0 — Clipboard Phase 1: Copy (2026-03-16)
+
+Clipboard infrastructure and `ed_copy` implementation. Ctrl+C copies selected
+text to a 16 KB clipboard buffer. Selection persists after copy. Cut and Paste
+remain stubs for future phases.
+
+### New features
+- `ed_clip.inc` — new include file with `ed_copy` proc and `menu_copy_handler`
+- 16 KB clipboard segment allocated at startup, freed at exit (`CLIP_SEG_PARA = 0400h`)
+- Ctrl+C copies selected text (silent no-op when no selection — previously showed "Not yet implemented" dialog)
+- Pre-computed clipboard metrics: `clip_lines` (LF count), `clip_last_col` (last line column width)
+- Edit > Copy menu entry wired to `menu_copy_handler`
+
+### Bug fixes
+- `ed_compact` now calls `undo_clear` after reloading from disk — previously left dangling undo records referencing freed segments
+
+### Architecture
+- `ed_copy`: 6-stage pipeline (preconditions → normalize → start offset → end offset → find piece → copy loop)
+- All values surviving across CALLs in named BSS scratch (`ec_*`), zero stack-relative addressing
+- Copy loop: DS=text segment (LODSB), ES=clip segment (STOSB), CS: prefix for BSS access
+- Relies on `resolve_piece` preserving DI (clipboard write offset) and BP (remaining byte count)
+
+### New constants (`ed_const.inc`)
+- `CLIP_SEG_PARA EQU 0400h` (1024 paragraphs = 16 KB)
+- `CLIP_BUF_BYTES EQU CLIP_SEG_PARA * 16` (16384)
+
+### BSS additions (`TEDIT.ASM`, 30 bytes)
+- Clipboard state: `clip_seg`, `clip_used`, `clip_lines`, `clip_last_col` (8 bytes)
+- Copy scratch: `ec_s_line`, `ec_s_col`, `ec_e_line`, `ec_e_col`, `ec_save_line`, `ec_save_col`, `ec_byte_count` (14 bytes)
+- Reuses existing `rd_start_off` for start byte offset
+
+### Test results
+- Unit test (`test_copy.asm`): 8/8 assertions pass
+- Smoke tests: 2/2 IDLE (empty doc + file loaded)
+- Integration tests: 6/6 pass (no-selection silent, selection persists, multi-line, loaded file, typing after copy, undo after copy)
+- Full report: `phase1_report.md`
+
+### Files changed
+| File | Change |
+|------|--------|
+| `ed_const.inc` | +3 lines: clipboard constants |
+| `ed_file.inc` | +2 lines: `CALL undo_clear` in `ed_compact` |
+| `ed_clip.inc` | **New** (~230 lines): `ed_copy` + `menu_copy_handler` |
+| `TEDIT.ASM` | +~30 lines: BSS, include, alloc/free, menu wiring |
+| `ed_keys.inc` | +5 lines: separate `.do_copy` handler |
+| `create_test_file.asm` | **New**: test data generator |
+| `test_copy.asm` | **New** (~310 lines): 8-case unit test |
+| `check_test.js` | **New**: test output checker utility |
+
+---
+
 ## v0.30.0 — Range Delete Phase 5: Validation & Testing (2026-03-15)
 
 No code changes. Comprehensive validation of the Range Delete feature (Phases 1-4).

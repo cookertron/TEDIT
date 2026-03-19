@@ -250,6 +250,30 @@ sel_delete_legacy PROC
     MOV     [sd_s_line], BX
     MOV     [sd_s_col], CX
 
+    ; ---- M3: Rough capacity check ----
+    MOV     AX, [pt_count]
+    ADD     AX, 100             ; conservative headroom
+    CMP     AX, MAX_PT_PIECES
+    JBE     .sdl_capacity_ok
+    ; Near capacity — too risky for char-by-char deletion
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    CALL    sel_clear
+    POP     BP
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    STC
+    RET
+.sdl_capacity_ok:
+
     ; ---- Position cursor at selection end ----
     MOV     [cur_line], DX
     MOV     [cur_col], SI

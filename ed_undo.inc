@@ -177,6 +177,36 @@ undo_discard_half PROC
     ; Flush range-delete save buffer (descriptors for discarded records are now invalid)
     MOV     WORD [rd_save_used], 0
 
+    ; ---- M5: Invalidate surviving UR_DEL_RANGE records ----
+    PUSH    ES
+    PUSH    BX
+    PUSH    CX
+
+    MOV     AX, [undo_seg]
+    MOV     ES, AX
+    XOR     BX, BX                      ; BX = byte offset into undo buffer
+    MOV     CX, [undo_count]            ; CX = number of surviving records
+
+.udh_scan:
+    TEST    CX, CX
+    JZ      .udh_scan_done
+
+    MOV     AL, ES:[BX + UR_TYPE]
+    AND     AL, UR_TYPE_MASK
+    CMP     AL, UR_DEL_RANGE
+    JNE     .udh_scan_next
+    MOV     BYTE ES:[BX + UR_CHAR], 0  ; zero piece count → non-restorable
+
+.udh_scan_next:
+    ADD     BX, UR_SIZE
+    DEC     CX
+    JMP     .udh_scan
+
+.udh_scan_done:
+    POP     CX
+    POP     BX
+    POP     ES
+
     POP     DI
     POP     SI
     POP     CX
@@ -381,8 +411,23 @@ undo_execute PROC
 
     ; Check if save buffer has enough descriptors
     CMP     CX, [rd_save_used]
-    JA      .u_restore                  ; not enough — skip piece restore
+    JBE     .u_del_range_ok             ; enough descriptors → proceed
 
+    ; ---- C3: Not enough saved descriptors — undo incomplete ----
+    ; Show dialog ONLY if piece count > 0 (count=0 means record was
+    ; invalidated by undo_discard_half — no dialog for those)
+    TEST    CX, CX
+    JZ      .u_restore                  ; count=0 → silently skip
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_undo_lost
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .u_restore                  ; still restore cursor position
+
+.u_del_range_ok:
     ; Save piece count for later
     PUSH    CX
 
@@ -671,8 +716,19 @@ redo_execute PROC
     MOV     AX, [rd_save_used]
     ADD     AX, CX
     CMP     AX, RD_MAX_PIECES
-    JA      .r_dr_skip_save             ; can't save — just remove without re-saving
+    JBE     .r_dr_save_ok
 
+    ; ---- H5: Save buffer full — refuse the redo entirely ----
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_undo_lost
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .r_advance                  ; skip deletion, advance undo_pos
+
+.r_dr_save_ok:
     ; Save descriptors from piece table to rd_save_buf (forward order)
     PUSH    ES
     PUSH    DS
@@ -713,7 +769,6 @@ redo_execute PROC
     ; Update rd_save_used
     ADD     [rd_save_used], CX
 
-.r_dr_skip_save:
     ; Remove pieces in reverse order (last to first preserves indices)
     MOV     BX, [rnd_pi]
     ADD     BX, CX
@@ -736,6 +791,14 @@ redo_execute PROC
     ; replaces a selection). UR_CHAR remains 0 from the original push.
 .r_ins_range:
     ADD     SP, 6                       ; discard doc_line/col/char from stack
+    ; ---- H4: Inform user that redo is not available ----
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_redo_noop
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
     JMP     .r_advance
 
     ; ---- Advance position and check for group continuation ----

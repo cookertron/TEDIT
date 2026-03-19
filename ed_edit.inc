@@ -126,6 +126,20 @@ insert_char PROC
     JAE     .ic_insert_after
 
     ; Otherwise: split piece BX at offset SI
+    ; ---- S1: PRE-CHECK split+insert needs 2 free slots ----
+    MOV     AX, [pt_count]
+    ADD     AX, 2
+    CMP     AX, MAX_PT_PIECES
+    JBE     .ic_split_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .ic_done
+.ic_split_ok:
     ; We need: [left(len=SI)] [new_char(len=1)] [right(len=DX-SI)]
     ; Read original piece info with ES = pt_seg
     MOV     AX, [pt_seg]
@@ -218,11 +232,19 @@ insert_char PROC
     JMP     .ic_done
 
 .ic_insert_before:
+    ; ---- S2: PRE-CHECK insert needs 1 free slot ----
+    CMP     WORD [pt_count], MAX_PT_PIECES
+    JB      .ic_ib_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .ic_done
+.ic_ib_ok:
     ; Insert new piece at index BX (before current piece)
-    ; BX >= pt_count here: cursor was past all pieces, so
-    ; chkpt_adjust_insert will incorrectly bump checkpoints
-    ; that pointed to the (non-existent) sentinel position.
-    ; Mark meta dirty so rebuild_meta corrects them.
     MOV     BYTE [meta_dirty], 1
     CALL    pt_insert
     JC      .ic_done
@@ -261,6 +283,18 @@ insert_char PROC
     JMP     .ic_done
 
 .ic_insert_after:
+    ; ---- S3: PRE-CHECK insert needs 1 free slot ----
+    CMP     WORD [pt_count], MAX_PT_PIECES
+    JB      .ic_ia_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .ic_done
+.ic_ia_ok:
     ; Insert new piece at index BX+1 (after current piece)
     INC     BX
     CALL    pt_insert
@@ -372,6 +406,20 @@ insert_crlf PROC
     CMP     SI, DX
     JAE     .icr_insert_after
 
+    ; ---- S4: PRE-CHECK split+insert needs 2 free slots ----
+    MOV     AX, [pt_count]
+    ADD     AX, 2
+    CMP     AX, MAX_PT_PIECES
+    JBE     .icr_split_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .icr_done
+.icr_split_ok:
     ; ---- Split piece: [left] [CRLF] [right] ----
     MOV     AX, [pt_seg]
     MOV     ES, AX
@@ -428,11 +476,35 @@ insert_crlf PROC
     JMP     .icr_done
 
 .icr_insert_before:
+    ; ---- S5: PRE-CHECK insert needs 1 free slot ----
+    CMP     WORD [pt_count], MAX_PT_PIECES
+    JB      .icr_ib_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .icr_done
+.icr_ib_ok:
     CALL    pt_insert
     JC      .icr_done
     JMP     .icr_write_piece
 
 .icr_insert_after:
+    ; ---- S6: PRE-CHECK insert needs 1 free slot ----
+    CMP     WORD [pt_count], MAX_PT_PIECES
+    JB      .icr_ia_ok
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_pt_full
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .icr_done
+.icr_ia_ok:
     INC     BX
     CALL    pt_insert
     JC      .icr_done
@@ -568,6 +640,12 @@ delete_byte PROC
     RET
 
 .db_split:
+    ; ---- S7: PRE-CHECK split needs 1 free slot ----
+    CMP     WORD [pt_count], MAX_PT_PIECES
+    JB      .db_split_cap_ok
+    STC
+    RET                             ; CF=1: caller handles gracefully
+.db_split_cap_ok:
     ; Left: length = SI.  Right: start += SI+1, length = DX - SI - 1
     PUSH    DS
     MOV     AX, [pt_seg]
@@ -800,7 +878,17 @@ save_file PROC
     XOR     CX, CX            ; normal attributes
     MOV     AH, 3Ch
     INT     21h
-    JC      .sf_done           ; create failed
+    JNC     .sf_created
+    ; ---- Creation failed — show dialog ----
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_save_fail
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .sf_done           ; dirty flag remains set
+.sf_created:
 
     MOV     BP, AX             ; BP = file handle
 
@@ -861,8 +949,20 @@ save_file PROC
 
     PUSH    CS
     POP     DS
-    JC      .sf_break_err
+    JC      .sf_write_failed_break
+    CMP     AX, CX
+    JE      .sf_write_ok_break
+.sf_write_failed_break:
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_save_write
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .sf_break_err
 
+.sf_write_ok_break:
     POP     DX                 ; current piece length
     POP     SI                 ; current piece base
     POP     AX                 ; current piece segment
@@ -885,7 +985,18 @@ save_file PROC
 
     PUSH    CS
     POP     DS
-    JC      .sf_err
+    JC      .sf_write_failed_flush
+    CMP     AX, CX
+    JE      .sf_close_ok
+.sf_write_failed_flush:
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_save_write
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .sf_err
 
 .sf_close_ok:
     PUSH    CS

@@ -115,9 +115,19 @@ m_str_error:     DB 'Error', 0
 m_str_err_open:  DB 'Cannot open file', 0
 m_str_err_mem:   DB 'Out of memory', 0
 m_str_buf_ttl:   DB 'Buffer Full', 0
-m_str_buf_ask:   DB 'Save and reload to continue?', 0
+m_str_buf_ask:   DB 'Save+reload? Undo history cleared.', 0
 m_str_buf_err:   DB 'Reload failed - file on disk', 0
 m_str_clip_full: DB 'Selection too large to copy', 0
+
+; ---- Error/warning strings for preventive fixes ----
+s_err_save_fail:   DB 'Error: Could not save file.', 0
+s_err_save_write:  DB 'Error: Write failed (disk full?).', 0
+s_err_pt_full:     DB 'Piece table full. Save and reload.', 0
+s_err_undo_lost:   DB 'Cannot undo: history too old.', 0
+s_err_file_trunc:  DB 'Warning: File exceeds 32MB limit.', 0
+s_err_copy_big:    DB 'Selection exceeds copy limit.', 0
+s_err_paste_pt:    DB 'Paste failed: table full.', 0
+s_err_redo_noop:   DB 'Redo not available for paste.', 0
 
 ; ---- Edit menu strings ----
 m_str_edit:      DB 'Edit', 0

@@ -153,6 +153,19 @@ load_file PROC
     POP     ES
 .done:
     MOV     [orig_count], BP
+
+    ; ---- H3: Check if file was truncated at capacity limit ----
+    CMP     BP, MAX_ORIG
+    JB      .lf_no_trunc
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_file_trunc
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+.lf_no_trunc:
+
     POP     BP
     POP     DI
     POP     SI
@@ -1367,6 +1380,15 @@ range_delete_pieces PROC
     MOV     AX, [rd_end_pi]
     CMP     AX, [rd_start_pi]
     JB      .rdp_ok                ; nothing to remove
+
+    ; ---- NEW: Cumulative bounds check ----
+    MOV     AX, [rd_save_used]
+    ADD     AX, [rd_save_count]
+    CMP     AX, RD_MAX_PIECES
+    JBE     .rdp_save_ok
+    ; Overflow: cumulative saved pieces exceed buffer capacity
+    JMP     .rdp_error
+.rdp_save_ok:
 
     ; Copy descriptors: source = pt_seg:start_pi*10, dest = rd_save_buf
     PUSH    ES

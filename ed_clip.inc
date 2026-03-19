@@ -80,9 +80,9 @@ ed_copy PROC
     ; ================================================================
 
     CALL    line_col_to_offset
-    JC      .ec_restore_fail        ; overflow
+    JC      .ec_offset_overflow     ; overflow
     TEST    DX, DX
-    JNZ     .ec_restore_fail        ; offset > 64K
+    JNZ     .ec_offset_overflow     ; offset > 64K
 
     ; AX = start byte offset (16-bit). Save to scratch.
     MOV     [rd_start_off], AX      ; reuse existing scratch variable
@@ -96,9 +96,9 @@ ed_copy PROC
     MOV     BX, [ec_e_line]
     MOV     CX, [ec_e_col]
     CALL    line_col_to_offset
-    JC      .ec_restore_fail
+    JC      .ec_offset_overflow
     TEST    DX, DX
-    JNZ     .ec_restore_fail
+    JNZ     .ec_offset_overflow
 
     ; AX = end byte offset. Compute byte count.
     SUB     AX, [rd_start_off]      ; AX = end - start = byte_count
@@ -299,6 +299,16 @@ ed_copy PROC
     POP     SI                          ; restore SI
     JMP     .ec_restore_fail
 
+.ec_offset_overflow:
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_copy_big
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+    JMP     .ec_restore_fail
+
 .ec_restore_fail:
     ; Something failed after we saved the cursor — restore it
     MOV     AX, [ec_save_line]
@@ -404,6 +414,10 @@ ed_paste PROC
     PUSH    DI
     PUSH    ES
 
+    ; ---- Snapshot add_used for safe rollback on any failure path ----
+    MOV     AX, [add_used]
+    MOV     [ep_save_add], AX
+
     ; ================================================================
     ; STAGE 1: Delete selection if active
     ;   sel_delete pushes UR_DEL_RANGE, clears sel_active,
@@ -446,7 +460,8 @@ ed_paste PROC
     ;   CX = clip_used (byte count)
     ; ================================================================
 
-    ; Save old add_used — this is the start offset of our new piece
+    ; ep_save_add already set at top of function (snapshot for rollback)
+    ; Update it now to the current add_used (may differ after compact)
     MOV     AX, [add_used]
     MOV     [ep_save_add], AX
 
@@ -733,6 +748,19 @@ ed_paste PROC
     RET
 
 .ep_fail:
+    ; ---- Roll back add buffer to pre-paste state ----
+    MOV     AX, [ep_save_add]
+    MOV     [add_used], AX
+
+    ; ---- Show error dialog ----
+    PUSH    SI
+    PUSH    DI
+    MOV     SI, s_err_paste_pt
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    POP     DI
+    POP     SI
+
     POP     ES
     POP     DI
     POP     BP
