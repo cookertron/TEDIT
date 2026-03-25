@@ -44,6 +44,18 @@ tui_ed_mouse_press:
     CMP     AL, ED_TEXT_ROWS
     JAE     .press_done             ; status bar row or below -> ignore
 
+    ; ---- Scrollbar click? ----
+    CMP     BYTE [ed_sb_active], 0
+    JE      .press_not_sb
+    PUSH    CX
+    XOR     CH, CH
+    MOV     CL, AH                  ; CL = ed_col
+    CMP     CX, [ed_text_cols]      ; click on scrollbar column?
+    POP     CX
+    JB      .press_not_sb
+    JMP     .press_scrollbar
+.press_not_sb:
+
     ; ---- Compute target line + column ----
     ; ---- target_line = top_line + ed_row ----
     XOR     DH, DH
@@ -85,6 +97,89 @@ tui_ed_mouse_press:
     OR      BYTE [mouse_state + MS_FLAGS], MSF_CTRL_DRAG
 
     ; ---- Request redraw ----
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    JMP     .press_done
+
+    ; ============================================================
+    ; Scrollbar click handler
+    ; AL = ed_row (0..ED_TEXT_ROWS-1), BX = ctrl ptr, SI = win ptr
+    ; ============================================================
+.press_scrollbar:
+    ; Row 0 = up arrow → scroll up 1 line
+    TEST    AL, AL
+    JNZ     .sb_not_up
+    CMP     WORD [top_line], 0
+    JE      .sb_scroll_done
+    DEC     WORD [top_line]
+    DEC     WORD [cur_line]
+    JMP     .sb_scroll_done
+
+.sb_not_up:
+    ; Last row = down arrow → scroll down 1 line
+    CMP     AL, ED_TEXT_ROWS - 1
+    JNE     .sb_track_click
+    MOV     CX, [total_lines]
+    SUB     CX, ED_TEXT_ROWS        ; CX = max top_line
+    CMP     [top_line], CX
+    JAE     .sb_scroll_done
+    INC     WORD [top_line]
+    INC     WORD [cur_line]
+    JMP     .sb_scroll_done
+
+.sb_track_click:
+    ; Track region — compute thumb position to decide page up/down or drag
+    ; track_row = ed_row - 1 (0-based within track)
+    DEC     AL                      ; AL = track_row
+    ; Compare with thumb region (pre-computed in sb_scratch by draw)
+    CMP     AL, [sb_scratch]        ; vs thumb_pos
+    JB      .sb_page_up
+    MOV     AH, [sb_scratch]
+    ADD     AH, [sb_scratch + 1]    ; AH = thumb_pos + thumb_size
+    CMP     AL, AH
+    JAE     .sb_page_down
+
+    ; ---- On thumb → start drag ----
+    SUB     AL, [sb_scratch]        ; AL = offset within thumb
+    MOV     [mouse_state + MS_SB_CTRL], BX
+    MOV     BYTE [mouse_state + MS_SB_DIR], 0       ; vertical
+    MOV     [mouse_state + MS_SB_OFFSET], AL
+    OR      BYTE [mouse_state + MS_FLAGS], MSF_SB_DRAG
+    JMP     .sb_scroll_done
+
+.sb_page_up:
+    MOV     CX, [top_line]
+    SUB     CX, ED_TEXT_ROWS
+    JNC     .sb_pu_set
+    XOR     CX, CX
+.sb_pu_set:
+    MOV     [top_line], CX
+    ; Keep cursor within visible range
+    MOV     AX, CX
+    ADD     AX, ED_TEXT_ROWS
+    DEC     AX
+    CMP     [cur_line], AX
+    JBE     .sb_scroll_done
+    MOV     [cur_line], CX          ; snap to top of page
+    JMP     .sb_scroll_done
+
+.sb_page_down:
+    MOV     CX, [top_line]
+    ADD     CX, ED_TEXT_ROWS
+    MOV     AX, [total_lines]
+    SUB     AX, ED_TEXT_ROWS        ; AX = max top_line
+    CMP     CX, AX
+    JBE     .sb_pd_set
+    MOV     CX, AX
+.sb_pd_set:
+    MOV     [top_line], CX
+    ; Keep cursor within visible range
+    CMP     [cur_line], CX
+    JAE     .sb_scroll_done
+    MOV     [cur_line], CX          ; snap to top of page
+    JMP     .sb_scroll_done
+
+.sb_scroll_done:
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
 .press_done:

@@ -197,7 +197,29 @@ tui_modal_dispatch: PROC
     RET                         ; ignore all other keys (q/Q etc.)
 
 .mdl_ext:
-    RET                         ; ignore all extended keys in modal
+    CMP AL, KEY_RIGHT
+    JZ .mdl_tab                 ; Right arrow = focus next (same as Tab)
+    CMP AL, KEY_LEFT
+    JZ .mdl_left
+    RET                         ; ignore other extended keys in modal
+
+.mdl_left:
+    ; Focus cycle backward within top window
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .mdl_left_done
+    XOR AH, AH
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .mdl_left_done
+    CALL tui_ctrl_focus_prev
+.mdl_left_done:
+    POP SI
+    RET
 
 .mdl_cancel:
     MOV BYTE [fw_state + FW_DLG_RESULT], DLG_CANCEL

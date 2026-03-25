@@ -113,7 +113,7 @@ m_str_acc_cs:   DB 'Ctrl+S', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.53', 0
+m_str_about_1:   DB 'TEDIT v0.54', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -1192,7 +1192,7 @@ menu_about_handler:
     ; Interior: 34 wide, 9 rows (5 lines + 1 blank + 1 blank + 1 button + 1 pad)
     ; WIN_W = 36, WIN_H = 11
 
-    ; ---- Line 1: "TEDIT v0.53" (centered label) ----
+    ; ---- Line 1: "TEDIT v0.54" (centered label) ----
     MOV     DI, dlg_label
     MOV     BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
@@ -1320,6 +1320,7 @@ main:
     ; ---- Initialize tab defaults (before parse_args may override) ----
     MOV     WORD [tab_width], ED_TAB_DEFAULT
     MOV     WORD [tab_mask], ED_TAB_DEFAULT - 1
+    MOV     WORD [ed_text_cols], ED_COLS
     MOV     BYTE [filename], 0          ; ensure clean for parse_args flag check
 
     ; ---- Parse command line ----
@@ -1640,6 +1641,10 @@ tab_mask:           RESW 1      ; tab_width - 1 (bitmask for modulo)
 ; ---- Render scratch for tab support ----
 rnd_byte_col:       RESW 1      ; byte column during render (for selection)
 rnd_visual_col:     RESW 1      ; visual column during render (for tab stops)
+
+; ---- Editor scrollbar ----
+ed_text_cols:       RESW 1      ; effective text width (ED_COLS or ED_COLS-1)
+ed_sb_active:       RESB 1      ; 1 if vertical scrollbar visible
 
 ; ---- Overwrite mode ----
 overwrite_mode:     RESB 1      ; 0 = insert, 1 = overwrite

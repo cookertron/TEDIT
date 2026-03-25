@@ -1969,8 +1969,19 @@ menu_replace_handler PROC
     JA      .mr_perm_ask
 
     ; Small count — use normal undoable Replace All
-    ; Set up selection for first match
+    ; Re-find first match from BOF (or sel start) so we replace the whole document
     MOV     WORD [replace_count], 0     ; reset counter for actual replacements
+    TEST    BYTE [find_flags], FIND_FLAG_SEL
+    JNZ     .mr_ra_from_sel
+    XOR     BX, BX
+    XOR     CX, CX
+    JMP     .mr_ra_refind
+.mr_ra_from_sel:
+    MOV     BX, [find_sel_s_line]
+    MOV     CX, [find_sel_s_col]
+.mr_ra_refind:
+    CALL    find_forward
+    JC      .mr_replace_done            ; shouldn't happen — we just counted > 0
     JMP     .mr_ra_set_sel
 
     ; ---- Permanent replace: warn user ----

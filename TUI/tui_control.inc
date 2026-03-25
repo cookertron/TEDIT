@@ -322,6 +322,116 @@ tui_ctrl_focus_next: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
+; tui_ctrl_focus_prev - Cycle focus to previous focusable control
+; Input:  SI = window struct pointer
+; Output: CF=0 if focus changed, CF=1 if no focusable control
+; Walks the singly-linked list from HEAD, tracking the last focusable
+; control seen before the current focus. If current is first, wraps to last.
+; ----------------------------------------------------------------------------
+tui_ctrl_focus_prev: PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+
+    MOV DX, [SI + WIN_FOCUS]   ; DX = current focus
+    OR DX, DX
+    JZ .fp_start_from_head
+
+    ; Walk list from head, find last focusable before current
+    XOR CX, CX                 ; CX = last focusable seen (0 = none yet)
+    MOV BX, [SI + WIN_FIRST]
+
+.fp_scan:
+    OR BX, BX
+    JZ .fp_wrap_to_last         ; reached end without finding current
+    CMP BX, DX
+    JZ .fp_found_current        ; reached current focus
+
+    ; Is this control focusable+enabled?
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_FOCUSABLE
+    JZ .fp_scan_next
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_ENABLED
+    JZ .fp_scan_next
+    MOV CX, BX                 ; remember as candidate
+
+.fp_scan_next:
+    MOV BX, [BX + CTRL_NEXT]
+    JMP .fp_scan
+
+.fp_found_current:
+    ; CX = last focusable before current (0 if current was first)
+    OR CX, CX
+    JNZ .fp_set_focus
+
+    ; Current was first focusable — wrap to last focusable in list
+.fp_wrap_to_last:
+    ; Continue from current position (or head) to find last focusable
+    CMP BX, 0
+    JZ .fp_from_head
+    MOV BX, [BX + CTRL_NEXT]   ; skip past current
+    JMP .fp_tail_scan
+.fp_from_head:
+    MOV BX, [SI + WIN_FIRST]
+.fp_tail_scan:
+    OR BX, BX
+    JZ .fp_check_last
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_FOCUSABLE
+    JZ .fp_tail_next
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_ENABLED
+    JZ .fp_tail_next
+    MOV CX, BX
+.fp_tail_next:
+    MOV BX, [BX + CTRL_NEXT]
+    JMP .fp_tail_scan
+
+.fp_check_last:
+    OR CX, CX
+    JZ .fp_no_change
+
+.fp_set_focus:
+    CMP CX, DX
+    JZ .fp_no_change            ; same as current
+    MOV [SI + WIN_FOCUS], CX
+    MOV BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    JMP .fp_ret
+
+.fp_start_from_head:
+    ; No current focus — find last focusable
+    MOV BX, [SI + WIN_FIRST]
+    XOR CX, CX
+.fp_head_loop:
+    OR BX, BX
+    JZ .fp_head_done
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_FOCUSABLE
+    JZ .fp_head_next
+    TEST BYTE [BX + CTRL_FLAGS], CTRLF_ENABLED
+    JZ .fp_head_next
+    MOV CX, BX
+.fp_head_next:
+    MOV BX, [BX + CTRL_NEXT]
+    JMP .fp_head_loop
+.fp_head_done:
+    OR CX, CX
+    JZ .fp_no_change
+    MOV [SI + WIN_FOCUS], CX
+    MOV BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    JMP .fp_ret
+
+.fp_no_change:
+    STC
+
+.fp_ret:
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+ENDP
+
+; ----------------------------------------------------------------------------
 ; tui_ctrl_activate - Activate the focused control (button press)
 ; Input: SI = window struct pointer
 ; ----------------------------------------------------------------------------

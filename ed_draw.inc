@@ -136,6 +136,57 @@ tui_ctrl_draw_editor:
     ; Save absolute row for cursor drawing
     MOV     [ed_abs_row], DH
 
+    ; ---- Scrollbar visibility ----
+    MOV     WORD [ed_text_cols], ED_COLS
+    MOV     BYTE [ed_sb_active], 0
+    MOV     AX, [total_lines]
+    CMP     AX, ED_TEXT_ROWS
+    JBE     .sb_setup_done
+    MOV     WORD [ed_text_cols], ED_COLS - 1
+    MOV     BYTE [ed_sb_active], 1
+    ; ---- Pre-compute scrollbar thumb (16-bit safe) ----
+    ; track_len = ED_TEXT_ROWS - 2 = 21
+    ; thumb_size = max(1, min(track_len, (ED_TEXT_ROWS * track_len) / total))
+    PUSH    DX
+    MOV     AX, ED_TEXT_ROWS * (ED_TEXT_ROWS - 2)   ; visible * track_len
+    XOR     DX, DX
+    DIV     WORD [total_lines]          ; AX = thumb_size (16-bit div)
+    OR      AX, AX
+    JNZ     .sb_ts_ok
+    MOV     AX, 1
+.sb_ts_ok:
+    CMP     AX, ED_TEXT_ROWS - 2
+    JBE     .sb_ts_clamp
+    MOV     AX, ED_TEXT_ROWS - 2
+.sb_ts_clamp:
+    MOV     [sb_scratch + 1], AL        ; [1] = thumb_size
+    ; thumb_pos = (top_line * (track_len - thumb_size)) / max_scroll
+    ; max_scroll = total_lines - ED_TEXT_ROWS
+    MOV     CX, [total_lines]
+    SUB     CX, ED_TEXT_ROWS            ; CX = max_scroll
+    JCXZ    .sb_pos_zero
+    MOV     AH, ED_TEXT_ROWS - 2
+    SUB     AH, AL                      ; AH = range = track_len - thumb_size
+    MOV     AL, AH
+    XOR     AH, AH                      ; AX = range
+    PUSH    BX
+    MOV     BX, AX                      ; BX = range
+    MOV     AX, [top_line]
+    MUL     BX                          ; DX:AX = top_line * range
+    DIV     CX                          ; AX = thumb_pos
+    POP     BX
+    CMP     AL, ED_TEXT_ROWS - 2
+    JB      .sb_tp_ok
+    MOV     AL, ED_TEXT_ROWS - 3        ; clamp to last possible pos
+.sb_tp_ok:
+    MOV     [sb_scratch], AL            ; [0] = thumb_pos
+    POP     DX
+    JMP     .sb_setup_done
+.sb_pos_zero:
+    MOV     BYTE [sb_scratch], 0
+    POP     DX
+.sb_setup_done:
+
     ; ---- Selection pre-render setup ----
     MOV     BYTE [sel_rendering], 0
     CMP     BYTE [sel_active], 0
@@ -200,8 +251,12 @@ tui_ctrl_draw_editor:
     ; If rnd_visual_col > left_col, a tab was partially consumed.
     ; Fill the overshoot columns with spaces.
     MOV     CX, CS:[rnd_visual_col]
+    CMP     CX, CS:[left_col]
+    JA      .has_overshoot          ; rnd_visual_col > left_col → tab overshoot
+    XOR     CX, CX                  ; no overshoot: zero column counter
+    JMP     .no_overshoot
+.has_overshoot:
     SUB     CX, CS:[left_col]
-    JCXZ    .no_overshoot           ; no overshoot (or no hscroll)
     ; Determine attribute for the partially-visible tab
     MOV     AH, ED_ATTR_NORM
     CMP     BYTE CS:[sel_rendering], 0
@@ -233,7 +288,7 @@ tui_ctrl_draw_editor:
     MOV     AH, ED_ATTR_NORM
 
 .char_loop:
-    CMP     CX, ED_COLS
+    CMP     CX, CS:[ed_text_cols]
     JAE     .row_done
     CMP     SI, CS:[rnd_len]
     JAE     .adv_piece
@@ -304,7 +359,7 @@ tui_ctrl_draw_editor:
     MOV     DX, CS:[tab_width]
     SUB     DX, BX                  ; DX = spaces to render
 .cl_tab_loop:
-    CMP     CX, ED_COLS
+    CMP     CX, CS:[ed_text_cols]
     JAE     .cl_tab_done
     MOV     AL, ' '
     MOV     ES:[DI], AX
@@ -445,7 +500,7 @@ tui_ctrl_draw_editor:
     PUSH    CS
     POP     DS
 .row_pad_com:
-    MOV     AX, ED_COLS
+    MOV     AX, [ed_text_cols]
     SUB     AX, CX
     MOV     CX, AX
     JCXZ    .row_next
@@ -454,11 +509,47 @@ tui_ctrl_draw_editor:
     JMP     .row_next
 
 .blank_row:
-    MOV     CX, ED_COLS
+    MOV     CX, [ed_text_cols]
     MOV     AX, ED_ATTR_NORM * 256 + 20h
     REP     STOSW
 
 .row_next:
+    ; ---- Write scrollbar column if active ----
+    CMP     BYTE [ed_sb_active], 0
+    JE      .rn_no_sb
+    PUSH    AX
+    MOV     AX, [rnd_row]
+    ; Row 0 = up arrow
+    TEST    AX, AX
+    JNZ     .rn_not_up
+    MOV     AX, CLR_SB_ARROW * 256 + SB_ARROW_UP
+    JMP     .rn_sb_write
+.rn_not_up:
+    ; Last text row = down arrow
+    CMP     AX, ED_TEXT_ROWS - 1
+    JNZ     .rn_track
+    MOV     AX, CLR_SB_ARROW * 256 + SB_ARROW_DN
+    JMP     .rn_sb_write
+.rn_track:
+    ; Track region: track_row = rnd_row - 1
+    DEC     AX                          ; AX = track_row (0-based)
+    ; Check if within thumb: thumb_pos <= track_row < thumb_pos + thumb_size
+    CMP     AL, [sb_scratch]            ; vs thumb_pos
+    JB      .rn_track_bg
+    MOV     AH, [sb_scratch]
+    ADD     AH, [sb_scratch + 1]        ; AH = thumb_pos + thumb_size
+    CMP     AL, AH
+    JAE     .rn_track_bg
+    MOV     AX, CLR_SB_THUMB * 256 + SB_THUMB
+    JMP     .rn_sb_write
+.rn_track_bg:
+    MOV     AX, CLR_SB_TRACK * 256 + SB_TRACK
+.rn_sb_write:
+    STOSW
+    POP     AX
+    JMP     .rn_advance
+.rn_no_sb:
+.rn_advance:
     INC     WORD [rnd_row]
     INC     BP
     JMP     .row_loop
@@ -690,7 +781,7 @@ ed_draw_cursor PROC
     MOV     AX, [cur_col]
     CALL    byte_to_visual_col     ; AX = visual column of cursor
     SUB     AX, [left_col]
-    CMP     AX, ED_COLS
+    CMP     AX, [ed_text_cols]
     JAE     .no_cursor
     SHL     AX, 1
     ADD     DI, AX

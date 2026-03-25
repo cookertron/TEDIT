@@ -779,9 +779,15 @@ scroll_to_cursor PROC
     CMP     AX, [left_col]
     JB      .scroll_left
 
-    ; If visual_col >= left_col + ED_COLS: scroll right
+    ; If visual_col >= left_col + visible_cols: scroll right
+    ; visible_cols = ED_COLS, or ED_COLS-1 when scrollbar active
     MOV     BX, [left_col]
     ADD     BX, ED_COLS
+    MOV     CX, [total_lines]
+    CMP     CX, ED_TEXT_ROWS
+    JBE     .no_sb_adj
+    DEC     BX                      ; scrollbar eats 1 column
+.no_sb_adj:
     CMP     AX, BX
     JAE     .scroll_right
 
@@ -792,8 +798,11 @@ scroll_to_cursor PROC
     RET
 
 .scroll_right:
-    SUB     AX, ED_COLS
-    INC     AX                      ; left_col = visual_col - ED_COLS + 1
+    ; left_col = visual_col - visible_cols + 1
+    ; BX = left_col + visible_cols, so visible_cols = BX - left_col (before scroll)
+    SUB     BX, [left_col]          ; BX = visible_cols
+    SUB     AX, BX
+    INC     AX
     MOV     [left_col], AX
     RET
 scroll_to_cursor ENDP
