@@ -190,6 +190,8 @@ things it intentionally does not attempt.
   Directories with more entries silently truncate.
 - **DOS 8.3 filenames.** Filename fields are limited to 13 characters
   (8.3 format). Long filename support is not available.
+- **No paste redo.** Undoing a paste works, but redoing it is a no-op.
+  This is a deliberate trade-off to prevent LIFO save buffer corruption.
 - **No multi-level redo.** Redo is linear — new edits after undo discard the
   redo tail.
 - **Replace All for large batches (>50 matches) is permanent.** The streaming
