@@ -56,13 +56,17 @@ tui_clear_shadow: PROC
     PUSH AX
     PUSH CX
     PUSH DI
+    PUSH ES
 
+    MOV AX, DS
+    MOV ES, AX                        ; ES = DS (shadow_buf is in COM segment)
     MOV DI, shadow_buf
     MOV AX, CLR_DESKTOP * 256 + 20h  ; AH=attr, AL=space
     MOV CX, SCR_CELLS
     CLD
     REP STOSW
 
+    POP ES
     POP DI
     POP CX
     POP AX

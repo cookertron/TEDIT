@@ -1657,18 +1657,18 @@ tui_ctrl_draw_listbox: PROC
     JAE .lb_empty_row
 
     ; --- Compute attribute (AH) based on selected x focused ---
-    MOV AH, CLR_LB_NORMAL
+    MOV AH, [BP + CTRL_ATTR]       ; default: control's normal attribute
     CMP AL, [BP + CTRL_LB_SEL]
     JNZ .lb_not_sel
-    MOV AH, CLR_LB_SEL
+    ; Selected item: only highlight when focused
     OR CH, CH
-    JZ .lb_attr_done
-    MOV AH, CLR_LB_FOCSEL
+    JZ .lb_attr_done                ; unfocused → same as normal (no highlight)
+    MOV AH, CLR_LB_FOCSEL          ; focused → highlight
     JMP .lb_attr_done
 .lb_not_sel:
     OR CH, CH
     JZ .lb_attr_done
-    MOV AH, CLR_LB_FOCUS
+    MOV AH, [BP + CTRL_FATTR]      ; focused non-selected: control's focused attr
 .lb_attr_done:
 
     ; --- Fill row with spaces using content_w ---
@@ -1697,7 +1697,7 @@ tui_ctrl_draw_listbox: PROC
 .lb_empty_row:
     PUSH AX
     PUSH CX
-    MOV AH, CLR_LB_NORMAL
+    MOV AH, [BP + CTRL_ATTR]       ; empty rows use control's normal attr
     MOV AL, 20h
     MOV CL, [sb_scratch]       ; content_w
     CALL tui_hline

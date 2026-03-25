@@ -18,8 +18,13 @@ dlg_str_ok:     DB 'OK', 0
 dlg_str_cancel: DB 'Cancel', 0
 dlg_str_yes:    DB 'Yes', 0
 dlg_str_no:     DB 'No', 0
+dlg_str_all:    DB 'All', 0
 
 ; --- File dialog static strings ---
-dlg_file_pattern: DB '*.*', 0
+dlg_file_pattern: DB '*.txt', 0, 0, 0, 0, 0, 0, 0, 0, 0        ; 14 bytes for wildcard
 dlg_file_rootdir: DB '\', 0
-dlg_str_drive:   DB 'Drive:', 0
+dlg_file_allpat:  DB '*.*', 0
+dlg_str_drive:    DB 'Drive:', 0
+dlg_str_filename: DB 'File name', 0
+dlg_str_files:    DB 'Files', 0
+dlg_str_dirs:     DB 'Directories', 0

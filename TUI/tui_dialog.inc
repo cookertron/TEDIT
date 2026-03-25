@@ -122,6 +122,13 @@ dlg_handler_no:
     MOV BYTE [fw_state + FW_RUNNING], 0
     RET
 
+dlg_handler_repl_all:
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_REPL_ALL
+    MOV AL, [DI + WIN_ID]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
+    RET
+
 ; ============================================================================
 ; tui_dlg_msgbox - Message box with OK button
 ; Input:  SI = message string ptr, DI = title string ptr
@@ -310,6 +317,154 @@ tui_dlg_confirm: PROC
     MOV BYTE [DI + CTRL_ATTR], CLR_BTN
     MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
     MOV WORD [DI + CTRL_HANDLER], dlg_handler_no
+
+    ; ---- Build window template ----
+    POP AX                      ; AX = title ptr
+    MOV DI, dlg_tmpl
+    MOV BYTE [DI + WIN_FLAGS], WINF_VISIBLE + WINF_BORDER + WINF_TITLE + WINF_SHADOW
+    MOV [DI + WIN_X], DL
+    MOV [DI + WIN_Y], DH
+    MOV [DI + WIN_W], BH
+    MOV BYTE [DI + WIN_H], 6
+    MOV BYTE [DI + WIN_ATTR], CLR_WIN_BG
+    MOV BYTE [DI + WIN_BATTR], CLR_WIN_BDR
+    MOV BYTE [DI + WIN_TATTR], CLR_WIN_TTL
+    MOV [DI + WIN_TITLE], AX
+    MOV WORD [DI + WIN_FIRST], dlg_label
+    MOV WORD [DI + WIN_FOCUS], dlg_btn1
+    MOV WORD [DI + WIN_HANDLER], 0
+    MOV BYTE [DI + WIN_ZORDER], 0
+    MOV BYTE [DI + WIN_ID], 0
+    MOV BYTE [DI + WIN_SCROLLX], 0
+    MOV BYTE [DI + WIN_SCROLLY], 0
+
+    CALL tui_dlg_run_modal
+
+    PopAll
+    MOV AL, [fw_state + FW_DLG_RESULT]
+    RET
+ENDP
+
+; ============================================================================
+; tui_dlg_confirm4 - 4-button confirm dialog: [Yes] [No] [All] [Cancel]
+; Input:  SI = message string ptr, DI = title string ptr
+; Output: AL = DLG_YES (1), DLG_NO (0), DLG_REPL_ALL (3), or DLG_CANCEL (2)
+; ============================================================================
+tui_dlg_confirm4: PROC
+    PushAll
+    PUSH DI                     ; save title ptr
+
+    ; Measure message length
+    CALL tui_dlg_strlen         ; CX = msg_len
+
+    ; Interior width = max(msg_len+4, 44, 20)
+    ; 44 = 8+2+8+2+8+2+10+4 (four buttons + gaps + padding)
+    MOV AL, CL
+    ADD AL, DLG_PAD
+    CMP AL, DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_ALL_W + DLG_BTN_GAP + DLG_BTN_CAN_W + DLG_PAD
+    JAE .c4w1
+    MOV AL, DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_ALL_W + DLG_BTN_GAP + DLG_BTN_CAN_W + DLG_PAD
+.c4w1:
+    CMP AL, DLG_MIN_W
+    JAE .c4w2
+    MOV AL, DLG_MIN_W
+.c4w2:
+    MOV BL, AL                  ; BL = interior width
+    ADD AL, 2
+    MOV BH, AL                  ; BH = total width
+
+    ; Center on screen
+    MOV AL, SCR_W
+    SUB AL, BH
+    SHR AL, 1
+    MOV DL, AL                  ; DL = dialog X
+    MOV DH, (SCR_H - 6) / 2    ; DH = dialog Y
+
+    ; ---- Build message label ----
+    MOV AL, BL
+    SUB AL, CL
+    SHR AL, 1
+
+    MOV DI, dlg_label
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
+    MOV [DI + CTRL_X], AL
+    MOV BYTE [DI + CTRL_Y], 1
+    MOV [DI + CTRL_W], CL
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_btn1
+    MOV [DI + CTRL_TEXT], SI
+    MOV BYTE [DI + CTRL_ATTR], CLR_LABEL
+    MOV BYTE [DI + CTRL_FATTR], CLR_LABEL
+    MOV WORD [DI + CTRL_HANDLER], 0
+
+    ; ---- Build 4 buttons ----
+    ; total_btn_w = 8+2+8+2+8+2+10 = 40
+    ; btn_start_x = (interior_w - 40) / 2
+    MOV AL, BL
+    SUB AL, DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_YN_W + DLG_BTN_GAP + DLG_BTN_ALL_W + DLG_BTN_GAP + DLG_BTN_CAN_W
+    SHR AL, 1
+    MOV CH, AL                  ; CH = btn1 x
+
+    ; btn1: Yes
+    MOV DI, dlg_btn1
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV [DI + CTRL_X], CH
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], DLG_BTN_YN_W
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_btn2
+    MOV WORD [DI + CTRL_TEXT], dlg_str_yes
+    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV WORD [DI + CTRL_HANDLER], dlg_handler_yes
+
+    ; btn2: No — x = CH + 8 + 2
+    MOV AL, CH
+    ADD AL, DLG_BTN_YN_W + DLG_BTN_GAP
+    MOV DI, dlg_btn2
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV [DI + CTRL_X], AL
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], DLG_BTN_YN_W
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_btn3
+    MOV WORD [DI + CTRL_TEXT], dlg_str_no
+    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV WORD [DI + CTRL_HANDLER], dlg_handler_no
+
+    ; btn3: All — x = CH + 8+2 + 8+2
+    ADD AL, DLG_BTN_YN_W + DLG_BTN_GAP
+    MOV DI, dlg_btn3
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV [DI + CTRL_X], AL
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], DLG_BTN_ALL_W
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_btn4
+    MOV WORD [DI + CTRL_TEXT], dlg_str_all
+    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV WORD [DI + CTRL_HANDLER], dlg_handler_repl_all
+
+    ; btn4: Cancel — x = CH + 8+2 + 8+2 + 8+2
+    ADD AL, DLG_BTN_ALL_W + DLG_BTN_GAP
+    MOV DI, dlg_btn4
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV [DI + CTRL_X], AL
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], DLG_BTN_CAN_W
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], 0
+    MOV WORD [DI + CTRL_TEXT], dlg_str_cancel
+    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV WORD [DI + CTRL_HANDLER], dlg_handler_cancel
 
     ; ---- Build window template ----
     POP AX                      ; AX = title ptr
@@ -776,9 +931,10 @@ tui_file_get_path: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
-; tui_file_enumerate - List current directory into dlg_file_* buffers
-; Fills dlg_file_count, dlg_file_items[], dlg_file_names[]
-; Always adds ".." as first entry for parent navigation
+; tui_file_enumerate - List files + directories into separate buffers
+; Input:  dlg_file_pattern = wildcard for files (e.g., "*.*")
+; Output: dlg_file_count/items/names = files matching pattern
+;         dlg_dir_count/items/names  = subdirectories (always includes "..")
 ; ----------------------------------------------------------------------------
 tui_file_enumerate: PROC
     PUSH AX
@@ -794,75 +950,111 @@ tui_file_enumerate: PROC
     MOV DX, dlg_file_dta
     INT 21h
 
-    ; Init pointers
-    MOV BP, dlg_file_names          ; BP = next name slot
-    MOV BX, dlg_file_items          ; BX = next item ptr slot
-    MOV BYTE [dlg_file_count], 0
-
-    ; Entry 0: "..\0" (parent directory)
+    ; ---- Init directory list (always has ".." first) ----
+    MOV BP, dlg_dir_names
+    MOV BX, dlg_dir_items
+    MOV BYTE [dlg_dir_count], 1
     MOV WORD [BX], BP
     MOV DI, BP
     MOV BYTE [DI], '.'
     MOV BYTE [DI + 1], '.'
-    MOV BYTE [DI + 2], '\'
-    MOV BYTE [DI + 3], 0
+    MOV BYTE [DI + 2], 0
     ADD BP, DLG_FILE_NAMELEN
     ADD BX, 2
-    MOV BYTE [dlg_file_count], 1
 
-    ; FindFirst *.* with directories included
+    ; ---- Enumerate directories first (FindFirst *.* with dir attribute) ----
     MOV AH, 4Eh
-    MOV CX, 10h                     ; include directories
-    MOV DX, dlg_file_pattern
+    MOV CX, 10h                     ; directory attribute
+    PUSH BP
+    PUSH BX
+    MOV DX, dlg_file_allpat         ; always "*.*" for directories
     INT 21h
-    JC .done
+    POP BX
+    POP BP
+    JC .dirs_done
 
-.process:
-    ; Skip "." and ".." from FindFirst/FindNext results
+.dir_process:
+    ; Only directories (skip files)
+    TEST BYTE [dlg_file_dta + 15h], 10h
+    JZ .dir_next
+    ; Skip "." and ".."
     CMP BYTE [dlg_file_dta + 1Eh], '.'
-    JNZ .not_dot
+    JNZ .dir_not_dot
     CMP BYTE [dlg_file_dta + 1Fh], 0
-    JZ .find_next                   ; skip "."
+    JZ .dir_next
     CMP BYTE [dlg_file_dta + 1Fh], '.'
-    JNZ .not_dot
+    JNZ .dir_not_dot
     CMP BYTE [dlg_file_dta + 20h], 0
-    JZ .find_next                   ; skip ".."
-
-.not_dot:
-    ; Store item pointer: items[count] = name slot
+    JZ .dir_next
+.dir_not_dot:
     MOV WORD [BX], BP
-
-    ; Copy filename from DTA to name slot
     MOV SI, dlg_file_dta + 1Eh
     MOV DI, BP
-.copy_name:
+.dir_copy:
     MOV AL, [SI]
     MOV [DI], AL
     OR AL, AL
-    JZ .name_done
+    JZ .dir_stored
     INC SI
     INC DI
-    JMP .copy_name
+    JMP .dir_copy
+.dir_stored:
+    ADD BP, DLG_FILE_NAMELEN
+    ADD BX, 2
+    INC BYTE [dlg_dir_count]
+    CMP BYTE [dlg_dir_count], DLG_DIR_MAXENT
+    JAE .dirs_done
+.dir_next:
+    MOV AH, 4Fh
+    INT 21h
+    JNC .dir_process
 
-.name_done:
-    ; If directory attribute set, append '\'
+.dirs_done:
+    ; ---- Now enumerate files matching the wildcard pattern ----
+    MOV BP, dlg_file_names
+    MOV BX, dlg_file_items
+    MOV BYTE [dlg_file_count], 0
+
+    ; Re-set DTA (FindFirst for dirs may have changed state)
+    MOV AH, 1Ah
+    MOV DX, dlg_file_dta
+    INT 21h
+
+    ; FindFirst with the user's wildcard pattern
+    MOV AH, 4Eh
+    XOR CX, CX                     ; files only (no dir attribute)
+    MOV DX, dlg_file_pattern
+    INT 21h
+    JC .files_done
+
+.file_process:
+    ; Skip directories (only want files)
     TEST BYTE [dlg_file_dta + 15h], 10h
-    JZ .not_dir
-    MOV BYTE [DI], '\'
-    MOV BYTE [DI + 1], 0
-.not_dir:
+    JNZ .file_next
+
+    MOV WORD [BX], BP
+    MOV SI, dlg_file_dta + 1Eh
+    MOV DI, BP
+.file_copy:
+    MOV AL, [SI]
+    MOV [DI], AL
+    OR AL, AL
+    JZ .file_stored
+    INC SI
+    INC DI
+    JMP .file_copy
+.file_stored:
     ADD BP, DLG_FILE_NAMELEN
     ADD BX, 2
     INC BYTE [dlg_file_count]
     CMP BYTE [dlg_file_count], DLG_FILE_MAXENT
-    JAE .done
-
-.find_next:
+    JAE .files_done
+.file_next:
     MOV AH, 4Fh
     INT 21h
-    JNC .process
+    JNC .file_process
 
-.done:
+.files_done:
     POP BP
     POP DI
     POP SI
@@ -874,17 +1066,17 @@ tui_file_enumerate: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
-; dlg_file_handle_sel - Shared logic for listbox/OK button: process selection
-; Input:  SI = listbox control (must point to the file listbox)
-; If directory: chdir into it, re-enumerate, update listbox + path
-; If file: copy name to result buffer, close dialog with DLG_OK
-; ----------------------------------------------------------------------------
-dlg_file_handle_sel: PROC
+; dlg_file_lb_handler - File listbox Enter: copy filename to textbox
+; SI = file listbox control, DI = window
+dlg_file_lb_handler: PROC
     PUSH AX
     PUSH BX
     PUSH CX
-    PUSH DX
     PUSH DI
+
+    ; Guard: empty list
+    CMP BYTE [SI + CTRL_LB_COUNT], 0
+    JZ .flb_done
 
     ; Look up selected item name
     MOV AL, [SI + CTRL_LB_SEL]
@@ -894,61 +1086,80 @@ dlg_file_handle_sel: PROC
     ADD BX, AX
     MOV BX, [BX]                    ; BX = item string ptr
 
-    ; Find end of string, check for trailing '\'
-    MOV DX, BX                      ; DX = string start
-.find_end:
-    CMP BYTE [BX], 0
-    JZ .check_type
-    INC BX
-    JMP .find_end
-.check_type:
-    CMP BX, DX                      ; empty string?
-    JZ .ret
-    DEC BX                          ; BX -> last char before null
-    CMP BYTE [BX], '\'
-    JZ .is_dir
-
-    ; --- FILE SELECTED: copy to result buffer, close dialog ---
-    MOV BX, DX                      ; BX = source name start
+    ; Copy to textbox buffer
     MOV DI, [dlg_save_buf]
     MOV CL, [dlg_save_maxlen]
-.copy_file:
+    XOR CH, CH
+.flb_copy:
     MOV AL, [BX]
     MOV [DI], AL
     OR AL, AL
-    JZ .close_ok
+    JZ .flb_done
     INC BX
     INC DI
+    INC CH
     DEC CL
-    JNZ .copy_file
-    MOV BYTE [DI], 0               ; null-terminate if truncated
-.close_ok:
-    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
-    MOV AL, [fw_state + FW_MODAL_WIN]
-    CALL tui_win_close
-    MOV BYTE [fw_state + FW_RUNNING], 0
-    JMP .ret
+    JNZ .flb_copy
+    MOV BYTE [DI], 0
+.flb_done:
+    MOV DI, dlg_textbox
+    MOV [DI + CTRL_TB_LEN], CH
+    MOV [DI + CTRL_TB_CURPOS], CH
+    MOV BYTE [DI + CTRL_TB_SCROLL], 0
+    MOV BYTE [fw_state + FW_DIRTY], 1
 
-.is_dir:
-    ; Strip trailing '\' for chdir
-    MOV BYTE [BX], 0
-    ; DX = directory name start
+    POP DI
+    POP CX
+    POP BX
+    POP AX
+    RET
+ENDP
+
+; dlg_dir_lb_handler - Directory listbox Enter: navigate into dir, re-enumerate
+; SI = dir listbox control, DI = window
+dlg_dir_lb_handler: PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+
+    ; Look up selected directory name
+    MOV AL, [SI + CTRL_LB_SEL]
+    XOR AH, AH
+    SHL AX, 1
+    MOV BX, [SI + CTRL_LB_ITEMS]
+    ADD BX, AX
+    MOV DX, [BX]                    ; DX = dir name ptr
+
+    ; CHDIR into it
     MOV AH, 3Bh
-    INT 21h                         ; chdir
-    JC .ret                         ; failed, do nothing
-    ; Re-enumerate directory
+    INT 21h
+    JC .dlb_ret
+
+    ; Re-enumerate files and directories
     CALL tui_file_enumerate
-    ; Update listbox control
+
+    ; Update file listbox
+    MOV SI, dlg_listbox
     MOV AL, [dlg_file_count]
     MOV [SI + CTRL_LB_COUNT], AL
     MOV BYTE [SI + CTRL_LB_SEL], 0
     MOV BYTE [SI + CTRL_LB_SCROLL], 0
+
+    ; Update dir listbox
+    MOV SI, dlg_listbox2
+    MOV AL, [dlg_dir_count]
+    MOV [SI + CTRL_LB_COUNT], AL
+    MOV BYTE [SI + CTRL_LB_SEL], 0
+    MOV BYTE [SI + CTRL_LB_SCROLL], 0
+
     ; Update path display
     CALL tui_file_get_path
     MOV BYTE [fw_state + FW_DIRTY], 1
 
-.ret:
-    POP DI
+.dlb_ret:
+    POP SI
     POP DX
     POP CX
     POP BX
@@ -956,18 +1167,79 @@ dlg_file_handle_sel: PROC
     RET
 ENDP
 
-; Listbox handler (Enter on listbox or mouse click on item)
-; SI = listbox control, DI = window
-dlg_file_lb_handler:
-    JMP dlg_file_handle_sel
-
-; OK button handler - reads selection from listbox, applies same logic
-; SI = button control (ignored), DI = window
+; dlg_file_ok_handler - OK button: if wildcard → re-filter, else close
 dlg_file_ok_handler:
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+
+    MOV BX, [dlg_save_buf]
+    CMP BYTE [BX], 0
+    JZ .dfoh_done                       ; empty → ignore
+
+    ; Check if textbox contains a wildcard (* or ?)
+    MOV SI, BX
+.dfoh_scan:
+    MOV AL, [SI]
+    TEST AL, AL
+    JZ .dfoh_no_wild                    ; no wildcard found → close dialog
+    CMP AL, '*'
+    JE .dfoh_wildcard
+    CMP AL, '?'
+    JE .dfoh_wildcard
+    INC SI
+    JMP .dfoh_scan
+
+.dfoh_wildcard:
+    ; Copy textbox content to dlg_file_pattern
+    MOV SI, BX
+    MOV DI, dlg_file_pattern
+    MOV CX, 13                          ; max pattern length
+.dfoh_cpat:
+    LODSB
+    MOV [DI], AL
+    INC DI
+    TEST AL, AL
+    JZ .dfoh_cpat_done
+    LOOP .dfoh_cpat
+    MOV BYTE [DI], 0                   ; null-terminate
+.dfoh_cpat_done:
+
+    ; Re-enumerate files with new pattern
+    CALL tui_file_enumerate
+
+    ; Update file listbox
     PUSH SI
     MOV SI, dlg_listbox
-    CALL dlg_file_handle_sel
+    MOV AL, [dlg_file_count]
+    MOV [SI + CTRL_LB_COUNT], AL
+    MOV BYTE [SI + CTRL_LB_SEL], 0
+    MOV BYTE [SI + CTRL_LB_SCROLL], 0
+
+    ; Update dir listbox too (dirs always use *.*)
+    MOV SI, dlg_listbox2
+    MOV AL, [dlg_dir_count]
+    MOV [SI + CTRL_LB_COUNT], AL
+    MOV BYTE [SI + CTRL_LB_SEL], 0
+    MOV BYTE [SI + CTRL_LB_SCROLL], 0
     POP SI
+
+    MOV BYTE [fw_state + FW_DIRTY], 1
+    JMP .dfoh_done
+
+.dfoh_no_wild:
+    ; Plain filename → close dialog
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
+    MOV AL, [fw_state + FW_MODAL_WIN]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
+
+.dfoh_done:
+    POP SI
+    POP CX
+    POP BX
+    POP AX
     RET
 
 ; ----------------------------------------------------------------------------
@@ -1105,10 +1377,17 @@ dlg_file_drive_handler: PROC
     CALL tui_file_enumerate
     CALL tui_file_get_path
 
-    ; Update listbox control
+    ; Update file listbox
     PUSH SI
     MOV SI, dlg_listbox
     MOV AL, [dlg_file_count]
+    MOV [SI + CTRL_LB_COUNT], AL
+    MOV BYTE [SI + CTRL_LB_SEL], 0
+    MOV BYTE [SI + CTRL_LB_SCROLL], 0
+
+    ; Update dir listbox
+    MOV SI, dlg_listbox2
+    MOV AL, [dlg_dir_count]
     MOV [SI + CTRL_LB_COUNT], AL
     MOV BYTE [SI + CTRL_LB_SEL], 0
     MOV BYTE [SI + CTRL_LB_SCROLL], 0
@@ -1129,6 +1408,15 @@ ENDP
 ;         Result buffer contains selected filename if DLG_OK
 ;         CWD left at the directory where the file was selected
 ; ----------------------------------------------------------------------------
+; Layout (Turbo Debugger style, interior 40 wide, 14 rows, WIN_H=16):
+;  Row 0:  File name
+;  Row 1:  [wildcard/filename textbox_______________]
+;  Row 2:  Files              Directories
+;  Row 3-10: [files listbox ] [dirs listbox        ]
+;  Row 11: C:\DIRNAME\*.ext
+;  Row 12: (empty)
+;  Row 13:      [  OK  ]    [ Cancel ]
+
 tui_dlg_file: PROC
     PushAll
 
@@ -1137,81 +1425,102 @@ tui_dlg_file: PROC
     MOV [dlg_save_buf], BX
     MOV [dlg_save_maxlen], CL
 
-    ; Detect available drives and find current drive index
-    CALL tui_file_detect_drives
-    CALL _dlg_file_find_cur_drive    ; AL = current drive index
-    PUSH AX                          ; save drive index for dropdown SEL
+    ; Pre-populate textbox with wildcard pattern if buffer is empty
+    CMP BYTE [BX], 0
+    JNE ._dfp_skip
+    PUSH SI
+    MOV SI, dlg_file_pattern
+._dfp_copy:
+    LODSB
+    MOV [BX], AL
+    INC BX
+    TEST AL, AL
+    JNZ ._dfp_copy
+    POP SI
+._dfp_skip:
 
-    ; Populate path display and file list
+    ; Populate path display, files and directories
     CALL tui_file_get_path
     CALL tui_file_enumerate
 
-    ; --- Build "Drive:" label (dlg_label2) at row 0, col 0 ---
-    POP AX                           ; AL = current drive index
-    PUSH AX                          ; re-save for dropdown below
+    ; --- "File name" label (dlg_label2) at row 0 ---
     MOV DI, dlg_label2
     MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
-    MOV BYTE [DI + CTRL_X], 0
+    MOV BYTE [DI + CTRL_X], 1
     MOV BYTE [DI + CTRL_Y], 0
-    MOV BYTE [DI + CTRL_W], 6
+    MOV BYTE [DI + CTRL_W], 9
     MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_drive_dd
-    MOV WORD [DI + CTRL_TEXT], dlg_str_drive
-    MOV BYTE [DI + CTRL_ATTR], CLR_LABEL
-    MOV BYTE [DI + CTRL_FATTR], CLR_LABEL
+    MOV WORD [DI + CTRL_NEXT], dlg_textbox
+    MOV WORD [DI + CTRL_TEXT], dlg_str_filename
+    MOV BYTE [DI + CTRL_ATTR], 70h      ; black on light gray
+    MOV BYTE [DI + CTRL_FATTR], 70h
     MOV WORD [DI + CTRL_HANDLER], 0
 
-    ; --- Build drive dropdown (dlg_drive_dd) at row 0, col 7, width 5 ---
-    POP AX                           ; AL = current drive index
-    MOV DI, dlg_drive_dd
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_DROPDOWN
+    ; --- Filename/wildcard textbox at row 1 ---
+    MOV DI, dlg_textbox
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_TEXTBOX
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 7
-    MOV BYTE [DI + CTRL_Y], 0
-    MOV BYTE [DI + CTRL_W], 5
+    MOV BYTE [DI + CTRL_X], 1
+    MOV BYTE [DI + CTRL_Y], 1
+    MOV BYTE [DI + CTRL_W], 38
     MOV BYTE [DI + CTRL_H], 1
     MOV WORD [DI + CTRL_NEXT], dlg_label
-    MOV WORD [DI + CTRL_TEXT], 0
-    MOV BYTE [DI + CTRL_ATTR], CLR_DD_NORMAL
-    MOV BYTE [DI + CTRL_FATTR], CLR_DD_FOCUS
-    MOV WORD [DI + CTRL_HANDLER], dlg_file_drive_handler
-    MOV WORD [DI + CTRL_DD_ITEMS], dlg_drive_items
     PUSH AX
-    MOV AL, [dlg_drive_count]
-    MOV [DI + CTRL_DD_COUNT], AL
+    MOV AX, [dlg_save_buf]
+    MOV [DI + CTRL_TEXT], AX
     POP AX
-    MOV [DI + CTRL_DD_SEL], AL
-    MOV [DI + CTRL_DD_TMPSEL], AL
-    MOV BYTE [DI + CTRL_DD_SCROLL], 0
-    MOV BYTE [DI + CTRL_DD_MAXVIS], 8
+    MOV BYTE [DI + CTRL_ATTR], 1Fh      ; bright white on dark blue
+    MOV BYTE [DI + CTRL_FATTR], 1Fh
+    MOV WORD [DI + CTRL_HANDLER], 0
+    PUSH AX
+    MOV AL, [dlg_save_maxlen]
+    MOV [DI + CTRL_TB_MAXLEN], AL
+    POP AX
+    MOV BYTE [DI + CTRL_TB_CURPOS], 0
+    MOV BYTE [DI + CTRL_TB_SCROLL], 0
+    PUSH SI
+    PUSH CX
+    MOV SI, [dlg_save_buf]
+    XOR CX, CX
+._dft_len:
+    CMP BYTE [SI], 0
+    JZ ._dft_len_done
+    INC SI
+    INC CL
+    JMP ._dft_len
+._dft_len_done:
+    MOV [DI + CTRL_TB_LEN], CL
+    MOV [DI + CTRL_TB_CURPOS], CL
+    POP CX
+    POP SI
 
-    ; --- Build path label (dlg_label) at row 0, col 13, width 19 ---
+    ; --- "Files" label (dlg_label) at row 2 ---
     MOV DI, dlg_label
     MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
-    MOV BYTE [DI + CTRL_X], 13
-    MOV BYTE [DI + CTRL_Y], 0
-    MOV BYTE [DI + CTRL_W], 19
+    MOV BYTE [DI + CTRL_X], 1
+    MOV BYTE [DI + CTRL_Y], 2
+    MOV BYTE [DI + CTRL_W], 5
     MOV BYTE [DI + CTRL_H], 1
     MOV WORD [DI + CTRL_NEXT], dlg_listbox
-    MOV WORD [DI + CTRL_TEXT], dlg_file_path
-    MOV BYTE [DI + CTRL_ATTR], CLR_LABEL
-    MOV BYTE [DI + CTRL_FATTR], CLR_LABEL
+    MOV WORD [DI + CTRL_TEXT], dlg_str_files
+    MOV BYTE [DI + CTRL_ATTR], 70h      ; black on light gray
+    MOV BYTE [DI + CTRL_FATTR], 70h
     MOV WORD [DI + CTRL_HANDLER], 0
 
-    ; --- Build listbox (dlg_listbox) ---
+    ; --- Files listbox (dlg_listbox) at row 3, left half ---
     MOV DI, dlg_listbox
     MOV BYTE [DI + CTRL_TYPE], CTYPE_LISTBOX
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 0
-    MOV BYTE [DI + CTRL_Y], 1
-    MOV BYTE [DI + CTRL_W], 32
+    MOV BYTE [DI + CTRL_X], 1
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], 18
     MOV BYTE [DI + CTRL_H], 8
-    MOV WORD [DI + CTRL_NEXT], dlg_btn1
+    MOV WORD [DI + CTRL_NEXT], dlg_chk1
     MOV WORD [DI + CTRL_TEXT], 0
-    MOV BYTE [DI + CTRL_ATTR], CLR_LB_NORMAL
-    MOV BYTE [DI + CTRL_FATTR], CLR_LB_FOCUS
+    MOV BYTE [DI + CTRL_ATTR], 30h      ; black on cyan
+    MOV BYTE [DI + CTRL_FATTR], 30h
     MOV WORD [DI + CTRL_HANDLER], dlg_file_lb_handler
     MOV WORD [DI + CTRL_LB_ITEMS], dlg_file_items
     MOV AL, [dlg_file_count]
@@ -1219,12 +1528,59 @@ tui_dlg_file: PROC
     MOV BYTE [DI + CTRL_LB_SEL], 0
     MOV BYTE [DI + CTRL_LB_SCROLL], 0
 
-    ; --- Build OK button (dlg_btn1) ---
+    ; --- "Directories" label (reuse dlg_chk1 as 14-byte label) at row 2 ---
+    MOV DI, dlg_chk1
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
+    MOV BYTE [DI + CTRL_X], 21
+    MOV BYTE [DI + CTRL_Y], 2
+    MOV BYTE [DI + CTRL_W], 11
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_listbox2
+    MOV WORD [DI + CTRL_TEXT], dlg_str_dirs
+    MOV BYTE [DI + CTRL_ATTR], 70h      ; black on light gray
+    MOV BYTE [DI + CTRL_FATTR], 70h
+    MOV WORD [DI + CTRL_HANDLER], 0
+
+    ; --- Directories listbox (dlg_listbox2) at row 3, right half ---
+    MOV DI, dlg_listbox2
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_LISTBOX
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV BYTE [DI + CTRL_X], 21
+    MOV BYTE [DI + CTRL_Y], 3
+    MOV BYTE [DI + CTRL_W], 18
+    MOV BYTE [DI + CTRL_H], 8
+    MOV WORD [DI + CTRL_NEXT], dlg_chk2
+    MOV WORD [DI + CTRL_TEXT], 0
+    MOV BYTE [DI + CTRL_ATTR], 30h      ; black on cyan
+    MOV BYTE [DI + CTRL_FATTR], 30h
+    MOV WORD [DI + CTRL_HANDLER], dlg_dir_lb_handler
+    MOV WORD [DI + CTRL_LB_ITEMS], dlg_dir_items
+    MOV AL, [dlg_dir_count]
+    MOV [DI + CTRL_LB_COUNT], AL
+    MOV BYTE [DI + CTRL_LB_SEL], 0
+    MOV BYTE [DI + CTRL_LB_SCROLL], 0
+
+    ; --- Path display label (reuse dlg_chk2 as 14-byte label) at row 11 ---
+    MOV DI, dlg_chk2
+    MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
+    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
+    MOV BYTE [DI + CTRL_X], 1
+    MOV BYTE [DI + CTRL_Y], 11
+    MOV BYTE [DI + CTRL_W], 38
+    MOV BYTE [DI + CTRL_H], 1
+    MOV WORD [DI + CTRL_NEXT], dlg_btn1
+    MOV WORD [DI + CTRL_TEXT], dlg_file_path
+    MOV BYTE [DI + CTRL_ATTR], 70h      ; black on light gray
+    MOV BYTE [DI + CTRL_FATTR], 70h
+    MOV WORD [DI + CTRL_HANDLER], 0
+
+    ; --- OK button at row 13 ---
     MOV DI, dlg_btn1
     MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 8
-    MOV BYTE [DI + CTRL_Y], 10
+    MOV BYTE [DI + CTRL_X], 10
+    MOV BYTE [DI + CTRL_Y], 13
     MOV BYTE [DI + CTRL_W], DLG_BTN_OK_W
     MOV BYTE [DI + CTRL_H], 1
     MOV WORD [DI + CTRL_NEXT], dlg_btn2
@@ -1233,12 +1589,12 @@ tui_dlg_file: PROC
     MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
     MOV WORD [DI + CTRL_HANDLER], dlg_file_ok_handler
 
-    ; --- Build Cancel button (dlg_btn2) ---
+    ; --- Cancel button ---
     MOV DI, dlg_btn2
     MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
     MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 18
-    MOV BYTE [DI + CTRL_Y], 10
+    MOV BYTE [DI + CTRL_X], 22
+    MOV BYTE [DI + CTRL_Y], 13
     MOV BYTE [DI + CTRL_W], DLG_BTN_CAN_W
     MOV BYTE [DI + CTRL_H], 1
     MOV WORD [DI + CTRL_NEXT], 0
@@ -1247,14 +1603,14 @@ tui_dlg_file: PROC
     MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
     MOV WORD [DI + CTRL_HANDLER], dlg_handler_cancel
 
-    ; --- Build window template ---
+    ; --- Window template (interior 40 wide, 15 rows + border = 42 x 17) ---
     MOV DI, dlg_tmpl
     MOV BYTE [DI + WIN_FLAGS], WINF_VISIBLE + WINF_BORDER + WINF_TITLE + WINF_SHADOW
-    MOV BYTE [DI + WIN_X], (SCR_W - 34) / 2
-    MOV BYTE [DI + WIN_Y], (SCR_H - 14) / 2
-    MOV BYTE [DI + WIN_W], 34
-    MOV BYTE [DI + WIN_H], 14
-    MOV BYTE [DI + WIN_ATTR], CLR_WIN_BG
+    MOV BYTE [DI + WIN_X], (SCR_W - 42) / 2
+    MOV BYTE [DI + WIN_Y], (SCR_H - 17) / 2
+    MOV BYTE [DI + WIN_W], 42
+    MOV BYTE [DI + WIN_H], 17
+    MOV BYTE [DI + WIN_ATTR], 70h       ; black on light gray
     MOV BYTE [DI + WIN_BATTR], CLR_WIN_BDR
     MOV BYTE [DI + WIN_TATTR], CLR_WIN_TTL
     PUSH AX

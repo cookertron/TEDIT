@@ -88,3 +88,17 @@ UR_INS_RANGE    EQU 5              ; range insertion (paste)
 ; ---- Selection grace period ----
 SEL_GRACE_TICKS EQU 9              ; ~500ms at 18.2 ticks/sec
 
+; ---- Tab ----
+ED_TAB_DEFAULT  EQU 8               ; default tab width (2, 4, or 8)
+
+; ---- Insert key (extended scan code) ----
+KEY_INSERT      EQU 52h
+
+; ---- Replace All threshold ----
+REPL_PERM_THRESHOLD EQU 50         ; matches above this → permanent (no undo)
+
+; ---- Find / Replace ----
+FIND_MAX_LEN    EQU 64              ; max search/replace term length (bytes)
+FIND_FLAG_CI    EQU 01h             ; bit 0: case-insensitive search
+FIND_FLAG_SEL   EQU 02h             ; bit 1: find in selection only
+

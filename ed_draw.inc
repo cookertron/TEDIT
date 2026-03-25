@@ -16,8 +16,21 @@
 ; DS must be CS on entry (preserved on return).
 ; ============================================================
 
+; ============================================================
+; ed_hscroll_skip — skip CX visual columns (tab-aware)
+;
+; Input:  CX = visual columns to skip (left_col)
+;         rnd_pi/rnd_off = start of current line
+; Output: rnd_pi/rnd_off = position after skip,
+;         rnd_visual_col = visual columns consumed (may overshoot CX via tab),
+;         rnd_byte_col = bytes consumed
+; Clobbers: AX, BX, CX, DX, SI, DI
+; DS must be CS on entry (preserved on return).
+; ============================================================
+
 ed_hscroll_skip PROC
-    JCXZ    .done
+    TEST    CX, CX
+    JZ      .done
 
 .walk_piece:
     MOV     BX, [rnd_pi]
@@ -42,10 +55,29 @@ ed_hscroll_skip PROC
     JE      .skip_cr
     CMP     AL, 0Ah
     JE      .at_eol
-    ; Visible character — count it
+    CMP     AL, 09h
+    JE      .handle_tab
+    ; Normal visible char — 1 visual column
     INC     SI
+    INC     WORD CS:[rnd_visual_col]
+    INC     WORD CS:[rnd_byte_col]
     DEC     CX
     JZ      .found
+    JMP     .inner
+
+.handle_tab:
+    ; tab_w = tab_width - (visual_col & tab_mask)
+    INC     SI                              ; consume tab byte
+    PUSH    BX
+    MOV     BX, CS:[rnd_visual_col]
+    AND     BX, CS:[tab_mask]
+    MOV     AX, CS:[tab_width]
+    SUB     AX, BX                          ; AX = tab_w
+    ADD     CS:[rnd_visual_col], AX
+    INC     WORD CS:[rnd_byte_col]
+    POP     BX
+    SUB     CX, AX                          ; CX -= tab_w
+    JBE     .found                          ; CX <= 0: consumed enough (may overshoot)
     JMP     .inner
 
 .skip_cr:
@@ -53,20 +85,17 @@ ed_hscroll_skip PROC
     JMP     .inner
 
 .at_eol:
-    ; Line is shorter than left_col. Leave rnd_off pointing AT
-    ; the LF so char_loop reads it and pads the row with spaces.
+    ; Line is shorter than left_col
     POP     DS
     MOV     AX, SI
-    SUB     AX, DI                  ; piece-relative offset of LF
+    SUB     AX, DI
     MOV     [rnd_off], AX
     RET
 
 .found:
-    ; Skipped enough. SI points to next char to be drawn.
     POP     DS
     CMP     SI, DX
     JB      .found_in_piece
-    ; Exactly at piece end — advance to next piece
     INC     WORD [rnd_pi]
     MOV     WORD [rnd_off], 0
     RET
@@ -107,10 +136,6 @@ tui_ctrl_draw_editor:
     ; Save absolute row for cursor drawing
     MOV     [ed_abs_row], DH
 
-    ; ---- Init wrap-mode scroll adjustment ----
-    MOV     WORD [cur_vis_row], 0FFFFh
-    MOV     BYTE [wrap_retry], ED_TEXT_ROWS
-
     ; ---- Selection pre-render setup ----
     MOV     BYTE [sel_rendering], 0
     CMP     BYTE [sel_active], 0
@@ -138,35 +163,19 @@ tui_ctrl_draw_editor:
     MOV     AX, [top_line]
     CALL    seek_to_line
     MOV     WORD [rnd_row], 0
-    MOV     WORD [rnd_doc_col], 0
-
     ; ---- Row loop ----
 .row_loop:
     MOV     AX, [rnd_row]
     CMP     AX, ED_TEXT_ROWS
     JAE     .do_status
 
-    ; Store row-to-line mapping (for wrap-mode mouse support)
-    MOV     BX, AX
-    SHL     BX, 1
-    MOV     [BX + _row_to_line], BP
-
     MOV     AX, BP
     CMP     AX, [total_lines]
     JAE     .blank_row
 
-    ; ---- Capture cur_vis_row (first visual row of cur_line) ----
-    CMP     WORD [cur_vis_row], 0FFFFh
-    JNE     .vis_captured               ; already captured
-    CMP     AX, [cur_line]              ; AX = BP = current logical line
-    JNE     .vis_captured
-    MOV     AX, [rnd_row]
-    MOV     [cur_vis_row], AX
-.vis_captured:
-
-    ; ---- Horizontal scroll: skip left_col chars (non-wrap only) ----
-    CMP     BYTE [wrap_mode], 0
-    JNE     .no_hscroll
+    ; ---- Horizontal scroll: skip left_col visual columns ----
+    MOV     WORD [rnd_byte_col], 0
+    MOV     WORD [rnd_visual_col], 0
     MOV     CX, [left_col]
     JCXZ    .no_hscroll
     PUSH    DI                      ; save shadow_buf write pointer
@@ -186,7 +195,41 @@ tui_ctrl_draw_editor:
     MOV     DS, AX
     MOV     SI, CS:[rnd_base]
     ADD     SI, CS:[rnd_off]
-    XOR     CX, CX
+
+    ; ---- Handle tab overshoot from hscroll_skip ----
+    ; If rnd_visual_col > left_col, a tab was partially consumed.
+    ; Fill the overshoot columns with spaces.
+    MOV     CX, CS:[rnd_visual_col]
+    SUB     CX, CS:[left_col]
+    JCXZ    .no_overshoot           ; no overshoot (or no hscroll)
+    ; Determine attribute for the partially-visible tab
+    MOV     AH, ED_ATTR_NORM
+    CMP     BYTE CS:[sel_rendering], 0
+    JE      .os_attr_done
+    PUSH    DX
+    MOV     DX, CS:[rnd_byte_col]
+    DEC     DX                      ; byte col of the tab
+    CMP     BP, CS:[sel_s_line]
+    JB      .os_not_sel
+    JA      .os_above
+    CMP     DX, CS:[sel_s_col]
+    JB      .os_not_sel
+.os_above:
+    CMP     BP, CS:[sel_e_line]
+    JA      .os_not_sel
+    JB      .os_sel
+    CMP     DX, CS:[sel_e_col]
+    JAE     .os_not_sel
+.os_sel:
+    MOV     AH, ED_ATTR_SEL
+.os_not_sel:
+    POP     DX
+.os_attr_done:
+    MOV     AL, ' '
+    PUSH    CX                      ; save overshoot count
+    REP     STOSW                   ; fill overshoot with spaces
+    POP     CX                      ; CX = starting screen column
+.no_overshoot:
     MOV     AH, ED_ATTR_NORM
 
 .char_loop:
@@ -200,17 +243,13 @@ tui_ctrl_draw_editor:
     JE      .char_loop
     CMP     AL, 0Ah
     JE      .row_done_lf
-    ; ---- Per-character selection attribute ----
+    CMP     AL, 09h
+    JE      .cl_tab
+    ; ---- Normal character: per-character selection attribute ----
     MOV     AH, ED_ATTR_NORM
     CMP     BYTE CS:[sel_rendering], 0
     JE      .cl_write
-    CMP     BYTE CS:[wrap_mode], 0
-    JNE     .cl_wrap_col
-    MOV     DX, CS:[left_col]
-    ADD     DX, CX
-    JMP     .cl_check
-.cl_wrap_col:
-    MOV     DX, CS:[rnd_doc_col]
+    MOV     DX, CS:[rnd_byte_col]
 .cl_check:
     CMP     BP, CS:[sel_s_line]
     JB      .cl_write
@@ -229,9 +268,55 @@ tui_ctrl_draw_editor:
     MOV     ES:[DI], AX
     ADD     DI, 2
     INC     CX
-    CMP     BYTE CS:[wrap_mode], 0
-    JE      .char_loop
-    INC     WORD CS:[rnd_doc_col]
+    INC     WORD CS:[rnd_byte_col]
+    INC     WORD CS:[rnd_visual_col]
+    JMP     .char_loop
+
+    ; ---- Tab expansion ----
+.cl_tab:
+    ; Determine attribute for this tab byte
+    MOV     AH, ED_ATTR_NORM
+    CMP     BYTE CS:[sel_rendering], 0
+    JE      .cl_tab_attr_ok
+    PUSH    DX
+    MOV     DX, CS:[rnd_byte_col]
+    CMP     BP, CS:[sel_s_line]
+    JB      .cl_tab_not_sel
+    JA      .cl_tab_above
+    CMP     DX, CS:[sel_s_col]
+    JB      .cl_tab_not_sel
+.cl_tab_above:
+    CMP     BP, CS:[sel_e_line]
+    JA      .cl_tab_not_sel
+    JB      .cl_tab_is_sel
+    CMP     DX, CS:[sel_e_col]
+    JAE     .cl_tab_not_sel
+.cl_tab_is_sel:
+    MOV     AH, ED_ATTR_SEL
+.cl_tab_not_sel:
+    POP     DX
+.cl_tab_attr_ok:
+    ; Compute tab spaces: tab_width - (visual_col & tab_mask)
+    PUSH    BX
+    PUSH    DX
+    MOV     BX, CS:[rnd_visual_col]
+    AND     BX, CS:[tab_mask]
+    MOV     DX, CS:[tab_width]
+    SUB     DX, BX                  ; DX = spaces to render
+.cl_tab_loop:
+    CMP     CX, ED_COLS
+    JAE     .cl_tab_done
+    MOV     AL, ' '
+    MOV     ES:[DI], AX
+    ADD     DI, 2
+    INC     CX
+    INC     WORD CS:[rnd_visual_col]
+    DEC     DX
+    JNZ     .cl_tab_loop
+.cl_tab_done:
+    POP     DX
+    POP     BX
+    INC     WORD CS:[rnd_byte_col]
     JMP     .char_loop
 
 .adv_piece:
@@ -306,9 +391,6 @@ tui_ctrl_draw_editor:
     JMP     .row_pad
 
 .row_done:
-    ; Wrap mode: continue on next screen row without advancing logical line
-    CMP     BYTE CS:[wrap_mode], 0
-    JNE     .row_done_wrap
 .skip_to_lf:
     CMP     SI, CS:[rnd_len]
     JAE     .skip_adv_piece
@@ -371,28 +453,6 @@ tui_ctrl_draw_editor:
     REP     STOSW
     JMP     .row_next
 
-.row_done_wrap:
-    ; ---- Wrap mode: line continues on next screen row ----
-    ; Store current piece position
-    PUSH    AX
-    MOV     AX, SI
-    SUB     AX, CS:[rnd_base]
-    MOV     CS:[rnd_off], AX
-    POP     AX
-    ; Pad remainder of screen row (CX == ED_COLS so usually nothing to pad)
-    PUSH    CS
-    POP     DS
-    MOV     AX, ED_COLS
-    SUB     AX, CX
-    MOV     CX, AX
-    JCXZ    .row_next_wrap
-    MOV     AX, ED_ATTR_NORM * 256 + 20h
-    REP     STOSW
-.row_next_wrap:
-    ; Advance screen row but NOT logical line (BP stays same)
-    INC     WORD [rnd_row]
-    JMP     .row_loop
-
 .blank_row:
     MOV     CX, ED_COLS
     MOV     AX, ED_ATTR_NORM * 256 + 20h
@@ -401,7 +461,6 @@ tui_ctrl_draw_editor:
 .row_next:
     INC     WORD [rnd_row]
     INC     BP
-    MOV     WORD [rnd_doc_col], 0
     JMP     .row_loop
 
 ; ---- STATUS BAR ----
@@ -423,46 +482,6 @@ tui_ctrl_draw_editor:
     REP     STOSW
 
 .status_done:
-    ; ---- Wrap-mode scroll adjustment ----
-    CMP     BYTE [wrap_mode], 0
-    JE      .draw_cursor_now
-
-    ; Check if cursor's line was rendered at all
-    CMP     WORD [cur_vis_row], 0FFFFh
-    JE      .wrap_not_visible
-
-    ; Compute cursor's visual row: cur_vis_row + cur_col / ED_COLS
-    MOV     AX, [cur_col]
-    XOR     DX, DX
-    MOV     CX, ED_COLS
-    DIV     CX                          ; AX = extra_rows
-    ADD     AX, [cur_vis_row]           ; AX = cursor visual row
-    CMP     AX, ED_TEXT_ROWS
-    JB      .draw_cursor_now            ; on screen — draw it
-
-    ; Cursor off bottom: increment top_line and re-render
-    JMP     .wrap_adjust_down
-
-.wrap_not_visible:
-    ; cur_line wasn't rendered — set top_line = cur_line to bring it on screen
-    MOV     AX, [cur_line]
-    MOV     [top_line], AX
-    JMP     .wrap_re_render
-
-.wrap_adjust_down:
-    INC     WORD [top_line]
-    ; Clamp: top_line must not exceed cur_line
-    MOV     AX, [cur_line]
-    CMP     [top_line], AX
-    JBE     .wrap_re_render
-    MOV     [top_line], AX              ; safety clamp
-
-.wrap_re_render:
-    MOV     WORD [cur_vis_row], 0FFFFh  ; reset sentinel
-    DEC     BYTE [wrap_retry]
-    JZ      .draw_cursor_now            ; give up — max retries reached
-    JMP     .render_restart
-
 .draw_cursor_now:
     ; ---- Software cursor ----
     CALL    ed_draw_cursor
@@ -536,10 +555,7 @@ ed_draw_status_line PROC
     MOV     SI, s_stat_ln
     CALL    ed_wstr
 
-    CMP     BYTE [wrap_mode], 0
-    JNE     .stat_vis_line
-
-    ; Non-wrap: logical line numbers
+    ; Logical line numbers
     MOV     AX, [cur_line]
     INC     AX
     CALL    ed_wdec
@@ -548,21 +564,6 @@ ed_draw_status_line PROC
     MOV     AX, [total_lines]
     CALL    ed_wdec
     JMP     .stat_col
-
-.stat_vis_line:
-    ; Wrap: visual line numbers
-    ; N = cur_vis_line + cur_col / ED_COLS + 1
-    MOV     AX, [cur_col]
-    XOR     DX, DX
-    MOV     CX, ED_COLS
-    DIV     CX                      ; AX = cur_col / ED_COLS
-    ADD     AX, [cur_vis_line]
-    INC     AX                      ; 1-based
-    CALL    ed_wdec
-    MOV     SI, s_stat_of
-    CALL    ed_wstr
-    MOV     AX, [total_vis_lines]
-    CALL    ed_wdec
 
 .stat_col:
     ; Column display
@@ -573,10 +574,6 @@ ed_draw_status_line PROC
     CALL    ed_wdec
 
     ; Wrap indicator
-    CMP     BYTE [wrap_mode], 0
-    JE      .no_wrap
-    MOV     SI, s_stat_wrap
-    CALL    ed_wstr
 .no_wrap:
 
     CMP     BYTE [dirty], 0
@@ -590,6 +587,12 @@ ed_draw_status_line PROC
     MOV     SI, s_stat_sel
     CALL    ed_wstr
 .no_sel:
+
+    CMP     BYTE [overwrite_mode], 0
+    JE      .no_ovr
+    MOV     SI, s_stat_ovr
+    CALL    ed_wstr
+.no_ovr:
 
     RET
 ed_draw_status_line ENDP
@@ -668,11 +671,8 @@ ed_draw_cursor PROC
     PUSH    DX
     PUSH    DI
 
-    CMP     BYTE [wrap_mode], 0
-    JNE     .wrap_cursor
-
     ; ============================================================
-    ; Non-wrap cursor (unchanged from Phase A)
+    ; Cursor position (visual column aware for tabs)
     ; ============================================================
     MOV     AX, [cur_line]
     SUB     AX, [top_line]
@@ -688,6 +688,7 @@ ed_draw_cursor PROC
     ADD     DI, shadow_buf
 
     MOV     AX, [cur_col]
+    CALL    byte_to_visual_col     ; AX = visual column of cursor
     SUB     AX, [left_col]
     CMP     AX, ED_COLS
     JAE     .no_cursor
@@ -695,44 +696,9 @@ ed_draw_cursor PROC
     ADD     DI, AX
     JMP     .swap_attr
 
-    ; ============================================================
-    ; Wrap-mode cursor
-    ; ============================================================
-.wrap_cursor:
-    ; Check if cur_vis_row was captured during rendering
-    CMP     WORD [cur_vis_row], 0FFFFh
-    JE      .no_cursor
-
-    ; Compute: extra_rows = cur_col / ED_COLS, screen_col = cur_col % ED_COLS
-    MOV     AX, [cur_col]
-    XOR     DX, DX
-    MOV     CX, ED_COLS
-    DIV     CX                  ; AX = extra_rows, DX = screen_col
-
-    ; Visual row = cur_vis_row + extra_rows
-    ADD     AX, [cur_vis_row]
-    CMP     AX, ED_TEXT_ROWS
-    JAE     .no_cursor
-
-    ; Compute shadow_buf row offset
-    ADD     AL, [ed_abs_row]
-    XOR     AH, AH
-    MOV     BX, AX
-    SHL     BX, 1
-    MOV     DI, [BX + row_offsets]
-    ADD     DI, shadow_buf
-
-    ; Add column offset (DX = screen_col from DIV remainder)
-    MOV     AX, DX
-    SHL     AX, 1
-    ADD     DI, AX
-
 .swap_attr:
-    ; Swap fg/bg nibbles of attribute byte (block cursor)
-    MOV     AL, [DI + 1]
-    MOV     CL, 4
-    ROL     AL, CL
-    MOV     [DI + 1], AL
+    ; Fixed cursor attribute: bright white bg, blue fg (requires blink disable)
+    MOV     BYTE [DI + 1], 0F1h
 
 .no_cursor:
     POP     DI

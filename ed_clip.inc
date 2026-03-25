@@ -71,7 +71,8 @@ ed_copy PROC
     ; STAGE 2: Convert selection start to byte offset
     ;   DS = CS
     ;   line_col_to_offset input:  BX = line, CX = col
-    ;   line_col_to_offset output: DX:AX = byte offset, CF on overflow
+    ;   line_col_to_offset output: DX:AX = 32-bit byte offset
+    ;   line_col_to_offset also sets: rnd_pi, rnd_off (piece position)
     ;   line_col_to_offset preserves: BX, BP, DI
     ;   line_col_to_offset clobbers:  AX, CX, DX, SI, rnd_pi, rnd_off
     ;
@@ -80,76 +81,46 @@ ed_copy PROC
     ; ================================================================
 
     CALL    line_col_to_offset
-    JC      .ec_offset_overflow     ; overflow
-    TEST    DX, DX
-    JNZ     .ec_offset_overflow     ; offset > 64K
 
-    ; AX = start byte offset (16-bit). Save to scratch.
-    MOV     [rd_start_off], AX      ; reuse existing scratch variable
+    ; Save start piece position for copy loop (stage 5)
+    ; Repurpose ec_s_line/ec_s_col (no longer needed after this call)
+    MOV     SI, [rnd_pi]
+    MOV     [ec_s_line], SI
+    MOV     SI, [rnd_off]
+    MOV     [ec_s_col], SI
+
+    ; Save 32-bit start offset on stack
+    PUSH    DX                      ; start_off_hi
+    PUSH    AX                      ; start_off_lo
 
     ; ================================================================
-    ; STAGE 3: Convert selection end to byte offset
+    ; STAGE 3: Convert selection end to byte offset, compute byte count
     ;   DS = CS
     ;   Reload end coords from BSS (stage 2 clobbered CX, DX, SI)
     ; ================================================================
 
     MOV     BX, [ec_e_line]
     MOV     CX, [ec_e_col]
-    CALL    line_col_to_offset
-    JC      .ec_offset_overflow
-    TEST    DX, DX
-    JNZ     .ec_offset_overflow
+    CALL    line_col_to_offset      ; DX:AX = end byte offset (32-bit)
 
-    ; AX = end byte offset. Compute byte count.
-    SUB     AX, [rd_start_off]      ; AX = end - start = byte_count
-    JBE     .ec_restore_fail        ; zero or negative
+    ; 32-bit subtract: byte_count = end_offset - start_offset
+    POP     CX                      ; CX = start_off_lo
+    POP     SI                      ; SI = start_off_hi
+    SUB     AX, CX
+    SBB     DX, SI
+    TEST    DX, DX
+    JNZ     .ec_offset_overflow     ; byte count > 64K
+    TEST    AX, AX
+    JZ      .ec_restore_fail        ; zero byte count
     CMP     AX, CLIP_BUF_BYTES
     JA      .ec_too_large           ; exceeds clipboard capacity
 
     MOV     [ec_byte_count], AX
 
-    ; ================================================================
-    ; STAGE 4: Find the piece containing start_off
-    ;   DS = CS
-    ;   We use ES to read pt_seg descriptors.
-    ;   Walks pieces summing lengths until we pass start_off.
-    ;   Sets [rnd_pi] and [rnd_off] to the byte-accurate start position.
-    ;
-    ;   Registers during walk:
-    ;     ES = pt_seg
-    ;     BX = piece index (0, 1, 2, ...)
-    ;     CX = accumulated byte total before current piece
-    ;     SI = descriptor byte offset (incremented by PT_DESC_SIZE)
-    ;     AX, DX = scratch
-    ; ================================================================
-
-    MOV     AX, [pt_seg]
-    MOV     ES, AX
-    XOR     CX, CX                 ; CX = accumulated length
-    XOR     BX, BX                 ; BX = piece index
-    XOR     SI, SI                 ; SI = descriptor byte offset
-
-.ec_find_start:
-    CMP     BX, [pt_count]
-    JAE     .ec_restore_fail        ; start_off past all pieces
-
-    MOV     AX, ES:[SI + PT_F_LENGTH]  ; AX = this piece's length
-    MOV     DX, CX
-    ADD     DX, AX                 ; DX = accum + plen
-    CMP     DX, [rd_start_off]
-    JA      .ec_found_piece         ; accum + plen > start_off → found
-    MOV     CX, DX                 ; accum += plen
-    ADD     SI, PT_DESC_SIZE
-    INC     BX
-    JMP     .ec_find_start
-
-.ec_found_piece:
-    ; BX = piece index containing start_off
-    ; CX = byte total of all pieces before this one
-    ; rnd_off = start_off - CX (offset within this piece)
-    MOV     AX, [rd_start_off]
-    SUB     AX, CX
-    MOV     [rnd_pi], BX
+    ; Restore start piece position (set by stage 2's line_col_to_offset)
+    MOV     AX, [ec_s_line]
+    MOV     [rnd_pi], AX
+    MOV     AX, [ec_s_col]
     MOV     [rnd_off], AX
 
     ; ================================================================

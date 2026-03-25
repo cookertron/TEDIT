@@ -129,14 +129,16 @@ sel_delete PROC
     MOV     BX, [sel_s_line]
     MOV     CX, [sel_s_col]
     CALL    line_col_to_offset      ; DX:AX = start offset
-    JC      .sd_fallback
+    TEST    DX, DX
+    JNZ     .sd_fallback            ; >64K: use legacy path
     MOV     [rd_start_off], AX      ; save start offset (16-bit)
 
     ; ---- Convert end to byte offset ----
     MOV     BX, [sel_e_line]
     MOV     CX, [sel_e_col]
     CALL    line_col_to_offset      ; DX:AX = end offset
-    JC      .sd_fallback
+    TEST    DX, DX
+    JNZ     .sd_fallback            ; >64K: use legacy path
     ; AX = end offset
 
     ; ---- Validate: start < end ----

@@ -528,7 +528,6 @@ undo_execute PROC
     ; line_col_to_offset: BX=line, CX=col -> DX:AX = byte offset
     ; Preserves: BX, BP, DI. Clobbers: AX, CX, DX, SI.
     CALL    line_col_to_offset
-    JC      .u_restore                  ; overflow (shouldn't happen)
     TEST    DX, DX
     JNZ     .u_restore                  ; >64K (shouldn't happen)
 
@@ -564,6 +563,10 @@ undo_execute PROC
     JZ      .u_finish
     CMP     WORD [undo_pos], 0
     JE      .u_finish
+    ; Suppress rebuild_meta during group loop — stale checkpoints are
+    ; close enough for seek_to_line to find the correct line by LF scan.
+    ; A single rebuild happens in .u_finish after all records are undone.
+    MOV     BYTE [meta_dirty], 0
     JMP     .u_loop
 
 .u_finish:
@@ -819,7 +822,10 @@ redo_execute PROC
     MOV     AX, [undo_seg]
     MOV     ES, AX
     TEST    BYTE ES:[BX + UR_TYPE], URF_GROUP_CONT
-    JNZ     .r_loop                     ; next is continuation → keep going
+    JZ      .r_finish
+    ; Suppress rebuild_meta during group loop (same rationale as undo_execute)
+    MOV     BYTE [meta_dirty], 0
+    JMP     .r_loop
 
 .r_finish:
     MOV     WORD [last_ins_pi], 0FFFFh

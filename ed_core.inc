@@ -24,46 +24,34 @@ shrink_mem:
 ; ============================================================
 
 parse_args:
-    MOV     BYTE [wrap_mode], 0
     MOV     SI, 81h
     XOR     CH, CH
     MOV     CL, [80h]
-    CMP     CX, 0
-    JE      .no_fn
-.skip1:
     TEST    CX, CX
     JZ      .no_fn
-    MOV     AL, [SI]
-    CMP     AL, ' '
-    JNE     .got_tok
+
+.scan_loop:
+    ; Skip leading spaces
+    TEST    CX, CX
+    JZ      .scan_done
+    CMP     BYTE [SI], ' '
+    JNE     .got_token
     INC     SI
     DEC     CX
-    JMP     .skip1
-.got_tok:
-    CMP     CX, 6
-    JB      .copy_fn
+    JMP     .scan_loop
+
+.got_token:
+    ; Check for /t or -t flag
+    CMP     BYTE [SI], '/'
+    JE      .check_flag
     CMP     BYTE [SI], '-'
-    JNE     .copy_fn
-    CMP     BYTE [SI+1], '-'
-    JNE     .copy_fn
-    MOV     AL, [SI+2]
-    OR      AL, 20h
-    CMP     AL, 'w'
-    JNE     .copy_fn
-    MOV     BYTE [wrap_mode], 1
-    ADD     SI, 6
-    SUB     CX, 6
-    JBE     .no_fn
-.skip2:
-    JCXZ    .no_fn
-    MOV     AL, [SI]
-    CMP     AL, ' '
-    JNE     .copy_fn
-    INC     SI
-    DEC     CX
-    JMP     .skip2
-.copy_fn:
-    JCXZ    .no_fn
+    JE      .check_flag
+
+    ; Not a flag — if no filename yet, treat as filename
+    CMP     BYTE [filename], 0
+    JNE     .skip_token             ; already have filename
+
+    ; Copy token to filename
     MOV     DI, filename
 .cfloop:
     JCXZ    .fn_done
@@ -81,7 +69,74 @@ parse_args:
     JMP     .cfloop
 .fn_done:
     MOV     BYTE [DI], 0
-    CMP     DI, filename
+    JMP     .scan_loop
+
+.check_flag:
+    ; SI points at '/'
+    INC     SI
+    DEC     CX
+    TEST    CX, CX
+    JZ      .scan_done
+    CMP     BYTE [SI], 't'
+    JE      .flag_t
+    CMP     BYTE [SI], 'T'
+    JE      .flag_t
+    JMP     .skip_token             ; unknown flag
+
+.flag_t:
+    INC     SI
+    DEC     CX
+    TEST    CX, CX
+    JZ      .scan_done
+    CMP     BYTE [SI], ' '
+    JE      .flag_t_space
+    JMP     .flag_t_digit           ; digit immediately follows /t
+
+.flag_t_space:
+    INC     SI
+    DEC     CX
+    TEST    CX, CX
+    JZ      .scan_done
+    CMP     BYTE [SI], ' '
+    JE      .flag_t_space
+
+.flag_t_digit:
+    MOV     AL, [SI]
+    INC     SI
+    DEC     CX
+    CMP     AL, '2'
+    JE      .set_tab_2
+    CMP     AL, '4'
+    JE      .set_tab_4
+    CMP     AL, '8'
+    JE      .set_tab_8
+    JMP     .scan_loop              ; invalid value — ignore
+
+.set_tab_2:
+    MOV     WORD [tab_width], 2
+    MOV     WORD [tab_mask], 1
+    JMP     .scan_loop
+.set_tab_4:
+    MOV     WORD [tab_width], 4
+    MOV     WORD [tab_mask], 3
+    JMP     .scan_loop
+.set_tab_8:
+    MOV     WORD [tab_width], 8
+    MOV     WORD [tab_mask], 7
+    JMP     .scan_loop
+
+.skip_token:
+    JCXZ    .scan_done
+    CMP     BYTE [SI], ' '
+    JE      .scan_loop
+    CMP     BYTE [SI], 0Dh
+    JE      .scan_done
+    INC     SI
+    DEC     CX
+    JMP     .skip_token
+
+.scan_done:
+    CMP     BYTE [filename], 0
     JE      .no_fn
     CLC
     RET
@@ -335,8 +390,6 @@ rebuild_meta PROC
     MOV     WORD [chkpt_pi], 0
     MOV     WORD [chkpt_po], 0
     MOV     WORD [chkpt_num], 1
-    MOV     WORD [total_vis_lines], 0
-    MOV     WORD [cur_vis_line], 0
     XOR     BP, BP
 .next_piece:
     CMP     BP, [pt_count]
@@ -348,10 +401,7 @@ rebuild_meta PROC
     MOV     [rnd_base], SI
     INC     BP
 
-    CMP     BYTE [wrap_mode], 0
-    JNE     .rm_wrap_loop
-
-    ; ---- NON-WRAP: REPNE SCASB for LF scanning ----
+    ; ---- REPNE SCASB for LF scanning ----
     MOV     DI, SI                 ; DI = scan start = piece base
     ADD     DX, SI                 ; DX = piece end (absolute)
     MOV     AL, 0Ah                ; search for LF
@@ -386,53 +436,10 @@ rebuild_meta PROC
 .rm_exhaust:
     JMP     .end_walk
 
-    ; ---- WRAP MODE: byte-by-byte with dual line counting ----
-.rm_wrap_loop:
-    ADD     DX, SI                 ; DX = piece end (absolute)
-    MOV     DI, DX                 ; DI = piece end (for record_chkpt)
-.rm_w_byte:
-    CMP     SI, DX
-    JAE     .end_walk
-    MOV     AL, ES:[SI]
-    INC     SI
-    CMP     AL, 0Dh
-    JE      .rm_w_byte             ; skip CR
-    CMP     AL, 0Ah
-    JNE     .rm_w_not_lf
-    ; ---- LF: increment both counters ----
-    MOV     WORD [stl_col], 0
-    INC     WORD [total_lines]
-    INC     WORD [total_vis_lines]
-    ; Track cur_vis_line: when logical line count reaches cur_line
-    MOV     AX, [total_lines]
-    CMP     AX, [cur_line]
-    JNE     .rm_w_lf_no_cvl
-    MOV     AX, [total_vis_lines]
-    MOV     [cur_vis_line], AX
-.rm_w_lf_no_cvl:
-    MOV     AX, [total_lines]
-    TEST    AX, CHKPT_INTERVAL - 1
-    JNZ     .rm_w_byte
-    CALL    .record_chkpt
-    JMP     .rm_w_byte
-.rm_w_not_lf:
-    ; ---- Visible char: track column for visual wrap ----
-    INC     WORD [stl_col]
-    MOV     AX, [stl_col]
-    CMP     AX, ED_COLS
-    JB      .rm_w_byte
-    MOV     WORD [stl_col], 0
-    INC     WORD [total_vis_lines]
-    JMP     .rm_w_byte
-
 .end_walk:
     JMP     .next_piece
 .done:
     INC     WORD [total_lines]
-    CMP     BYTE [wrap_mode], 0
-    JE      .done_no_vis
-    INC     WORD [total_vis_lines]
-.done_no_vis:
     POP     ES
     POP     BP
     POP     DI
@@ -631,7 +638,116 @@ clamp_cursor PROC
 clamp_cursor ENDP
 
 ; ============================================================
+; BYTE_TO_VISUAL_COL — convert byte column to visual column
+;
+; Walks cur_line from byte 0, expanding tabs to compute the
+; visual (screen) column that corresponds to a byte position.
+;
+; Input:  AX = byte column (visible char count from line start)
+; Output: AX = visual column
+; Clobbers: BX, CX, DX, SI, DI (saved internally)
+; ============================================================
+
+byte_to_visual_col PROC
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+    PUSH    SI
+    PUSH    DI
+
+    MOV     CX, AX                 ; CX = target byte count
+    TEST    CX, CX
+    JZ      .done_zero
+
+    PUSH    CX
+    MOV     AX, [cur_line]
+    CALL    seek_to_line            ; sets rnd_pi, rnd_off
+    POP     CX
+
+    XOR     DI, DI                  ; DI = visual column accumulator
+
+.walk_piece:
+    MOV     BX, [rnd_pi]
+    CMP     BX, [pt_count]
+    JAE     .done
+    PUSH    CX
+    PUSH    DI
+    CALL    resolve_piece           ; AX=seg, SI=base, DX=piece_len
+    POP     DI
+    POP     CX
+    JC      .done
+
+    PUSH    DS
+    MOV     DS, AX
+    MOV     BX, SI                  ; BX = piece base
+    ADD     DX, SI                  ; DX = piece end (absolute)
+    ADD     SI, CS:[rnd_off]        ; SI = current read position
+
+.inner:
+    CMP     SI, DX
+    JAE     .next_piece
+    MOV     AL, [SI]
+    INC     SI
+    CMP     AL, 0Dh
+    JE      .inner                  ; skip CR
+    CMP     AL, 0Ah
+    JE      .at_eol                 ; LF = end of line
+    CMP     AL, 09h
+    JE      .is_tab
+    ; Normal character
+    INC     DI                      ; visual_col++
+    DEC     CX
+    JZ      .found
+    JMP     .inner
+
+.is_tab:
+    ; tab_w = tab_width - (visual_col & tab_mask)
+    PUSH    BX
+    MOV     BX, DI
+    AND     BX, CS:[tab_mask]
+    PUSH    AX
+    MOV     AX, CS:[tab_width]
+    SUB     AX, BX
+    ADD     DI, AX                  ; visual_col += tab_w
+    POP     AX
+    POP     BX
+    DEC     CX
+    JZ      .found
+    JMP     .inner
+
+.next_piece:
+    POP     DS
+    INC     WORD [rnd_pi]
+    MOV     WORD [rnd_off], 0
+    JMP     .walk_piece
+
+.at_eol:
+    POP     DS
+    JMP     .done
+.found:
+    POP     DS
+.done:
+    MOV     AX, DI                  ; return visual column
+    POP     DI
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    RET
+
+.done_zero:
+    XOR     AX, AX
+    POP     DI
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    RET
+byte_to_visual_col ENDP
+
+; ============================================================
 ; SCROLL_TO_CURSOR — ensure cur_line is visible
+; left_col is a VISUAL column offset (accounts for tab expansion)
 ; ============================================================
 
 scroll_to_cursor PROC
@@ -655,17 +771,15 @@ scroll_to_cursor PROC
     MOV     [top_line], AX
 
 .vert_done:
-    ; ---- Horizontal scroll (non-wrap only) ----
-    CMP     BYTE [wrap_mode], 0
-    JNE     .done
-
+    ; ---- Horizontal scroll (visual columns) ----
     MOV     AX, [cur_col]
+    CALL    byte_to_visual_col      ; AX = visual column of cursor
 
-    ; If cur_col < left_col: scroll left so cursor is at left edge
+    ; If visual_col < left_col: scroll left
     CMP     AX, [left_col]
     JB      .scroll_left
 
-    ; If cur_col >= left_col + ED_COLS: scroll right so cursor is at right edge
+    ; If visual_col >= left_col + ED_COLS: scroll right
     MOV     BX, [left_col]
     ADD     BX, ED_COLS
     CMP     AX, BX
@@ -674,14 +788,13 @@ scroll_to_cursor PROC
     RET
 
 .scroll_left:
-    MOV     [left_col], AX          ; left_col = cur_col
+    MOV     [left_col], AX          ; left_col = visual_col
     RET
 
 .scroll_right:
     SUB     AX, ED_COLS
-    INC     AX                      ; left_col = cur_col - ED_COLS + 1
+    INC     AX                      ; left_col = visual_col - ED_COLS + 1
     MOV     [left_col], AX
-.done:
     RET
 scroll_to_cursor ENDP
 
@@ -804,10 +917,7 @@ line_length PROC
     CALL    seek_to_line
     XOR     CX, CX            ; CX = visible char count
 
-    CMP     BYTE [wrap_mode], 0
-    JNE     .ll_piece_wrap
-
-    ; ---- NON-WRAP FAST PATH ----
+    ; ---- FAST PATH ----
 .ll_piece_fast:
     MOV     BX, [rnd_pi]
     CMP     BX, [pt_count]
@@ -865,45 +975,6 @@ line_length PROC
     ADD     CX, AX
     POP     ES
     JMP     .ll_done
-
-    ; ---- WRAP MODE: original byte-by-byte scan ----
-.ll_piece_wrap:
-    MOV     BX, [rnd_pi]
-    CMP     BX, [pt_count]
-    JAE     .ll_done
-    PUSH    CX
-    CALL    resolve_piece
-    POP     CX
-    JC      .ll_done
-
-    PUSH    DS
-    MOV     DS, AX
-    MOV     DI, SI
-    ADD     DX, SI
-    MOV     SI, DI
-    ADD     SI, CS:[rnd_off]
-
-.ll_inner_wrap:
-    CMP     SI, DX
-    JAE     .ll_next_wrap
-    MOV     AL, [SI]
-    INC     SI
-    CMP     AL, 0Dh
-    JE      .ll_inner_wrap
-    CMP     AL, 0Ah
-    JE      .ll_eol_wrap
-    INC     CX
-    JMP     .ll_inner_wrap
-
-.ll_eol_wrap:
-    POP     DS
-    JMP     .ll_done
-
-.ll_next_wrap:
-    POP     DS
-    INC     WORD [rnd_pi]
-    MOV     WORD [rnd_off], 0
-    JMP     .ll_piece_wrap
 
 .ll_done:
     MOV     AX, CX
@@ -1054,11 +1125,19 @@ line_col_to_offset PROC
 .lco_col_eol:
     ; Hit line ending before target_col exhausted — stop
     POP     DS
+    ; Update rnd_off to column position within piece
+    MOV     AX, SI
+    SUB     AX, DI                  ; AX = piece-relative offset
+    MOV     [rnd_off], AX
     JMP     .lco_col_done
 
 .lco_col_found:
     ; Walked exactly target_col visible chars
     POP     DS
+    ; Update rnd_off to column position within piece
+    MOV     AX, SI
+    SUB     AX, DI                  ; AX = piece-relative offset
+    MOV     [rnd_off], AX
     JMP     .lco_col_done
 
 .lco_col_next:
@@ -1075,23 +1154,11 @@ line_col_to_offset PROC
     ADD     AX, BP
     ADC     DX, 0
 
-    ; ---- Overflow check ----
-    TEST    DX, DX
-    JNZ     .lco_overflow
-
     POP     CX                      ; discard saved target_col
     POP     BX
     POP     DI
     POP     BP
     CLC
-    RET
-
-.lco_overflow:
-    POP     CX
-    POP     BX
-    POP     DI
-    POP     BP
-    STC
     RET
 line_col_to_offset ENDP
 

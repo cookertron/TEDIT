@@ -300,7 +300,7 @@ DLG_OK      EQU 1
 DLG_CANCEL  EQU 2
 DLG_YES     EQU 1
 DLG_NO      EQU 0
-DLG_REPL_ALL EQU 2
+DLG_REPL_ALL EQU 3
 
 ; --- Framework state: dialog (fw_state offsets 10-11) ---
 FW_DLG_RESULT EQU 10           ; BYTE - dialog return code
@@ -313,10 +313,12 @@ DLG_BTN_OK_W  EQU 8            ; button width for [ OK ]
 DLG_BTN_YN_W  EQU 8            ; button width for [ Yes ]/[ No ]
 DLG_BTN_CAN_W EQU 10           ; button width for [ Cancel ]
 DLG_BTN_GAP   EQU 2            ; gap between buttons
+DLG_BTN_ALL_W EQU 8            ; button width for [ All ]
 
 ; --- File dialog ---
-DLG_FILE_MAXENT  EQU 128         ; max directory entries
+DLG_FILE_MAXENT  EQU 128         ; max file entries in file dialog
 DLG_FILE_NAMELEN EQU 14          ; bytes per name slot (13 chars + backslash)
+DLG_DIR_MAXENT   EQU 32          ; max directory entries in file dialog
 
 ; --- Scroll bar characters (CP437) ---
 SB_ARROW_UP   EQU 18h

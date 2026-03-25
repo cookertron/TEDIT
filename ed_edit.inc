@@ -75,10 +75,6 @@ insert_char PROC
     POP     DS                     ; restore COM segment
 
     MOV     BYTE [dirty], 1
-    ; Wrap mode: visual line count may change, force recount
-    CMP     BYTE [wrap_mode], 0
-    JE      .ic_fast_no_vis
-    MOV     BYTE [meta_dirty], 1
 .ic_fast_no_vis:
     INC     WORD [cur_col]
     CALL    scroll_to_cursor
@@ -325,10 +321,6 @@ insert_char PROC
     JE      .ic_done
     CMP     CL, 0Ah
     JE      .ic_done
-    ; Wrap mode: visual line count may change
-    CMP     BYTE [wrap_mode], 0
-    JE      .ic_after_no_vis
-    MOV     BYTE [meta_dirty], 1
 .ic_after_no_vis:
     INC     WORD [cur_col]
     CALL    scroll_to_cursor

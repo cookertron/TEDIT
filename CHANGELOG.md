@@ -1,5 +1,562 @@
 # TEDIT Changelog
 
+## v0.53.0 — Word Wrap + Save As (2026-03-25)
+
+### Word Wrap (Edit > Word Wrap)
+- Permanent hard word wrap at 80 columns — inserts CRLF at word boundaries
+- Confirm dialog warns: "Save and wrap to 80 cols? Cannot undo."
+- Streaming single-pass implementation (`_wrap_save_file`): walks piece table,
+  accumulates line in rd_save_buf, breaks at last space when column exceeds 80
+- Handles tabs (tab-stop-aware column tracking), long words without spaces
+  (hard break), and lines already under 80 columns (passed through)
+- After wrapping, file is saved and reloaded via `ed_compact`
+
+### Changes
+- **TEDIT.ASM** — New `menu_wordwrap_handler` + `_wrap_save_file` proc (~200 lines);
+  added `m_str_wordwrap`, `s_wrap_confirm` strings; Edit menu: 11→12 entries
+- Also includes Save As and undo group perf fix from v0.52.0
+
+Binary size: 55531 bytes (up from 54859, +672 bytes / +1.2%).
+
+## v0.52.0 — Save As + undo group performance fix (2026-03-25)
+
+### Save As (File > Save As...)
+- New File menu entry between Save and Quit
+- Uses the same file browser dialog as Open (drive selection, directory
+  navigation, file listing)
+- Copies the selected filename and saves the document to it
+- Updates the editor's filename — subsequent Ctrl+S saves to the new location
+
+### Undo/Redo group performance fix
+- Suppresses `rebuild_meta` during grouped undo/redo loops (overwrite mode,
+  datetime insertion, sel_delete, etc.)
+- Previously each record in a group triggered a full metadata rebuild (O(n)
+  per record × group size). Now: one rebuild at the end of the group.
+- Fixes significant lag when undoing overwrite mode edits on large files
+
+### Changes
+- **TEDIT.ASM** — New `menu_saveas_handler` proc; added `m_str_saveas` string;
+  File menu: 3→4 entries, dropdown width 16→18
+- **ed_undo.inc** — Added `MOV BYTE [meta_dirty], 0` before group continuation
+  jumps in both `undo_execute` and `redo_execute`
+
+Binary size: 54859 bytes (up from 54759, +100 bytes / +0.2%).
+
+## v0.51.0 — Date/Time insertion + Go to Line (2026-03-25)
+
+### Date/Time (F5 / Edit > Date/Time)
+- Inserts current date and time at cursor position in `YYYY-MM-DD HH:MM:SS`
+  format (19 characters)
+- Uses DOS INT 21h AH=2Ah (date) and AH=2Ch (time)
+- Fully undoable as a single grouped operation (one Ctrl+Z removes all 19 chars)
+- Replaces the "Toggle Case" menu entry (case toggle is now handled by the
+  Match case checkbox in Find/Replace dialogs)
+- Removed `[Aa]` status bar indicator (no longer needed)
+
+Binary size: 54759 bytes (up from 54519, +240 bytes / +0.4%).
+
+## v0.50.0 — Go to Line (2026-03-25)
+
+### Go to Line (Ctrl+G / Edit > Goto)
+- Input dialog accepts a line number (1-based, max 5 digits)
+- Validates: non-numeric input → "Invalid line number"; out of range → "Line
+  number out of range"
+- On success: moves cursor to start of target line, clears selection, scrolls
+  into view
+
+### Changes
+- **ed_keys.inc** — `.do_goto` now calls `menu_goto_handler` (was `menu_edit_stub`)
+- **TEDIT.ASM** — New `menu_goto_handler` proc (~60 lines, decimal parser with
+  overflow detection + range validation); wired into Edit menu; added strings
+  `s_goto_title/prompt/invalid/range`; added BSS `goto_buf` (6 bytes)
+
+Binary size: 54519 bytes (up from 54260, +259 bytes / +0.5%).
+
+## v0.49.0 — Permanent Replace All for large batches (2026-03-25)
+
+### Large Replace All — streaming single-pass rewrite
+- Replace All counts matches first. If count exceeds 50
+  (`REPL_PERM_THRESHOLD`), warns: "Cannot undo. Save and replace all?"
+- Permanent path uses new `_repl_save_replaced` proc — a single O(n) pass
+  that walks the piece table byte-by-byte, scanning for the needle and
+  writing matches as replacement text directly to the output file
+- Completely bypasses: `rebuild_meta` (the lockup root cause — called once
+  per replacement, each walking the entire 72KB file), `sel_delete`,
+  `_repl_insert`, undo buffer, `rd_save_buf`, and piece table manipulation
+- Output is buffered (16KB flushes) for efficient disk I/O
+- After streaming, `ed_compact` reloads the clean file
+- Small Replace All (≤50 matches) remains fully undoable (existing behavior)
+- Tested: 102 replacements in 72KB file completes in ~6M instructions
+  (previously froze at 500M+)
+
+### Changes
+- **ed_const.inc** — Added `REPL_PERM_THRESHOLD EQU 50`
+- **ed_find.inc** — New `_find_count_matches` proc; new `_repl_save_replaced`
+  proc (~140 lines, streaming piece-table-to-file with inline search/replace,
+  16KB write buffer, partial match handling with re-comparison); replaced
+  `.mr_perm_*` loop-based path with single `_repl_save_replaced` call
+- **TEDIT.ASM** — Added strings `s_repl_perm`, `s_repl_perm_ttl`
+
+Binary size: 54260 bytes (up from 53643, +617 bytes / +1.2%).
+
+## v0.48.0 — Replace dialog with checkboxes + Shift+F3 fix (2026-03-25)
+
+### Custom Replace Dialog
+- Replaced `tui_dlg_input2` with a custom dialog featuring:
+  - Find: label + textbox
+  - Replace with: label + textbox
+  - **[X] Match case** checkbox
+  - **[ ] In selection** checkbox (pre-checked when multi-line selection exists)
+  - **[ ] Replace all** checkbox (new — skips interactive Yes/No/All/Cancel loop)
+- Tab order: find textbox → replace textbox → Match case → In selection →
+  Replace all → OK → Cancel
+- When "Replace all" is checked: batch replace from first match, grouped undo
+  (single Ctrl+Z undoes all). When unchecked: interactive per-match confirmation
+  (existing Yes/No/All/Cancel flow preserved)
+- Selection-only bounds respected in both interactive and batch replace modes
+
+### Shift+F3 Fix
+- Corrected Shift+F3 scan code from 54h (Shift+F1) to **56h** (actual Shift+F3)
+- Added disambiguation for scan code 52h: Shift held → Find Prev (DOSBox-X
+  Shift+F3), no Shift → Insert toggle (overwrite mode)
+- F3 + `_key_modifiers` Shift bit also triggers Find Prev (agent86 compatibility)
+
+### Changes
+- **ed_const.inc** — No changes
+- **ed_find.inc** — New `_repl_show_dialog` proc (~200 lines) builds custom
+  Replace dialog with 2 labels, 2 textboxes, 3 checkboxes, 2 buttons; reads
+  checkbox states back into `find_flags` + `dlg_chk3` on OK.
+  `menu_replace_handler`: detect multi-line selection, call `_repl_show_dialog`,
+  check "Replace all" checkbox → jump to batch path or interactive confirm.
+  New `.mr_replace_all_from_first` entry point sets selection before batch loop.
+- **ed_keys.inc** — Fixed Shift+F3 scan code (54h→56h); added 52h+Shift
+  disambiguation for DOSBox-X compatibility
+- **TEDIT.ASM** — Added BSS: `dlg_chk3` (15 bytes); added strings
+  `s_repl_all`, `s_repl_done_sfx` (already existed)
+
+Binary size: 53643 bytes (up from 52710, +933 bytes / +1.8%).
+
+## v0.47.0 — Find dialog with checkboxes (2026-03-24)
+
+### Custom Find Dialog
+- Replaced the plain text-input Find dialog with a custom dialog featuring:
+  - TextBox for search term
+  - **[X] Match case** checkbox (checked = case-sensitive, unchecked = ignore case)
+  - **[ ] In selection** checkbox (enabled only when multi-line selection exists;
+    pre-checked when available)
+  - OK / Cancel buttons
+- Tab order: textbox → Match case → In selection → OK → Cancel
+- Enter on textbox auto-activates OK (via TUI framework's built-in behavior)
+
+### Find in Selection
+- Multi-line selection scopes the search: Ctrl+F with a multi-line selection
+  pre-checks the "In selection" checkbox
+- `find_forward` gains bounds checking: matches whose end extends past the
+  saved selection boundary are rejected
+- F3/Shift+F3 respect selection scope (wrap within selection bounds)
+- Single-line selections still pre-fill the search term (existing behavior)
+
+### Dynamic Titles
+- "Not found" and "No search term" message boxes show dynamic title based on
+  find_flags: "Find", "Find [Aa]", "Find in Selection", or
+  "Find in Selection [Aa]"
+
+### Changes
+- **ed_const.inc** — Added `FIND_FLAG_CI EQU 01h`, `FIND_FLAG_SEL EQU 02h`
+- **ed_find.inc** — New `_find_show_dialog` proc (~130 lines) builds custom dialog
+  with label, textbox, 2 checkboxes, 2 buttons; reads checkbox states back into
+  `find_flags` on OK. `find_forward`: added `.ff_found_past_sel` bounds check.
+  New `_find_select_title` helper. Updated `menu_find_handler` to detect
+  multi-line selection and call `_find_show_dialog`. Updated findnxt/findprv
+  to wrap within selection bounds and use dynamic titles.
+- **TEDIT.ASM** — Added BSS: `find_sel_s_line/col`, `find_sel_e_line/col` (8 bytes),
+  `dlg_chk1` (15 bytes), `dlg_chk2` (15 bytes); added title strings
+  (`s_find_title_ci`, `s_find_title_sel`, `s_find_title_sel_ci`),
+  checkbox label strings (`s_find_matchcase`, `s_find_insel`)
+
+Binary size: 52710 bytes (up from 51866, +844 bytes / +1.6%).
+
+## v0.46.0 — Tab support and Insert/Overwrite toggle (2026-03-24)
+
+### Tab Key Support
+- Tab key (09h) inserts a literal tab character into the document
+- Tabs render as spaces at tab-stop positions (every N columns)
+- Default tab width is 8; override with `/t 2`, `/t 4`, or `/t 8` flag (also `-t`)
+- Full horizontal scroll support: partial tab overshoot at left edge renders correctly
+- New `byte_to_visual_col` procedure converts byte column to visual column for cursor/scroll
+
+### Insert/Overwrite Toggle
+- Insert key (scan 52h) toggles between insert and overwrite mode
+- In overwrite mode, typing replaces the character under the cursor (except at EOL, where it inserts)
+- Tab in overwrite mode always inserts (no overwrite)
+- Grouped undo: one Ctrl+Z undoes an entire sequence of consecutive overwrites
+- Status bar shows `[OVR]` when overwrite mode is active
+
+### Changes
+- **ed_const.inc** — Added `ED_TAB_DEFAULT EQU 8`, `KEY_INSERT EQU 52h`
+- **ed_core.inc** — Rewrote `parse_args` to scan all tokens and handle `/t`/`-t` flags;
+  added `byte_to_visual_col` procedure (~70 lines); modified `scroll_to_cursor` to use
+  visual columns for horizontal scroll (left_col is now a visual column offset)
+- **ed_draw.inc** — Rewrote `ed_hscroll_skip` for tab-aware visual column skipping;
+  added tab expansion in `char_loop` with per-tab selection attribute; added overshoot
+  fill for partial tabs at left screen edge; `ed_draw_cursor` uses `byte_to_visual_col`;
+  added `rnd_byte_col`/`rnd_visual_col` tracking; added `[OVR]` status bar indicator
+- **ed_keys.inc** — Route Tab (09h) to `.do_char`; added Insert key toggle handler;
+  added overwrite-mode logic in `.do_char` (delete-before-insert with grouped undo)
+- **TEDIT.ASM** — Added BSS: `tab_width`, `tab_mask`, `rnd_byte_col`, `rnd_visual_col`,
+  `overwrite_mode`; added `s_stat_ovr` string; initialization in `main`
+
+Binary size: 51866 bytes (up from 50956, +910 bytes / +1.8%).
+
+## v0.45.0 — Remove wrap mode (2026-03-24)
+
+Completely removed the `--wrap` text wrapping system. Horizontal scrolling is
+now the only display mode. The `--wrap` command-line flag is no longer
+recognized.
+
+### Changes
+
+- **ed_edit.inc** — Removed 2 wrap-boundary `total_vis_lines` increment blocks
+- **ed_keys.inc** — Removed wrap-mode UP/DOWN visual-row handlers, PgUp/PgDn
+  delta walk, `cvl_old_len`/`cvl_old_line` scratch saves (~90 lines)
+- **ed_mouse.inc** — Removed wrap-mode click, drag, and auto-scroll coordinate
+  mapping using `_row_to_line` (~70 lines)
+- **ed_core.inc** — Removed `--wrap` flag parsing, wrap-mode `rebuild_meta`
+  (byte-by-byte loop), wrap-mode `line_length`, and `scroll_to_cursor` hscroll
+  guard. `rebuild_meta` and `line_length` are now single-path REPNE SCASB
+- **ed_file.inc** — Removed `total_vis_lines`/`cur_vis_line` initialization
+- **ed_draw.inc** — Removed wrap rendering, scroll-adjust retry loop,
+  `cur_vis_row` capture, `_row_to_line` mapping, visual-line status bar,
+  `[WRAP]` indicator, and wrap cursor positioning (~150 lines)
+- **TEDIT.ASM** — Removed 9 BSS variables (60 bytes: `wrap_mode`, `cur_vis_row`,
+  `wrap_retry`, `_row_to_line`, `total_vis_lines`, `cur_vis_line`, `rnd_doc_col`,
+  `cvl_old_len`, `cvl_old_line`), `s_stat_wrap` string, updated `s_usage`
+
+Binary size: 50956 bytes (down from 52347, -1391 bytes / -2.7%).
+~420 lines of wrap-specific code removed across 7 files.
+
+## v0.44.0 — Wrap-mode performance fix (2026-03-24) [superseded by v0.45.0]
+
+Eliminated O(document_size) `rebuild_meta` calls from the five most common
+wrap-mode operations — typing characters, UP/DOWN arrows crossing lines, and
+PgUp/PgDn. These now use O(1) incremental updates for the status bar's visual
+line counters (`cur_vis_line` and `total_vis_lines`), leaving checkpoints and
+piece table structure untouched.
+
+Structural edits (Enter, Backspace, Delete, Cut, Paste, Undo, Redo, Replace,
+file load) still trigger full rebuilds as before — only the visual-line-only
+sites were changed.
+
+### Changes
+
+- **ed_edit.inc** — `insert_char` fast path (extend piece) and insert_after
+  path: replaced `meta_dirty=1` with O(1) wrap boundary check. When `cur_col`
+  crosses a multiple of `ED_COLS` (80), increments `total_vis_lines` by 1.
+  `cur_vis_line` is unchanged (typing stays on the same logical line).
+
+- **ed_keys.inc** — `.up_prev_line`: removed `meta_dirty=1`. After the existing
+  `DIV CX` that computes `line_length / ED_COLS`, subtracts `quotient + 1`
+  (the target line's visual height) from `cur_vis_line`. 4 extra instructions.
+
+- **ed_keys.inc** — `.key_down_wrap` / `.down_next_line`: saves old line length
+  in `cvl_old_len` BSS scratch. At `.down_next_line`, computes the old line's
+  visual height via `old_len / ED_COLS + 1` and adds it to `cur_vis_line`.
+
+- **ed_keys.inc** — `.key_pgdn` / `.key_pgup`: saves old `cur_line` in
+  `cvl_old_line` BSS scratch.
+
+- **ed_keys.inc** — `.vert_moved`: replaced `meta_dirty=1` with a bounded walk.
+  Iterates from old to new `cur_line`, calling `line_length` for each
+  intermediate line and summing visual heights. Adds (PgDn) or subtracts (PgUp)
+  the total from `cur_vis_line`. Cost: O(ED_TEXT_ROWS) ≈ 23 line_length calls,
+  each using fast checkpoint seeks (meta_dirty=0).
+
+- **TEDIT.ASM** — BSS: added `cvl_old_len` (RESW) and `cvl_old_line` (RESW)
+
+### Performance
+
+Per-keystroke cost on the fast path (2nd+ character typed) is now ~46K-55K
+instructions regardless of file size — identical to non-wrap mode. Previously,
+every keystroke triggered `rebuild_meta` which walked the entire document
+(~800K instructions on a 900-line file).
+
+## v0.43.0 — Cursor styling + fix copy/paste offset bug (2026-03-23)
+
+Two changes: a visual enhancement to the text cursor, and a fix for clipboard
+operations copying from the wrong document position.
+
+### Cursor styling
+
+The software block cursor was a nibble-swap (`ROL AL, 4`) which on normal text
+(`1Fh`) produced `F1h` — bright white background but with bit 7 set, causing
+the cursor character to blink in CGA text mode. Now uses a fixed `0F1h`
+attribute (bright white background, blue foreground) and disables blink mode at
+startup via `INT 10h AX=1003h BL=0`, reinterpreting bit 7 as bright background
+intensity instead of blink.
+
+### Copy/paste offset bug
+
+`line_col_to_offset` in ed_core.inc did not update `rnd_off` after walking
+columns in step 4. The `.lco_col_found` and `.lco_col_eol` exit paths left
+`rnd_off` pointing at the start of the line rather than the target column.
+`ed_copy` saved these stale `rnd_pi`/`rnd_off` values and used them as the
+copy-loop starting position, causing the clipboard to capture bytes shifted left
+by the column offset — extra content at the start, missing content at the end.
+
+### Changes
+
+- **ed_core.inc** — `line_col_to_offset`: `.lco_col_found` and `.lco_col_eol`
+  now compute `rnd_off = SI - DI` (piece-relative offset) before returning
+- **ed_draw.inc** — `ed_draw_cursor`: replaced `ROL AL, 4` nibble-swap with
+  fixed `MOV BYTE [DI+1], 0F1h` attribute
+- **TEDIT.ASM** — `main`: added `INT 10h AX=1003h BL=0` after `tui_init` to
+  disable blink attribute (enables bright backgrounds via bit 7)
+
+## v0.42.1 — Fix ES clobber causing MCB corruption on exit (2026-03-20)
+
+`tui_clear_shadow` uses `REP STOSW` to `ES:DI` but never set ES explicitly. When
+`_find_prefill_from_sel` or `find_forward` called `resolve_piece` (which clobbers
+ES to pt_seg), the next redraw cycle wrote 4000 bytes of desktop fill (`0x17 0x20`
+= CLR_DESKTOP + space) to `pt_seg:shadow_buf_offset`, overflowing the piece table
+segment and corrupting MCB headers. The corruption was silent during operation
+(screen rendered correctly via DS-based writes) but detected on exit when
+`free_all` walked the MCB chain.
+
+### Changes
+
+- **TUI/tui_video.inc** — `tui_clear_shadow` now does `PUSH ES / MOV AX,DS /
+  MOV ES,AX` before `REP STOSW` and `POP ES` after (defensive root-cause fix)
+- **ed_find.inc** — `_find_prefill_from_sel` now preserves ES via `PUSH ES` /
+  `POP ES` around `resolve_piece` calls (good practice)
+
+## v0.42.0 — Find Phase 5: Replace All, Case-Insensitive, Selection Pre-fill (2026-03-20)
+
+Four features completing the Find & Replace project:
+
+**Feature A: 4-button Replace confirm dialog** — New `tui_dlg_confirm4` procedure
+with [Yes] [No] [All] [Cancel] buttons. Added `dlg_handler_repl_all` handler,
+`DLG_REPL_ALL` changed from 2→3 (collision fix), `dlg_btn3`/`dlg_btn4` BSS slots.
+
+**Feature B: Replace All** — Clicking [All] enters batch loop replacing all
+remaining matches without further confirmation. Undo grouping via post-patching:
+first replacement's DEL_RANGE is group head, all subsequent records get
+`URF_GROUP_CONT`. Single Ctrl+Z undoes entire Replace All. No wrap-around in
+batch (prevents infinite cycling when replacement contains search term).
+
+**Feature C: Case-insensitive search** — `find_flags` bit 0 toggles via F5 key
+(and Edit menu "Toggle Case" entry). `find_forward` uppercases text bytes when
+flag set. `_find_upcase_needle` helper pre-uppercases `find_buf` before each
+search (called from all 4 handler procs). Status bar shows `[Aa]` indicator.
+
+**Feature D: Selection pre-fill** — `_find_prefill_from_sel` copies single-line
+selections ≤64 chars into `find_buf`. Called at start of `menu_find_handler` and
+`menu_replace_handler`. Multi-line or oversized selections silently skip pre-fill.
+
+### Changes
+
+- **TUI/tui_const.inc** — `DLG_REPL_ALL` 2→3, added `DLG_BTN_ALL_W EQU 8`
+- **TUI/tui_data.inc** — added `dlg_str_all: DB 'All', 0`
+- **TUI/tui_dialog.inc** — added `dlg_handler_repl_all`, `tui_dlg_confirm4` proc
+- **TEDIT.ASM** — added `dlg_btn3`/`dlg_btn4` (28 bytes BSS), `s_stat_ci` string,
+  `m_str_tglcase` menu string; Edit menu entry 11 rewired to `menu_case_toggle`
+- **ed_find.inc** — CI compare in `find_forward`, `_find_upcase_needle`,
+  `menu_case_toggle`, `_find_prefill_from_sel`, Replace All batch loop with
+  undo post-patching, `tui_dlg_confirm4` call in `menu_replace_handler`
+- **ed_draw.inc** — `[Aa]` status bar indicator after `[SEL]`
+- **ed_keys.inc** — F5 rewired from stub to `menu_case_toggle`
+
+## v0.41.0 — Find Phase 4: Interactive Replace (2026-03-20)
+
+Ctrl+H and Edit > Replace now open a dual-input dialog (Find/Replace with),
+then loop through matches with a Yes/No confirmation per match. Replacement
+text is bulk-inserted via a new `_repl_insert` helper following the ed_paste
+pattern. Each replacement generates 1-2 undo records (UR_DEL_RANGE + UR_INS_RANGE).
+The loop terminates when no more matches are found, showing an "N replacements
+made." summary. Empty replacement = delete-only. Wrap-around on first search.
+
+### Changes
+
+- **TEDIT.ASM** — added 4 replace dialog string constants (`s_repl_title`,
+  `s_repl_prompt`, `s_repl_confirm`, `s_repl_done_sfx`); added 95 bytes BSS
+  (`replace_buf`, `replace_len`, `replace_count`, `repl_msg_buf`); changed
+  Replace menu entry handler from `menu_edit_stub` to `menu_replace_handler`
+
+- **ed_find.inc** — added 3 new procedures:
+  - `_repl_format_count` (~25 lines): 16-bit itoa + suffix append
+  - `_repl_insert` (~130 lines): bulk insert from BSS following ed_paste's
+    7-stage pattern (capacity check, add buffer append, cursor_to_offset,
+    3-case piece insert, cursor advance, UR_INS_RANGE undo push)
+  - `menu_replace_handler` (~100 lines): dual-input dialog, interactive
+    confirm loop, wrap-around first search, sel_delete + _repl_insert per
+    replacement, summary msgbox
+
+- **ed_keys.inc** — `.do_replace` stub replaced with `undo_group_active=0`
+  + `CALL menu_replace_handler`
+
+## v0.40.0 — Find Phase 3: Find Next/Prev (2026-03-20)
+
+F3 and Shift+F3 (and Edit > Find Next / Find Prev) repeat the last search
+forward or backward without re-prompting. `find_backward` uses a forward-scan
+O(n) algorithm tracking the last match before the target position. Guard shows
+"No search term." if no previous search exists.
+
+### Changes
+
+- **ed_find.inc** — added 3 new procedures:
+  - `find_backward` (~100 lines): forward-scan from BOF, tracks last match
+    before target using DI/BP (preserved by find_forward). `find_prev_*` BSS
+    scratch for candidate tracking. Sentinel `0FFFFh` for no-prev-found.
+  - `menu_findnxt_handler` (~60 lines): F3 — searches from cursor, wraps to
+    BOF on miss, sets selection to match
+  - `menu_findprv_handler` (~65 lines): Shift+F3 — targets sel_anchor when
+    selection active (guarantees backward progress), else cursor
+
+- **ed_keys.inc** — split `.do_findnxt` and `.do_findprv` from stub block,
+  wired to handlers with `undo_group_active=0` break
+
+- **TEDIT.ASM** — added `s_find_noterm` string constant; changed Find Next
+  and Find Prev menu entry handlers from `menu_edit_stub` to
+  `menu_findnxt_handler` / `menu_findprv_handler`; added `find_prev_line/col/
+  eline/ecol` BSS variables (8 bytes)
+
+### Tests (12/12 passing)
+
+---
+
+## v0.39.0 — Find Phase 2: Find dialog & forward search (2026-03-20)
+
+Ctrl+F and Edit > Find now show a text input dialog, perform forward search
+with wrap-around, and select + scroll to the result. On no match, a "not found"
+message box is shown. Selection pre-fill deferred to Phase 5.
+
+### Changes
+
+- **TEDIT.ASM** — added 3 find dialog string constants (`s_find_title`,
+  `s_find_prompt`, `s_find_notfound`); changed Find menu entry handler from
+  `menu_edit_stub` to `menu_find_handler`
+
+- **ed_find.inc** — added `menu_find_handler` procedure (~65 lines):
+  - Shows `tui_dlg_input` with "Find:" prompt, pre-populated with previous
+    search term (find_buf persists between calls)
+  - Computes `find_len` from null-terminated buffer after dialog returns
+  - Calls `find_forward(cur_line, cur_col)` for forward search from cursor
+  - On miss, wraps via `find_forward(0, 0)` from document start
+  - On no match, shows "Search term not found." via `tui_dlg_msgbox`
+  - On match, sets selection (anchor=match start, cursor=exclusive end),
+    calls `scroll_to_cursor`, sets `FW_DIRTY`
+  - Breaks undo group on entry
+
+- **ed_keys.inc** — split `.do_find` from the remaining stub block
+  (`.do_findnxt`/`.do_findprv`/`.do_goto`/`.do_timedate`), wired to
+  `menu_find_handler` with `undo_group_active=0` break
+
+### Tests (7/7 passing)
+
+| # | Test | Result |
+|---|------|--------|
+| 1 | Find existing term "test" | Line 2, Col 15, `[SEL]` |
+| 2 | Find non-existent "zzzzz" | Msgbox shown, no `[SEL]` |
+| 3 | Find with wrap-around (from line 4) | Wraps to Line 1, Col 6, `[SEL]` |
+| 4 | Cancel dialog (Escape) | No state change |
+| 5 | Empty find term (Enter) | Silent abort, no crash |
+| 6 | Persistent search term | Second Ctrl+F reuses "Hello", finds next match |
+| 7 | Edit > Find menu (Alt+E, F) | Same behavior as Ctrl+F |
+
+---
+
+## v0.38.0 — Find Phase 1: Search engine core (2026-03-20)
+
+New `ed_find.inc` module with `find_forward` — a piece-table-walking forward
+search procedure. This is the foundation for Ctrl+F, F3, Shift+F3, and
+Ctrl+H (Phases 2–5). No UI changes in this phase; the search engine is tested
+via a standalone harness.
+
+### Changes
+
+- **ed_const.inc** — added `FIND_MAX_LEN EQU 64` (max search term length)
+
+- **ed_find.inc** — new file with `find_forward` procedure:
+  - Walks pieces sequentially via `resolve_piece`, comparing each byte against
+    the needle in `find_buf`. `find_needle_pos` persists across piece
+    boundaries for cross-piece matching.
+  - **Compare-then-track** byte ordering: needle comparison happens BEFORE
+    position tracking. Start position captured pre-update (position OF the
+    matched char), end position captured post-update (exclusive end).
+  - Mismatch restart: on partial match failure, resets `find_needle_pos` to 0
+    and re-compares the same byte against `needle[0]` without advancing.
+  - Segment discipline follows `ed_copy` pattern: DS=text segment in inner
+    loop, all BSS via CS: prefix.
+
+- **ed_find.inc** — piece-finding loop after `line_col_to_offset`:
+  - **Bug discovered**: `line_col_to_offset` sets `rnd_pi`/`rnd_off` to the
+    LINE START, not the column position. The column walk in step 4 updates
+    `rnd_pi` on piece transitions but never updates `rnd_off`.
+  - Fix: after `line_col_to_offset` returns the 32-bit byte offset in DX:AX,
+    walk pieces from index 0, subtracting each piece's length, to find the
+    correct `rnd_pi` and `rnd_off` for the target byte.
+
+- **TEDIT.ASM** — added `INCLUDE ed_find.inc` (between ed_clip.inc and
+  ed_draw.inc) and 86 bytes of find BSS variables:
+  - `find_buf` (65 bytes), `find_len` (WORD), `find_flags` (BYTE)
+  - `find_match_line/col/end_line/end_col` (4 WORDs — match result)
+  - `find_cur_line/col`, `find_needle_pos`, `find_start_line/col` (5 WORDs —
+    engine scratch)
+
+### Tests
+- 12/12 new tests passing (`test_find.asm` + `test_find.txt`):
+  - T1: Match at document start ("Hello" at (0,0)→(0,5))
+  - T2: Match at document end, no trailing CRLF ("XY" at (4,0)→(4,2))
+  - T3: Match mid-line ("World" at (0,6)→(0,11))
+  - T4: Needle not found (CF=1)
+  - T5–T7: Multiple matches — first, second, and no third ("ABC" in "ABCABC")
+  - T8: Empty document guard (pt_count=0, CF=1, no crash)
+  - T9: Single-character needle ("e" at (0,1)→(0,2))
+  - T10: Search starting mid-document ("line" from (2,5)→(2,9))
+  - T11: Search starting past match (CF=1)
+  - T12: Cross-line needle ("d\r\nX" spanning lines 3→4)
+
+## v0.37.0 — Fix copy/cut in files larger than 64KB (2026-03-19)
+
+Copy and cut operations failed with "Selection exceeds copy limit" for any
+selection near the end of files larger than 65,535 bytes, regardless of
+selection size. Root cause: `line_col_to_offset` and `ed_copy` rejected
+byte offsets that exceeded 16 bits. A 73,728-byte file has positions past
+64K, triggering the error even for a 16-byte selection.
+
+### Changes
+
+- **ed_core.inc** — `line_col_to_offset`: removed the 16-bit overflow guard
+  (`TEST DX, DX / JNZ .lco_overflow`). The function now always returns the
+  full 32-bit byte offset in DX:AX with CF=0. Callers that need 16-bit
+  offsets perform their own checks.
+
+- **ed_clip.inc** — `ed_copy` stages 2–4 rewritten:
+  - Stage 2 saves `rnd_pi`/`rnd_off` (piece position) from the first
+    `line_col_to_offset` call into repurposed `ec_s_line`/`ec_s_col`, plus
+    the 32-bit start offset on the stack.
+  - Stage 3 computes byte count via 32-bit subtraction (end − start). Only
+    the *count* must fit in 16 bits (clipboard is 16 KB), not the absolute
+    offsets.
+  - Stage 4 (piece-finding walk loop) eliminated — `line_col_to_offset`
+    already sets `rnd_pi`/`rnd_off` as a side effect, making the redundant
+    linear walk unnecessary.
+
+- **ed_sel.inc** — `sel_delete` fast path: replaced now-dead `JC .sd_fallback`
+  with `TEST DX, DX / JNZ .sd_fallback` (two sites), so range-delete
+  correctly falls back to the legacy char-by-char path for offsets > 64K.
+
+- **ed_undo.inc** — `undo_execute` UR_INS_RANGE path: removed dead
+  `JC .u_restore` (the subsequent `TEST DX, DX / JNZ .u_restore` already
+  handled the > 64K case).
+
+### Tests
+- 8/8 new tests passing (`test_big_copy.sh`):
+  - A1–A2: 78 KB file (2001 lines) loads and navigates to end
+  - B1–B2: Shift+Right and Shift+End copy at > 64K offset — no error dialog
+  - C1–C2: Copy + paste round-trip at > 64K offset
+  - D1: Multi-line select + copy near end of > 64K file
+  - E1: Small-file copy + paste regression check
+
 ## v0.36.0 — Preventive fixes: 18 bug fixes across 9 phases (2026-03-19)
 
 Comprehensive preventive fix pass addressing 18 confirmed issues from the

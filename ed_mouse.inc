@@ -45,10 +45,7 @@ tui_ed_mouse_press:
     JAE     .press_done             ; status bar row or below -> ignore
 
     ; ---- Compute target line + column ----
-    CMP     BYTE [wrap_mode], 0
-    JNE     .press_wrap
-
-    ; ---- Non-wrap: target_line = top_line + ed_row ----
+    ; ---- target_line = top_line + ed_row ----
     XOR     DH, DH
     MOV     DL, AL                  ; DX = ed_row (zero-extended)
     MOV     CX, [top_line]
@@ -61,46 +58,7 @@ tui_ed_mouse_press:
     MOV     [cur_line], CX
     MOV     AL, AH                  ; AL = ed_col (screen column)
     XOR     AH, AH
-    ADD     AX, [left_col]          ; non-wrap: doc col = left_col + screen col
-    JMP     .press_col_set
-
-.press_wrap:
-    ; ---- Wrap: target_line = _row_to_line[ed_row] ----
-    PUSH    AX                      ; save AL=ed_row, AH=ed_col
-    XOR     AH, AH                  ; AX = ed_row
-    MOV     SI, AX                  ; SI = ed_row (for backward scan)
-    SHL     AX, 1
-    MOV     BX, AX
-    MOV     CX, [BX + _row_to_line] ; CX = logical line from table
-    CMP     CX, [total_lines]
-    JB      .press_w_lok
-    MOV     CX, [total_lines]
-    DEC     CX
-.press_w_lok:
-    MOV     [cur_line], CX
-    ; Scan backward to find wrap_offset (how many rows before
-    ; ed_row belong to this same logical line)
-    XOR     DX, DX                  ; DX = wrap_offset
-.press_w_scan:
-    TEST    SI, SI
-    JZ      .press_w_sdone
-    DEC     SI
-    MOV     BX, SI
-    SHL     BX, 1
-    CMP     [BX + _row_to_line], CX
-    JNE     .press_w_sdone
-    INC     DX
-    JMP     .press_w_scan
-.press_w_sdone:
-    ; Column = wrap_offset * ED_COLS + ed_col
-    MOV     AX, ED_COLS
-    MUL     DX                      ; AX = wrap_offset * 80
-    POP     DX                      ; DL=ed_row, DH=ed_col
-    MOV     DL, DH                  ; DL = ed_col
-    XOR     DH, DH                  ; DX = ed_col (16-bit)
-    ADD     AX, DX                  ; AX = doc column
-
-.press_col_set:
+    ADD     AX, [left_col]          ; doc col = left_col + screen col
     MOV     [cur_col], AX
 
     CALL    line_length             ; AX = visible chars on cur_line
@@ -207,10 +165,7 @@ tui_ed_mouse_drag:
 .drag_col_not_neg:
 
     ; ---- Compute target line + column ----
-    CMP     BYTE [wrap_mode], 0
-    JNE     .drag_wrap
-
-    ; ---- Non-wrap: target_line = top_line + ed_row ----
+    ; ---- target_line = top_line + ed_row ----
     XOR     DH, DH
     MOV     DL, AL
     MOV     CX, [top_line]
@@ -224,40 +179,6 @@ tui_ed_mouse_drag:
     MOV     AL, AH
     XOR     AH, AH
     ADD     AX, [left_col]
-    JMP     .drag_col_set
-
-.drag_wrap:
-    ; ---- Wrap: target_line = _row_to_line[ed_row] ----
-    PUSH    AX                      ; save AL=ed_row, AH=ed_col
-    XOR     AH, AH                  ; AX = ed_row
-    MOV     SI, AX                  ; SI = ed_row (for backward scan)
-    SHL     AX, 1
-    MOV     BX, AX
-    MOV     CX, [BX + _row_to_line]
-    CMP     CX, [total_lines]
-    JB      .drag_w_lok
-    MOV     CX, [total_lines]
-    DEC     CX
-.drag_w_lok:
-    MOV     [cur_line], CX
-    XOR     DX, DX                  ; DX = wrap_offset
-.drag_w_scan:
-    TEST    SI, SI
-    JZ      .drag_w_sdone
-    DEC     SI
-    MOV     BX, SI
-    SHL     BX, 1
-    CMP     [BX + _row_to_line], CX
-    JNE     .drag_w_sdone
-    INC     DX
-    JMP     .drag_w_scan
-.drag_w_sdone:
-    MOV     AX, ED_COLS
-    MUL     DX                      ; AX = wrap_offset * 80
-    POP     DX                      ; DL=ed_row, DH=ed_col
-    MOV     DL, DH
-    XOR     DH, DH
-    ADD     AX, DX                  ; AX = doc column
 
 .drag_col_set:
     MOV     [cur_col], AX
@@ -301,26 +222,14 @@ tui_ed_mouse_drag:
     XOR     AL, AL
 .dsu_col_ok:
     XOR     AH, AH                  ; AX = ed_col
-    CMP     BYTE [wrap_mode], 0
-    JNE     .dsu_col_done
-    ADD     AX, [left_col]          ; non-wrap: add horizontal scroll
-.dsu_col_done:
+    ADD     AX, [left_col]          ; add horizontal scroll
     JMP     .drag_col_set
 
 ; ---- Mouse below editor: scroll down ----
 .drag_scroll_down:
-    CMP     BYTE [wrap_mode], 0
-    JNE     .dsd_wrap
-    ; Non-wrap: cur_line = top_line + ED_TEXT_ROWS
+    ; cur_line = top_line + ED_TEXT_ROWS
     MOV     CX, [top_line]
     ADD     CX, ED_TEXT_ROWS
-    JMP     .dsd_clamp
-.dsd_wrap:
-    ; Wrap: cur_line = _row_to_line[last_vis_row] + 1
-    MOV     BX, (ED_TEXT_ROWS - 1) * 2
-    MOV     CX, [BX + _row_to_line]
-    INC     CX
-.dsd_clamp:
     CMP     CX, [total_lines]
     JB      .dsd_set
     MOV     CX, [total_lines]
@@ -335,10 +244,7 @@ tui_ed_mouse_drag:
     XOR     AL, AL
 .dsd_col_ok:
     XOR     AH, AH                  ; AX = ed_col
-    CMP     BYTE [wrap_mode], 0
-    JNE     .dsd_col_done
-    ADD     AX, [left_col]          ; non-wrap: add horizontal scroll
-.dsd_col_done:
+    ADD     AX, [left_col]          ; add horizontal scroll
     JMP     .drag_col_set
 
 .drag_done:

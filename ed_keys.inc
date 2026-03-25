@@ -55,6 +55,10 @@ tui_ed_handle_key PROC
     CMP     AL, KEY_BACKSPACE
     JZ      .do_bksp_or_replace
 
+    ; Tab (09h) — insert tab character
+    CMP     AL, 09h
+    JZ      .do_char
+
     ; Escape — not handled here (falls through to framework/menu)
     CMP     AL, KEY_ESCAPE
     JZ      .not_handled
@@ -75,6 +79,79 @@ tui_ed_handle_key PROC
 ; ============================================================
 .do_char:
     CALL    sel_delete              ; delete selection if any (preserves AX)
+    JNC     .do_char_insert         ; selection was deleted — skip overwrite delete
+
+    ; ---- Overwrite mode: delete char under cursor before inserting ----
+    CMP     BYTE [overwrite_mode], 0
+    JE      .do_char_insert
+
+    ; Don't overwrite if at end of line (just insert)
+    PUSH    AX
+    CALL    peek_at_cursor          ; ZF=1 if at EOL
+    POP     AX
+    JZ      .do_char_insert
+
+    ; Don't overwrite on Tab (just insert)
+    CMP     AL, 09h
+    JE      .do_char_insert
+
+    ; ---- Delete character under cursor for overwrite ----
+    PUSH    AX                          ; save char to insert
+    ; Save pre-cursor for the delete undo record
+    MOV     AX, [cur_line]
+    MOV     [undo_pre_line], AX
+    MOV     AX, [cur_col]
+    MOV     [undo_pre_col], AX
+
+    MOV     BYTE [undo_del_crlf], 0FFh
+    CALL    delete_at
+
+    ; Record delete undo (if succeeded)
+    CMP     BYTE [undo_del_crlf], 0FFh
+    JE      .ovr_no_del_undo
+
+    ; Determine group flag for delete record
+    MOV     AL, UR_DEL_CHAR
+    CMP     BYTE [undo_group_active], 0
+    JE      .ovr_del_no_group
+    PUSH    BX
+    MOV     BX, [undo_pre_line]
+    CMP     BX, [undo_group_line]
+    JNE     .ovr_del_no_grp_pop
+    MOV     BX, [undo_group_col]
+    INC     BX
+    CMP     BX, [undo_pre_col]
+    JNE     .ovr_del_no_grp_pop
+    OR      AL, URF_GROUP_CONT
+    POP     BX
+    JMP     .ovr_del_push
+.ovr_del_no_grp_pop:
+    POP     BX
+.ovr_del_no_group:
+.ovr_del_push:
+    PUSH    SI
+    MOV     AH, [undo_del_char]
+    MOV     BX, [cur_line]
+    MOV     CX, [cur_col]
+    MOV     DX, [undo_pre_line]
+    MOV     SI, [undo_pre_col]
+    CALL    undo_push
+    POP     SI
+    ; Don't update group tracking after DEL — leave it for the INS record.
+    ; But ensure the INS gets URF_GROUP_CONT by adjusting group_col so
+    ; the contiguity check (group_col + 1 == pre_col) passes at same column:
+    MOV     BYTE [undo_group_active], 1
+    MOV     AX, [undo_pre_line]
+    MOV     [undo_group_line], AX
+    MOV     AX, [undo_pre_col]
+    DEC     AX                      ; col - 1 so that (col-1)+1 == col passes
+    MOV     [undo_group_col], AX
+
+.ovr_no_del_undo:
+    POP     AX                          ; restore char to insert
+    ; Fall through to normal insert
+
+.do_char_insert:
     ; ---- Save pre-cursor for undo ----
     PUSH    AX
     MOV     AX, [cur_line]
@@ -295,7 +372,15 @@ tui_ed_handle_key PROC
     JMP     .do_bksp                    ; existing Backspace handler
 
 .do_replace:
-    CALL    menu_edit_stub
+    MOV     BYTE [undo_group_active], 0
+    CALL    menu_replace_handler
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_find:
+    MOV     BYTE [undo_group_active], 0
+    CALL    menu_find_handler
     MOV     BYTE [fw_state + FW_DIRTY], 1
     CLC
     RET
@@ -303,12 +388,37 @@ tui_ed_handle_key PROC
 ; ============================================================
 ; Remaining Edit menu shortcut stubs
 ; ============================================================
-.do_find:
 .do_findnxt:
+    MOV     BYTE [undo_group_active], 0
+    CALL    menu_findnxt_handler
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
 .do_findprv:
+    MOV     BYTE [undo_group_active], 0
+    CALL    menu_findprv_handler
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+; ============================================================
+; Remaining Edit menu shortcut stubs
+; ============================================================
 .do_goto:
-.do_timedate:
-    CALL    menu_edit_stub
+    CALL    menu_goto_handler
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_datetime:
+    CALL    menu_datetime_handler
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+
+.do_toggle_ovr:
+    XOR     BYTE [overwrite_mode], 1
     MOV     BYTE [fw_state + FW_DIRTY], 1
     CLC
     RET
@@ -404,17 +514,27 @@ tui_ed_handle_key PROC
     CMP     AL, KEY_DELETE
     JZ      .do_del
 
-    ; F3 → Find Next (scan 3Dh)
+    ; F3 / Shift+F3 — Find Next or Find Prev
+    CMP     AL, 56h
+    JZ      .do_findprv                     ; standard BIOS Shift+F3 scan code
     CMP     AL, 3Dh
-    JZ      .do_findnxt
+    JNZ     .not_f3
+    TEST    BYTE [_key_modifiers], 03h      ; F3 with Shift held?
+    JNZ     .do_findprv                     ; yes → Find Prev
+    JMP     .do_findnxt                     ; no → Find Next
+.not_f3:
 
-    ; Shift+F3 → Find Prev (scan 54h)
-    CMP     AL, 54h
-    JZ      .do_findprv
-
-    ; F5 → Time/Date (scan 3Fh)
+    ; F5 → Date/Time (scan 3Fh)
     CMP     AL, 3Fh
-    JZ      .do_timedate
+    JZ      .do_datetime
+
+    ; Insert (52h) vs Shift+F3 (52h on some DOSBox-X builds)
+    CMP     AL, KEY_INSERT
+    JNZ     .not_insert
+    TEST    BYTE [_key_modifiers], 03h      ; Shift held?
+    JNZ     .do_findprv                     ; Shift+52h → Find Prev
+    JMP     .do_toggle_ovr                  ; plain 52h → Insert toggle
+.not_insert:
 
     ; Unrecognized extended key
     STC
@@ -477,92 +597,18 @@ tui_ed_handle_key PROC
 ; ---- Navigation keys ----
 
 .key_up:
-    CMP     BYTE [wrap_mode], 0
-    JNE     .key_up_wrap
     CMP     WORD [cur_line], 0
     JE      .handled
     DEC     WORD [cur_line]
     JMP     .vert_moved
-
-.key_up_wrap:
-    ; Wrap mode: move up one visual row
-    MOV     AX, [cur_col]
-    CMP     AX, ED_COLS
-    JB      .up_prev_line
-    ; Same logical line — just move up one visual row
-    SUB     WORD [cur_col], ED_COLS
-    JMP     .cursor_moved
-
-.up_prev_line:
-    ; First visual row — move to last visual row of previous line
-    CMP     WORD [cur_line], 0
-    JE      .handled
-    PUSH    AX                      ; save screen_col (= cur_col < ED_COLS)
-    DEC     WORD [cur_line]
-    MOV     BYTE [meta_dirty], 1
-    CALL    line_length             ; AX = length of previous line
-    MOV     BX, AX                  ; BX = line_length
-    XOR     DX, DX
-    MOV     CX, ED_COLS
-    DIV     CX                      ; AX = line_length / ED_COLS
-    MUL     CX                      ; AX = last_vis_row_start
-    POP     CX                      ; CX = screen_col
-    ADD     AX, CX                  ; AX = target col
-    CMP     AX, BX
-    JBE     .up_set_col
-    MOV     AX, BX                  ; clamp to line_length
-.up_set_col:
-    MOV     [cur_col], AX
-    JMP     .cursor_moved
 
 .key_down:
-    CMP     BYTE [wrap_mode], 0
-    JNE     .key_down_wrap
     MOV     AX, [cur_line]
     INC     AX
     CMP     AX, [total_lines]
     JAE     .handled
     MOV     [cur_line], AX
     JMP     .vert_moved
-
-.key_down_wrap:
-    ; Wrap mode: move down one visual row
-    MOV     AX, [cur_col]
-    XOR     DX, DX
-    MOV     CX, ED_COLS
-    DIV     CX                      ; AX = cur_row_in_line, DX = screen_col
-    PUSH    DX                      ; save screen_col
-    INC     AX
-    MUL     CX                      ; AX = next_vis_row_start
-    MOV     BX, AX                  ; BX = next_vis_row_start
-    CALL    line_length             ; AX = current line length
-    CMP     BX, AX
-    JA      .down_next_line
-    ; Same line: next visual row
-    POP     CX                      ; CX = screen_col
-    ADD     BX, CX                  ; BX = target col
-    CMP     BX, AX                  ; AX still = line_length
-    JBE     .down_set_col
-    MOV     BX, AX                  ; clamp to line_length
-.down_set_col:
-    MOV     [cur_col], BX
-    JMP     .cursor_moved
-
-.down_next_line:
-    POP     CX                      ; CX = screen_col
-    MOV     AX, [cur_line]
-    INC     AX
-    CMP     AX, [total_lines]
-    JAE     .handled
-    MOV     [cur_line], AX
-    MOV     [cur_col], CX
-    MOV     BYTE [meta_dirty], 1
-    CALL    line_length             ; AX = new line length
-    CMP     [cur_col], AX
-    JBE     .down_col_ok
-    MOV     [cur_col], AX
-.down_col_ok:
-    JMP     .cursor_moved
 
 .key_left:
     CMP     WORD [cur_col], 0
@@ -606,11 +652,6 @@ tui_ed_handle_key PROC
     JMP     .cursor_moved
 
 .vert_moved:
-    ; In wrap mode, flag meta dirty so cur_vis_line gets recomputed
-    CMP     BYTE [wrap_mode], 0
-    JE      .vm_no_meta
-    MOV     BYTE [meta_dirty], 1
-.vm_no_meta:
     CALL    line_length
     CMP     [cur_col], AX
     JBE     .cursor_moved
