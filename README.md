@@ -79,10 +79,10 @@ This is line two of the document.
 
 ## Building
 
-TEDIT is assembled using **agent86**, a two-pass 8086 assembler and
-per-instruction JIT emulator targeting `.COM` binaries. agent86 is a
-standalone Windows tool designed for agentic AI workflows — all output
-is JSON on stdout, enabling automated build-test cycles.
+TEDIT is assembled using **[agent86](https://github.com/cookertron/agent86)**,
+a two-pass 8086 assembler and per-instruction JIT emulator targeting `.COM`
+binaries. agent86 is a standalone Windows tool designed for agentic AI
+workflows — all output is JSON on stdout, enabling automated build-test cycles.
 
 See `manual.md` for the full agent86 reference.
 
@@ -229,6 +229,6 @@ changes. The editor has been developed through 50+ versions covering:
 
 - **Directed by** Cookertron
 - **Coded by** Claude Opus 4.6
-- **Assembler/Emulator:** agent86 (custom 8086 toolchain)
+- **Assembler/Emulator:** [agent86](https://github.com/cookertron/agent86) (custom 8086 toolchain)
 - **Thanks to** the VOGONS community for support and inspiration
 - **Repository:** github.com/cookertron/TEDIT
