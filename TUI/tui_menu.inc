@@ -281,6 +281,38 @@ tui_menu_draw_dropdown: PROC
     CMP CH, [BX + MI_ECOUNT]
     JAE .dd_entries_done
 
+    ; Calculate entry pointer: entries_base + index * MDE_SIZE
+    PUSH AX
+    MOV AL, CH
+    CALL _mde_index_to_offset  ; AX = index * MDE_SIZE
+    PUSH BX
+    MOV BX, [BX + MI_ENTRIES]
+    ADD BX, AX                 ; BX = entry pointer
+
+    ; Check for divider (MDE_TEXT == 0)
+    CMP WORD [BX + MDE_TEXT], 0
+    POP BX
+    POP AX
+    JNZ .dd_entry_not_div
+
+    ; ---- Draw divider: ├────┤ ----
+    PUSH DX
+    MOV AH, CLR_MENU_DD
+    MOV AL, BOX_LT
+    CALL tui_putchar            ; left T-junction at (DH, DL)
+    INC DL
+    MOV AL, BOX_H
+    PUSH CX
+    MOV CL, [BX + MI_DDW]
+    CALL tui_hline              ; horizontal line
+    POP CX
+    ADD DL, [BX + MI_DDW]
+    MOV AL, BOX_RT
+    CALL tui_putchar            ; right T-junction
+    POP DX
+    JMP .dd_entry_next
+
+.dd_entry_not_div:
     ; Select attr: highlighted if selected
     MOV AH, CLR_MENU_DD
     CMP CH, [DI + MBAR_DDSEL]
@@ -303,7 +335,7 @@ tui_menu_draw_dropdown: PROC
     PUSH DX
     INC DL                      ; col = x + 1
 
-    ; Calculate entry pointer: entries_base + index * MDE_SIZE
+    ; Calculate entry pointer (again for text)
     PUSH AX
     MOV AL, CH
     CALL _mde_index_to_offset  ; AX = index * MDE_SIZE
@@ -319,6 +351,7 @@ tui_menu_draw_dropdown: PROC
     POP DX
     POP SI
 
+.dd_entry_next:
     INC DH                      ; next row
     INC CH                      ; next entry
     JMP .dd_entry_loop
@@ -346,7 +379,9 @@ tui_menu_draw_dropdown: PROC
     MOV BX, [BX + MI_ENTRIES]
     ADD BX, AX                 ; BX = entry ptr
 
-    ; Skip if MDE_ACCEL == 0
+    ; Skip dividers (MDE_TEXT == 0) and entries without accel
+    CMP WORD [BX + MDE_TEXT], 0
+    JZ .dd_acc_skip
     CMP WORD [BX + MDE_ACCEL], 0
     JZ .dd_acc_skip
 
@@ -431,6 +466,9 @@ tui_menu_draw_dropdown: PROC
     MOV BX, [BX + MI_ENTRIES]
     ADD BX, AX                 ; BX = entry ptr
 
+    ; Skip dividers (MDE_TEXT == 0)
+    CMP WORD [BX + MDE_TEXT], 0
+    JZ .dd_hk_skip
     ; Skip if MDE_HOTIDX == FFh
     CMP BYTE [BX + MDE_HOTIDX], 0FFh
     JZ .dd_hk_skip
@@ -715,15 +753,23 @@ tui_menu_handle_key: PROC
     POP AX
 
     MOV AL, [DI + MBAR_DDSEL]
+.mhk_dd_up_step:
     OR AL, AL
     JNZ .mhk_dd_up_dec
-    ; Wrap to last entry
     MOV AL, [BX + MI_ECOUNT]
-    DEC AL
-    MOV [DI + MBAR_DDSEL], AL
-    JMP .mhk_dd_moved
 .mhk_dd_up_dec:
-    DEC BYTE [DI + MBAR_DDSEL]
+    DEC AL
+    ; Skip dividers
+    PUSH AX
+    CALL _mde_index_to_offset
+    PUSH BX
+    MOV BX, [BX + MI_ENTRIES]
+    ADD BX, AX
+    CMP WORD [BX + MDE_TEXT], 0
+    POP BX
+    POP AX
+    JZ .mhk_dd_up_step          ; divider: keep going up
+    MOV [DI + MBAR_DDSEL], AL
 .mhk_dd_moved:
     MOV BYTE [fw_state + FW_DIRTY], 1
     CLC
@@ -739,11 +785,22 @@ tui_menu_handle_key: PROC
     POP AX
 
     MOV AL, [DI + MBAR_DDSEL]
+.mhk_dd_down_step:
     INC AL
     CMP AL, [BX + MI_ECOUNT]
-    JB .mhk_dd_down_set
+    JB .mhk_dd_down_nowrap
     XOR AL, AL                  ; wrap to 0
-.mhk_dd_down_set:
+.mhk_dd_down_nowrap:
+    ; Skip dividers
+    PUSH AX
+    CALL _mde_index_to_offset
+    PUSH BX
+    MOV BX, [BX + MI_ENTRIES]
+    ADD BX, AX
+    CMP WORD [BX + MDE_TEXT], 0
+    POP BX
+    POP AX
+    JZ .mhk_dd_down_step        ; divider: keep going down
     MOV [DI + MBAR_DDSEL], AL
     JMP .mhk_dd_moved
 

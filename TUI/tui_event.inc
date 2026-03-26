@@ -335,7 +335,11 @@ tui_run: PROC
     ; Poll mouse
     CALL tui_mouse_poll
     TEST AL, 3              ; any change?
+    JNZ .do_mouse
+    ; No change — still dispatch if a continuous action is active
+    TEST BYTE [mouse_state + MS_FLAGS], MSF_SB_DRAG + MSF_CTRL_DRAG + MSF_SB_ARROW
     JZ .no_mouse
+.do_mouse:
     CALL tui_mouse_dispatch
 .no_mouse:
 

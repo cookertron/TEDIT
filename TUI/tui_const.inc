@@ -64,6 +64,8 @@ BOX_BL      EQU 0C0h        ; bottom-left corner
 BOX_BR      EQU 0D9h        ; bottom-right corner
 BOX_H       EQU 0C4h        ; horizontal line
 BOX_V       EQU 0B3h        ; vertical line
+BOX_LT      EQU 0C3h        ; left T-junction  ├
+BOX_RT      EQU 0B4h        ; right T-junction ┤
 
 ; --- Key codes ---
 KEY_TAB     EQU 09h             ; Tab (normal key)
@@ -336,6 +338,7 @@ CLR_SB_THUMB  EQU 70h         ; black on light gray
 ; --- Mouse scroll bar drag flag ---
 MSF_SB_DRAG   EQU 10h         ; scroll bar thumb drag in progress
 MSF_CTRL_DRAG EQU 20h         ; control-level drag in progress (e.g., text selection)
+MSF_SB_ARROW  EQU 40h         ; scroll bar arrow held (auto-repeat)
 
 ; --- Mouse state scroll bar fields ---
 MS_SB_CTRL    EQU 12           ; WORD - control being scroll-dragged

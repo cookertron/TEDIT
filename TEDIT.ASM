@@ -113,7 +113,7 @@ m_str_acc_cs:   DB 'Ctrl+S', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.54', 0
+m_str_about_1:   DB 'TEDIT v0.56', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -222,6 +222,12 @@ m_file_entries:
     DW 0
     DB 0, 0
 
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
     ; Quit
     DW m_str_quit, menu_quit_handler
     DB 0, 'Q'
@@ -241,6 +247,12 @@ m_edit_entries:
     DW m_str_acc_csz
     DB 0, 0
 
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
     ; Cut — hotidx=2, hotkey='T'
     DW m_str_cut, menu_cut_handler
     DB 2, 'T'
@@ -257,6 +269,12 @@ m_edit_entries:
     DW m_str_paste, menu_paste_handler
     DB 0, 'P'
     DW m_str_acc_cv
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
     DB 0, 0
 
     ; Find... — hotidx=0, hotkey='F'
@@ -281,6 +299,12 @@ m_edit_entries:
     DW m_str_replace, menu_replace_handler
     DB 3, 'L'
     DW m_str_acc_ch
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
     DB 0, 0
 
     ; Goto... — hotidx=0, hotkey='G'
@@ -311,14 +335,14 @@ m_menu_items:
     DW m_str_file
     DB 0, 6                         ; MI_X=0, MI_W=6
     DW m_file_entries
-    DB 4, 18                        ; MI_ECOUNT=4, MI_DDW=18
+    DB 5, 18                        ; MI_ECOUNT=5 (4+1 divider), MI_DDW=18
     DB 0, 21h                       ; MI_HOTIDX=0, MI_ALTKEY=21h (Alt+F)
 
     ; Edit menu (NEW)
     DW m_str_edit
     DB 6, 6                         ; MI_X=6, MI_W=6
     DW m_edit_entries
-    DB 12, 24                       ; MI_ECOUNT=12, MI_DDW=24
+    DB 15, 24                       ; MI_ECOUNT=15 (12+3 dividers), MI_DDW=24
     DB 0, 12h                       ; MI_HOTIDX=0 ('E'), MI_ALTKEY=12h (Alt+E)
 
     DW m_str_info
@@ -1192,7 +1216,7 @@ menu_about_handler:
     ; Interior: 34 wide, 9 rows (5 lines + 1 blank + 1 blank + 1 button + 1 pad)
     ; WIN_W = 36, WIN_H = 11
 
-    ; ---- Line 1: "TEDIT v0.54" (centered label) ----
+    ; ---- Line 1: "TEDIT v0.56" (centered label) ----
     MOV     DI, dlg_label
     MOV     BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE

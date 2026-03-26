@@ -218,6 +218,23 @@ tui_mouse_dispatch: PROC
     JMP .done
 
 .not_sb_drag:
+    ; If scroll bar arrow repeat active, handle it
+    TEST BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
+    JZ .not_sb_arrow
+
+    ; Check if left button still held
+    TEST BYTE [mouse_state + MS_BUTTONS], 1
+    JNZ .still_sb_arrow
+    ; Button released - end arrow repeat
+    AND BYTE [mouse_state + MS_FLAGS], 0FFh - MSF_SB_ARROW
+    MOV WORD [mouse_state + MS_SB_CTRL], 0
+    JMP .done
+
+.still_sb_arrow:
+    CALL tui_mouse_on_sb_arrow
+    JMP .done
+
+.not_sb_arrow:
     ; If control drag active, handle it
     TEST BYTE [mouse_state + MS_FLAGS], MSF_CTRL_DRAG
     JZ .not_ctrl_drag
@@ -664,6 +681,21 @@ tui_mouse_on_press: PROC
     JNZ .press_menudrop_ok
     JMP .press_done
 .press_menudrop_ok:
+    ; Check if clicked entry is a divider (MDE_TEXT == 0)
+    PUSH AX
+    PUSH SI
+    MOV AL, [DI + MBAR_SEL]
+    CALL _mi_index_to_offset
+    MOV SI, [DI + MBAR_ITEMS]
+    ADD SI, AX
+    MOV SI, [SI + MI_ENTRIES]   ; SI = entries base
+    MOV AL, BL
+    CALL _mde_index_to_offset
+    ADD SI, AX                  ; SI = clicked entry
+    CMP WORD [SI + MDE_TEXT], 0
+    POP SI
+    POP AX
+    JZ .press_done              ; divider: ignore click
     ; Set dropdown selection and activate
     MOV [DI + MBAR_DDSEL], BL
     CALL tui_menu_activate_entry
@@ -889,6 +921,10 @@ tui_mouse_on_press: PROC
     JZ .plb_sb_up_done
     DEC BYTE [BX + CTRL_LB_SCROLL]
 .plb_sb_up_done:
+    ; Start arrow repeat
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 0
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP CX
     JMP .press_done
@@ -901,6 +937,10 @@ tui_mouse_on_press: PROC
     JAE .plb_sb_dn_done
     INC BYTE [BX + CTRL_LB_SCROLL]
 .plb_sb_dn_done:
+    ; Start arrow repeat
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 1
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP CX
     JMP .press_done
@@ -1031,6 +1071,9 @@ tui_mouse_on_press: PROC
     JZ .ptv_vb_up_done
     DEC BYTE [BX + CTRL_TV_SCROLL]
 .ptv_vb_up_done:
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 0
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP AX
     POP CX
@@ -1045,6 +1088,9 @@ tui_mouse_on_press: PROC
     JAE .ptv_vb_dn_done
     INC BYTE [BX + CTRL_TV_SCROLL]
 .ptv_vb_dn_done:
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 1
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP AX
     POP CX
@@ -1116,6 +1162,9 @@ tui_mouse_on_press: PROC
     JZ .ptv_hb_l_done
     DEC BYTE [BX + CTRL_TV_SCROLLX]
 .ptv_hb_l_done:
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 2       ; 2 = left
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP CX
     JMP .press_done
@@ -1129,6 +1178,9 @@ tui_mouse_on_press: PROC
     JAE .ptv_hb_r_done
     INC BYTE [BX + CTRL_TV_SCROLLX]
 .ptv_hb_r_done:
+    MOV [mouse_state + MS_SB_CTRL], BX
+    MOV BYTE [mouse_state + MS_SB_DIR], 3       ; 3 = right
+    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     MOV BYTE [fw_state + FW_DIRTY], 1
     POP CX
     JMP .press_done
@@ -1600,7 +1652,21 @@ tui_mouse_menu_hover: PROC
     JMP .mh_done
 
 .mh_drop_hover:
-    ; BX = entry index. Highlight it.
+    ; BX = entry index. Skip if divider, else highlight.
+    PUSH AX
+    PUSH SI
+    MOV AL, [DI + MBAR_SEL]
+    CALL _mi_index_to_offset
+    MOV SI, [DI + MBAR_ITEMS]
+    ADD SI, AX
+    MOV SI, [SI + MI_ENTRIES]
+    MOV AL, BL
+    CALL _mde_index_to_offset
+    ADD SI, AX
+    CMP WORD [SI + MDE_TEXT], 0
+    POP SI
+    POP AX
+    JZ .mh_done                 ; divider: don't highlight
     CMP BL, [DI + MBAR_DDSEL]
     JZ .mh_done
     MOV [DI + MBAR_DDSEL], BL
@@ -1845,6 +1911,115 @@ tui_sb_hbar_click_generic: PROC
 .shc_ret_no_pop:
     POP BP
     POP DI
+    RET
+ENDP
+
+; ----------------------------------------------------------------------------
+; tui_mouse_on_sb_arrow - Repeat scroll bar arrow action each frame
+; Called while MSF_SB_ARROW is active. MS_SB_CTRL = control, MS_SB_DIR = dir
+; Direction: 0=up, 1=down, 2=left, 3=right
+; ----------------------------------------------------------------------------
+tui_mouse_on_sb_arrow: PROC
+    PUSH AX
+    PUSH BX
+
+    MOV BX, [mouse_state + MS_SB_CTRL]
+    OR BX, BX
+    JZ .sba_done
+
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
+    JZ .sba_listbox
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTVIEW
+    JZ .sba_textview
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_EDITOR
+    JZ .sba_editor
+    JMP .sba_done
+
+.sba_listbox:
+    CMP BYTE [mouse_state + MS_SB_DIR], 0
+    JNZ .sba_lb_down
+    ; Up
+    CMP BYTE [BX + CTRL_LB_SCROLL], 0
+    JZ .sba_done
+    DEC BYTE [BX + CTRL_LB_SCROLL]
+    JMP .sba_dirty
+.sba_lb_down:
+    MOV AL, [BX + CTRL_LB_COUNT]
+    SUB AL, [BX + CTRL_H]
+    CMP [BX + CTRL_LB_SCROLL], AL
+    JAE .sba_done
+    INC BYTE [BX + CTRL_LB_SCROLL]
+    JMP .sba_dirty
+
+.sba_textview:
+    MOV AL, [mouse_state + MS_SB_DIR]
+    CMP AL, 2
+    JAE .sba_tv_horiz
+    ; Vertical: 0=up, 1=down
+    OR AL, AL
+    JNZ .sba_tv_vdown
+    CMP BYTE [BX + CTRL_TV_SCROLL], 0
+    JZ .sba_done
+    DEC BYTE [BX + CTRL_TV_SCROLL]
+    JMP .sba_dirty
+.sba_tv_vdown:
+    PUSH CX
+    MOV AL, [BX + CTRL_TV_COUNT]
+    MOV CL, [BX + CTRL_H]
+    DEC CL                          ; eff_h = H - 1 (hbar)
+    SUB AL, CL
+    CMP [BX + CTRL_TV_SCROLL], AL
+    POP CX
+    JAE .sba_done
+    INC BYTE [BX + CTRL_TV_SCROLL]
+    JMP .sba_dirty
+.sba_tv_horiz:
+    CMP AL, 2
+    JNZ .sba_tv_hright
+    CMP BYTE [BX + CTRL_TV_SCROLLX], 0
+    JZ .sba_done
+    DEC BYTE [BX + CTRL_TV_SCROLLX]
+    JMP .sba_dirty
+.sba_tv_hright:
+    PUSH CX
+    MOV AL, [BX + CTRL_TV_MAXLEN]
+    MOV CL, [BX + CTRL_W]
+    DEC CL                          ; eff_w = W - 1 (vbar)
+    SUB AL, CL
+    CMP [BX + CTRL_TV_SCROLLX], AL
+    POP CX
+    JAE .sba_done
+    INC BYTE [BX + CTRL_TV_SCROLLX]
+    JMP .sba_dirty
+
+.sba_editor:
+    PUSH DI
+    MOV DI, [BX + CTRL_ED_STATE]   ; DI = editor state (top_line at +0)
+    CMP BYTE [mouse_state + MS_SB_DIR], 0
+    JNZ .sba_ed_down
+    ; Up
+    CMP WORD [DI + ED_SCROLLY], 0
+    JZ .sba_ed_done
+    DEC WORD [DI + ED_SCROLLY]
+    JMP .sba_ed_dirty
+.sba_ed_down:
+    MOV AX, [DI + ED_LINECOUNT]
+    SUB AX, ED_TEXT_ROWS
+    CMP [DI + ED_SCROLLY], AX
+    JAE .sba_ed_done
+    INC WORD [DI + ED_SCROLLY]
+.sba_ed_dirty:
+    MOV BYTE [fw_state + FW_DIRTY], 1
+.sba_ed_done:
+    POP DI
+    JMP .sba_ret
+
+.sba_dirty:
+    MOV BYTE [fw_state + FW_DIRTY], 1
+.sba_done:
+.sba_ret:
+    POP BX
+    POP AX
     RET
 ENDP
 

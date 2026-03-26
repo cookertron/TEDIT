@@ -110,9 +110,14 @@ tui_ed_mouse_press:
     TEST    AL, AL
     JNZ     .sb_not_up
     CMP     WORD [top_line], 0
-    JE      .sb_scroll_done
+    JE      .sb_arrow_done
     DEC     WORD [top_line]
     DEC     WORD [cur_line]
+.sb_arrow_done:
+    ; Start arrow repeat
+    MOV     [mouse_state + MS_SB_CTRL], BX
+    MOV     BYTE [mouse_state + MS_SB_DIR], 0   ; up
+    OR      BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     JMP     .sb_scroll_done
 
 .sb_not_up:
@@ -122,9 +127,14 @@ tui_ed_mouse_press:
     MOV     CX, [total_lines]
     SUB     CX, ED_TEXT_ROWS        ; CX = max top_line
     CMP     [top_line], CX
-    JAE     .sb_scroll_done
+    JAE     .sb_dn_arrow_done
     INC     WORD [top_line]
     INC     WORD [cur_line]
+.sb_dn_arrow_done:
+    ; Start arrow repeat
+    MOV     [mouse_state + MS_SB_CTRL], BX
+    MOV     BYTE [mouse_state + MS_SB_DIR], 1   ; down
+    OR      BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     JMP     .sb_scroll_done
 
 .sb_track_click:

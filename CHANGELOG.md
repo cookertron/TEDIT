@@ -1,5 +1,101 @@
 # TEDIT Changelog
 
+## v0.56.0 — Scrollbar Arrow Auto-Repeat (2026-03-25)
+
+### Scrollbar Arrow Auto-Repeat
+- Holding the mouse button on a scrollbar arrow now continuously scrolls
+- Works for all control types: listbox, textview (vertical + horizontal), and editor
+- New `MSF_SB_ARROW` (0x40) flag tracks arrow-held state across frames
+- New `tui_mouse_on_sb_arrow` handler dispatches repeat scroll by control type
+- Event loop now dispatches mouse handler when continuous-action flags are active,
+  even with no position/button change (fixes held-button-at-same-position case)
+
+### Changes
+- **TUI/tui_const.inc** — New `MSF_SB_ARROW` flag
+- **TUI/tui_event.inc** — Mouse poll also dispatches on active continuous-action flags
+- **TUI/tui_mouse.inc** — `MSF_SB_ARROW` dispatch in chain; `tui_mouse_on_sb_arrow`
+  proc; listbox + textview arrow click sites set repeat flag
+- **ed_mouse.inc** — Editor scrollbar arrow clicks set repeat flag
+- **TEDIT.ASM** — Version bump to v0.56
+
+Binary size: 58620 bytes (up from 58200, +420 bytes / +0.7%).
+
+## v0.55.0 — Menu Dividers + Scrollbar Hscroll Fix (2026-03-25)
+
+### Menu Dividers
+- Dropdown menus now support horizontal divider/separator lines
+- Divider entry = `MDE_TEXT` is NULL (0) — no struct size change needed
+- Divider renders as `├──────────────────┤` using CP437 T-junction characters
+- Arrow Up/Down navigation skips dividers automatically (wrapping works)
+- Mouse click on divider is ignored; hover doesn't highlight divider rows
+- Hotkey dispatch naturally skips dividers (MDE_HOTKEY=0)
+- New constants: `BOX_LT` (0xC3 ├) and `BOX_RT` (0xB4 ┤) in tui_const.inc
+
+### Menu Layout
+- **File menu** (5 entries): Open, Save, Save As | Quit
+- **Edit menu** (15 entries): Undo, Redo | Cut, Copy, Paste | Find, Find Next,
+  Find Prev, Replace | Goto, Date/Time, Word Wrap
+
+### Scrollbar Horizontal Scroll Fix
+- Fixed critical buffer overflow in `ed_draw.inc` tab-overshoot check
+- When blank/short lines were rendered with `left_col > 0`, unsigned subtraction
+  `rnd_visual_col - left_col` underflowed to 0xFFFF, causing `REP STOSW` to write
+  65535 words — corrupting all memory (caused DOSBox-X "Illegal Callback" crash)
+- Fix uses `CMP`/`JA` with explicit `XOR CX, CX` for the no-overshoot path
+- Also made `scroll_to_cursor` compute visible width on-the-fly from `total_lines`
+  instead of reading stale `ed_text_cols` BSS variable
+
+### Changes
+- **TUI/tui_const.inc** — New `BOX_LT`/`BOX_RT` T-junction constants
+- **TUI/tui_menu.inc** — Divider check in entry/accel/hotkey rendering passes;
+  Up/Down skip dividers with wrap
+- **TUI/tui_mouse.inc** — Divider check in dropdown click and hover handlers
+- **TEDIT.ASM** — 4 divider entries (1 File + 3 Edit); updated entry counts;
+  version bump to v0.55
+- **ed_draw.inc** — Fixed tab-overshoot underflow bug (critical crash fix)
+- **ed_core.inc** — `scroll_to_cursor` computes visible width on-the-fly
+
+Binary size: 58200 bytes (up from 57948, +252 bytes / +0.4%).
+
+## v0.54.0 — Scrollbar + Dialog Navigation + Replace All Fix (2026-03-25)
+
+### Vertical Scrollbar
+- Auto-showing vertical scrollbar on the right edge of the text area
+- Appears when document exceeds 23 visible lines (ED_TEXT_ROWS); hidden otherwise
+- Text area shrinks from 80 to 79 columns when scrollbar is visible
+- 16-bit safe thumb position/size math — works correctly for files with 255+ lines
+- Scrollbar drawn per-row during editor render, using pre-computed thumb bounds
+
+### Scrollbar Mouse Interaction
+- Up/down arrow clicks: scroll 1 line
+- Track click above thumb: page up; below thumb: page down
+- Thumb drag: continuous scroll via existing `tui_mouse_on_sb_drag` → `.sbd_v_editor`
+- Scrollbar only interactive when content overflows (short files ignore clicks on col 79)
+
+### Dialog Arrow Key Navigation
+- Left/Right arrow keys now cycle focus between buttons in modal dialogs
+- New `tui_ctrl_focus_prev` procedure walks singly-linked control list backward
+- Right arrow reuses Tab (forward cycle); Left arrow calls focus_prev (backward cycle)
+
+### Replace All Fix
+- Replace All now starts from beginning of document (or selection start), not cursor
+- Previously skipped matches between BOF and cursor position
+- Re-finds first match from BOF after counting, before entering batch loop
+
+### Changes
+- **ed_draw.inc** — Scrollbar visibility check, thumb pre-computation, per-row scrollbar
+  character rendering; `ED_COLS` → `[ed_text_cols]` with `CS:` segment overrides;
+  cursor bounds check uses `ed_text_cols`
+- **ed_mouse.inc** — Scrollbar column click detection and dispatch (up/down arrows,
+  page up/down, thumb drag setup)
+- **TEDIT.ASM** — New BSS: `ed_sb_active` (BYTE), `ed_text_cols` (WORD);
+  version bump to v0.54
+- **TUI/tui_event.inc** — `.mdl_ext` handles KEY_LEFT/KEY_RIGHT for button focus cycling
+- **TUI/tui_control.inc** — New `tui_ctrl_focus_prev` proc (backward focus walk with wrap)
+- **ed_find.inc** — Replace All re-searches from BOF/sel_start before batch loop
+
+Binary size: 57948 bytes (up from 55531, +2417 bytes / +4.4%).
+
 ## v0.53.0 — Word Wrap + Save As (2026-03-25)
 
 ### Word Wrap (Edit > Word Wrap)
