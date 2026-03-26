@@ -113,7 +113,7 @@ m_str_acc_cs:   DB 'Ctrl+S', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.56', 0
+m_str_about_1:   DB 'TEDIT v0.57', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0

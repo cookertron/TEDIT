@@ -1,5 +1,26 @@
 # TEDIT Changelog
 
+## v0.57.0 — Scrollbar Track Hold-to-Scroll (2026-03-26)
+
+### Scrollbar Track Hold-to-Scroll
+- Click and hold on the scrollbar track (above or below the thumb) to continuously
+  scroll toward the mouse position, stopping when the thumb reaches the click point
+- Replaces the previous single page-jump behavior with smooth line-by-line scrolling
+- Reuses existing `MSF_SB_ARROW` repeat mechanism with new direction values
+  (4 = track-up, 5 = track-down) to distinguish from arrow repeat (0/1)
+- Repeat handler recomputes thumb position each frame using the same formula as the
+  renderer, compares with current mouse row via `ed_abs_row`, and stops when the
+  thumb reaches or passes the mouse
+
+### Changes
+- **ed_mouse.inc** — `.sb_page_up` / `.sb_page_down` replaced: now scroll 1 line
+  and start track-hold repeat instead of a single page jump
+- **TUI/tui_mouse.inc** — `.sba_editor` extended: dir 0/1 unchanged (arrows);
+  dir > 1 routes to new `.sba_ed_track` handler with per-frame thumb vs mouse check
+- **TEDIT.ASM** — Version bump to v0.57
+
+Binary size: 58771 bytes (up from 58620, +151 bytes / +0.3%).
+
 ## v0.56.0 — Scrollbar Arrow Auto-Repeat (2026-03-25)
 
 ### Scrollbar Arrow Auto-Repeat

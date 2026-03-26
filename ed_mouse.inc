@@ -158,35 +158,27 @@ tui_ed_mouse_press:
     JMP     .sb_scroll_done
 
 .sb_page_up:
-    MOV     CX, [top_line]
-    SUB     CX, ED_TEXT_ROWS
-    JNC     .sb_pu_set
-    XOR     CX, CX
-.sb_pu_set:
-    MOV     [top_line], CX
-    ; Keep cursor within visible range
-    MOV     AX, CX
-    ADD     AX, ED_TEXT_ROWS
-    DEC     AX
-    CMP     [cur_line], AX
-    JBE     .sb_scroll_done
-    MOV     [cur_line], CX          ; snap to top of page
+    ; Track-hold: scroll up 1 line, repeat until thumb reaches mouse
+    CMP     WORD [top_line], 0
+    JE      .sb_scroll_done
+    DEC     WORD [top_line]
+    ; Start track-up repeat (dir 4)
+    MOV     [mouse_state + MS_SB_CTRL], BX
+    MOV     BYTE [mouse_state + MS_SB_DIR], 4
+    OR      BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     JMP     .sb_scroll_done
 
 .sb_page_down:
-    MOV     CX, [top_line]
-    ADD     CX, ED_TEXT_ROWS
-    MOV     AX, [total_lines]
-    SUB     AX, ED_TEXT_ROWS        ; AX = max top_line
-    CMP     CX, AX
-    JBE     .sb_pd_set
-    MOV     CX, AX
-.sb_pd_set:
-    MOV     [top_line], CX
-    ; Keep cursor within visible range
-    CMP     [cur_line], CX
+    ; Track-hold: scroll down 1 line, repeat until thumb reaches mouse
+    MOV     CX, [total_lines]
+    SUB     CX, ED_TEXT_ROWS        ; CX = max top_line
+    CMP     [top_line], CX
     JAE     .sb_scroll_done
-    MOV     [cur_line], CX          ; snap to top of page
+    INC     WORD [top_line]
+    ; Start track-down repeat (dir 5)
+    MOV     [mouse_state + MS_SB_CTRL], BX
+    MOV     BYTE [mouse_state + MS_SB_DIR], 5
+    OR      BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
     JMP     .sb_scroll_done
 
 .sb_scroll_done:

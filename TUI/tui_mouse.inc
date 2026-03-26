@@ -1996,18 +1996,97 @@ tui_mouse_on_sb_arrow: PROC
     PUSH DI
     MOV DI, [BX + CTRL_ED_STATE]   ; DI = editor state (top_line at +0)
     CMP BYTE [mouse_state + MS_SB_DIR], 0
-    JNZ .sba_ed_down
-    ; Up
+    JNZ .sba_ed_not_up
+    ; Arrow up (dir=0)
     CMP WORD [DI + ED_SCROLLY], 0
     JZ .sba_ed_done
     DEC WORD [DI + ED_SCROLLY]
     JMP .sba_ed_dirty
-.sba_ed_down:
+.sba_ed_not_up:
+    CMP BYTE [mouse_state + MS_SB_DIR], 1
+    JA .sba_ed_track
+    ; Arrow down (dir=1)
     MOV AX, [DI + ED_LINECOUNT]
     SUB AX, ED_TEXT_ROWS
     CMP [DI + ED_SCROLLY], AX
     JAE .sba_ed_done
     INC WORD [DI + ED_SCROLLY]
+    JMP .sba_ed_dirty
+
+.sba_ed_track:
+    ; --- Track-hold scroll: dir=4 (up), dir=5 (down) ---
+    ; Compute current thumb_pos, compare with mouse position,
+    ; scroll 1 line per frame until thumb reaches mouse.
+    PUSH CX
+    PUSH DX
+    PUSH SI
+    ; thumb_size = max(1, min(track_len, (visible * track_len) / total))
+    MOV AX, ED_TEXT_ROWS * (ED_TEXT_ROWS - 2)
+    XOR DX, DX
+    DIV WORD [DI + ED_LINECOUNT]    ; AX = thumb_size
+    OR AX, AX
+    JNZ .set_ts_ok
+    INC AX
+.set_ts_ok:
+    CMP AX, ED_TEXT_ROWS - 2
+    JBE .set_ts_clamp
+    MOV AX, ED_TEXT_ROWS - 2
+.set_ts_clamp:
+    MOV SI, AX                      ; SI = thumb_size
+    ; range = track_len - thumb_size
+    MOV CX, ED_TEXT_ROWS - 2
+    SUB CX, SI                      ; CX = range
+    JCXZ .set_stop                  ; thumb fills track -> stop
+    ; max_scroll = total_lines - visible
+    MOV AX, [DI + ED_LINECOUNT]
+    SUB AX, ED_TEXT_ROWS
+    OR AX, AX
+    JZ .set_stop
+    XCHG AX, CX                    ; AX = range, CX = max_scroll
+    ; thumb_pos = (top_line * range) / max_scroll
+    PUSH CX                         ; save max_scroll
+    MUL WORD [DI + ED_SCROLLY]     ; DX:AX = range * top_line
+    POP CX
+    DIV CX                          ; AX = thumb_pos
+    ; Get mouse track_row: mouse_row - ed_abs_row - 1 (arrow row)
+    MOV CL, [mouse_state + MS_ROW]
+    SUB CL, [ed_abs_row]
+    DEC CL                          ; CL = track_row (0-based)
+    XOR CH, CH                      ; CX = track_row
+    ; Direction check
+    CMP BYTE [mouse_state + MS_SB_DIR], 5
+    JZ .set_dn_check
+    ; Track-up (dir=4): continue only if track_row < thumb_pos
+    CMP CX, AX
+    JAE .set_stop
+    CMP WORD [DI + ED_SCROLLY], 0
+    JZ .set_stop
+    DEC WORD [DI + ED_SCROLLY]
+    JMP .set_scroll
+.set_dn_check:
+    ; Track-down (dir=5): continue only if track_row >= thumb_end
+    ADD AX, SI                      ; AX = thumb_pos + thumb_size
+    CMP CX, AX
+    JB .set_stop
+    MOV AX, [DI + ED_LINECOUNT]
+    SUB AX, ED_TEXT_ROWS
+    CMP [DI + ED_SCROLLY], AX
+    JAE .set_stop
+    INC WORD [DI + ED_SCROLLY]
+.set_scroll:
+    POP SI
+    POP DX
+    POP CX
+    JMP .sba_ed_dirty
+.set_stop:
+    ; Thumb reached mouse — end repeat
+    AND BYTE [mouse_state + MS_FLAGS], 0FFh - MSF_SB_ARROW
+    MOV WORD [mouse_state + MS_SB_CTRL], 0
+    POP SI
+    POP DX
+    POP CX
+    JMP .sba_ed_done
+
 .sba_ed_dirty:
     MOV BYTE [fw_state + FW_DIRTY], 1
 .sba_ed_done:
