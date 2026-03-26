@@ -2061,7 +2061,12 @@ tui_mouse_on_sb_arrow: PROC
     JAE .set_stop
     CMP WORD [DI + ED_SCROLLY], 0
     JZ .set_stop
-    DEC WORD [DI + ED_SCROLLY]
+    MOV AX, [DI + ED_SCROLLY]
+    SUB AX, ED_TEXT_ROWS            ; page up
+    JNC .set_up_ok
+    XOR AX, AX
+.set_up_ok:
+    MOV [DI + ED_SCROLLY], AX
     JMP .set_scroll
 .set_dn_check:
     ; Track-down (dir=5): continue only if track_row >= thumb_end
@@ -2069,10 +2074,16 @@ tui_mouse_on_sb_arrow: PROC
     CMP CX, AX
     JB .set_stop
     MOV AX, [DI + ED_LINECOUNT]
-    SUB AX, ED_TEXT_ROWS
+    SUB AX, ED_TEXT_ROWS            ; AX = max_scroll
     CMP [DI + ED_SCROLLY], AX
     JAE .set_stop
-    INC WORD [DI + ED_SCROLLY]
+    MOV CX, [DI + ED_SCROLLY]
+    ADD CX, ED_TEXT_ROWS            ; page down
+    CMP CX, AX
+    JBE .set_dn_ok
+    MOV CX, AX
+.set_dn_ok:
+    MOV [DI + ED_SCROLLY], CX
 .set_scroll:
     POP SI
     POP DX

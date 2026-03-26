@@ -5,7 +5,8 @@
 ### Scrollbar Track Hold-to-Scroll
 - Click and hold on the scrollbar track (above or below the thumb) to continuously
   scroll toward the mouse position, stopping when the thumb reaches the click point
-- Replaces the previous single page-jump behavior with smooth line-by-line scrolling
+- Scrolls by page (ED_TEXT_ROWS lines) per step for fast navigation; arrows remain
+  line-by-line
 - Reuses existing `MSF_SB_ARROW` repeat mechanism with new direction values
   (4 = track-up, 5 = track-down) to distinguish from arrow repeat (0/1)
 - Repeat handler recomputes thumb position each frame using the same formula as the
@@ -28,15 +29,16 @@
 - Check runs before any memory allocation or initialization (INT 10h AH=0Fh)
 
 ### Changes
-- **ed_mouse.inc** — `.sb_page_up` / `.sb_page_down` replaced: now scroll 1 line
-  and start track-hold repeat instead of a single page jump
+- **ed_mouse.inc** — `.sb_page_up` / `.sb_page_down` replaced: page-scroll with
+  clamping + track-hold repeat setup
 - **TUI/tui_mouse.inc** — `.sba_editor` extended: dir 0/1 unchanged (arrows);
-  dir > 1 routes to new `.sba_ed_track` handler with per-frame thumb vs mouse check
+  dir > 1 routes to new `.sba_ed_track` handler with page-scroll per frame and
+  thumb vs mouse position check
 - **TUI/tui_video.inc** — `tui_blit` gains CGA snow-free copy path (retrace sync)
 - **TEDIT.ASM** — MDA check + CGA detection at top of `main:`; new `tui_cga_snow`
   BSS flag; new `s_err_mda` string; version bump to v0.57
 
-Binary size: 58910 bytes (up from 58620, +290 bytes / +0.5%).
+Binary size: 58965 bytes (up from 58620, +345 bytes / +0.6%).
 
 ## v0.56.0 — Scrollbar Arrow Auto-Repeat (2026-03-25)
 

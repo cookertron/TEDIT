@@ -158,10 +158,15 @@ tui_ed_mouse_press:
     JMP     .sb_scroll_done
 
 .sb_page_up:
-    ; Track-hold: scroll up 1 line, repeat until thumb reaches mouse
-    CMP     WORD [top_line], 0
-    JE      .sb_scroll_done
-    DEC     WORD [top_line]
+    ; Track-hold: page up, repeat until thumb reaches mouse
+    MOV     CX, [top_line]
+    TEST    CX, CX
+    JZ      .sb_scroll_done
+    SUB     CX, ED_TEXT_ROWS
+    JNC     .sb_pu_set
+    XOR     CX, CX
+.sb_pu_set:
+    MOV     [top_line], CX
     ; Start track-up repeat (dir 4)
     MOV     [mouse_state + MS_SB_CTRL], BX
     MOV     BYTE [mouse_state + MS_SB_DIR], 4
@@ -169,12 +174,18 @@ tui_ed_mouse_press:
     JMP     .sb_scroll_done
 
 .sb_page_down:
-    ; Track-hold: scroll down 1 line, repeat until thumb reaches mouse
+    ; Track-hold: page down, repeat until thumb reaches mouse
     MOV     CX, [total_lines]
     SUB     CX, ED_TEXT_ROWS        ; CX = max top_line
     CMP     [top_line], CX
     JAE     .sb_scroll_done
-    INC     WORD [top_line]
+    MOV     AX, [top_line]
+    ADD     AX, ED_TEXT_ROWS
+    CMP     AX, CX
+    JBE     .sb_pd_set
+    MOV     AX, CX
+.sb_pd_set:
+    MOV     [top_line], AX
     ; Start track-down repeat (dir 5)
     MOV     [mouse_state + MS_SB_CTRL], BX
     MOV     BYTE [mouse_state + MS_SB_DIR], 5
