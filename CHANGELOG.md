@@ -1,6 +1,6 @@
 # TEDIT Changelog
 
-## v0.57.0 — Scrollbar Track Hold-to-Scroll (2026-03-26)
+## v0.57.0 — Scrollbar Track Hold-to-Scroll + Display Compatibility (2026-03-26)
 
 ### Scrollbar Track Hold-to-Scroll
 - Click and hold on the scrollbar track (above or below the thumb) to continuously
@@ -12,14 +12,31 @@
   renderer, compares with current mouse row via `ed_abs_row`, and stops when the
   thumb reaches or passes the mouse
 
+### CGA Snow Prevention
+- Detects CGA adapter at startup via INT 10h AH=12h (EGA/VGA info query): if BL
+  returns unchanged (10h), no EGA/VGA is present — CGA assumed
+- `tui_blit` now has two paths: fast `REP MOVSW` for EGA/VGA, and a vertical
+  retrace-synchronized path for CGA that waits for vretrace (port 3DAh bit 3)
+  then blasts with `REP MOVSW` — CPU writes top-to-bottom faster than the raster
+  beam scans (~285μs/row vs ~508μs/row), staying ahead and avoiding snow
+- New BSS flag `tui_cga_snow` (0 = fast path, 1 = snow-free path)
+- EGA/VGA systems are completely unaffected — zero overhead on the fast path
+
+### MDA Display Guard
+- TEDIT now detects MDA display (video mode 7) at startup and exits with a clear
+  error message instead of writing to the wrong video segment
+- Check runs before any memory allocation or initialization (INT 10h AH=0Fh)
+
 ### Changes
 - **ed_mouse.inc** — `.sb_page_up` / `.sb_page_down` replaced: now scroll 1 line
   and start track-hold repeat instead of a single page jump
 - **TUI/tui_mouse.inc** — `.sba_editor` extended: dir 0/1 unchanged (arrows);
   dir > 1 routes to new `.sba_ed_track` handler with per-frame thumb vs mouse check
-- **TEDIT.ASM** — Version bump to v0.57
+- **TUI/tui_video.inc** — `tui_blit` gains CGA snow-free copy path (retrace sync)
+- **TEDIT.ASM** — MDA check + CGA detection at top of `main:`; new `tui_cga_snow`
+  BSS flag; new `s_err_mda` string; version bump to v0.57
 
-Binary size: 58771 bytes (up from 58620, +151 bytes / +0.3%).
+Binary size: 58910 bytes (up from 58620, +290 bytes / +0.5%).
 
 ## v0.56.0 — Scrollbar Arrow Auto-Repeat (2026-03-25)
 

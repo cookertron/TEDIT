@@ -75,7 +75,9 @@ ENDP
 
 ; ----------------------------------------------------------------------------
 ; tui_blit - Copy shadow_buf to VRAM (B800:0000)
-; Saves/restores ES. Uses REP MOVSW for speed.
+; EGA/VGA: fast REP MOVSW.
+; CGA: wait for vertical retrace then REP MOVSW — CPU writes top-to-bottom
+; faster than the raster beam scans, so we stay ahead and avoid snow.
 ; ----------------------------------------------------------------------------
 tui_blit: PROC
     PUSH AX
@@ -94,8 +96,28 @@ tui_blit: PROC
     XOR DI, DI
     MOV CX, SCR_CELLS
     CLD
-    REP MOVSW
 
+    CMP BYTE [tui_cga_snow], 0
+    JNZ .cga_blit
+    REP MOVSW                        ; fast path: EGA/VGA
+    JMP .blit_done
+
+.cga_blit:
+    ; Snow-free CGA: sync to vertical retrace then blast
+    PUSH DX
+    MOV DX, 03DAh                    ; CGA status register
+.cga_wait_no_vr:
+    IN AL, DX
+    TEST AL, 08h                     ; bit 3 = vertical retrace
+    JNZ .cga_wait_no_vr              ; wait for current retrace to end
+.cga_wait_vr:
+    IN AL, DX
+    TEST AL, 08h
+    JZ .cga_wait_vr                  ; wait for vertical retrace to start
+    REP MOVSW                        ; blast — ahead of raster beam
+    POP DX
+
+.blit_done:
     ; Show hardware mouse cursor after VRAM update
     MOV AX, 0001h
     INT 33h

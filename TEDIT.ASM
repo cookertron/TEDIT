@@ -29,6 +29,7 @@ INCLUDE TUI\tui.inc
 s_usage:     DB 'Usage: TEDIT <filename>', 0Dh, 0Ah, '$'
 s_nofile:    DB 'Error: cannot open file', 0Dh, 0Ah, '$'
 s_nomem:     DB 'Error: out of memory', 0Dh, 0Ah, '$'
+s_err_mda:   DB 'Error: MDA display not supported (requires CGA/EGA/VGA)', 0Dh, 0Ah, '$'
 
 ; ---- Status bar strings (null-terminated, for shadow_buf writing) ----
 s_stat_ln:   DB ' Line ', 0
@@ -1329,6 +1330,27 @@ menu_about_handler:
 ; ============================================================
 
 main:
+    ; ---- Reject MDA display (we write directly to B800h) ----
+    MOV     AH, 0Fh
+    INT     10h                         ; AL = current video mode
+    CMP     AL, 07h                     ; mode 7 = MDA monochrome
+    JNE     .video_ok
+    MOV     DX, s_err_mda
+    MOV     AH, 09h
+    INT     21h
+    INT     20h
+.video_ok:
+
+    ; ---- Detect CGA for snow prevention ----
+    MOV     BYTE [tui_cga_snow], 0
+    MOV     AH, 12h
+    MOV     BL, 10h
+    INT     10h                         ; BL unchanged if no EGA/VGA
+    CMP     BL, 10h
+    JNE     .snow_done
+    MOV     BYTE [tui_cga_snow], 1      ; CGA — enable snow prevention
+.snow_done:
+
     CALL    shrink_mem
 
     ; ---- Save startup working directory (restored on exit) ----
@@ -1681,6 +1703,7 @@ startup_drive:      RESB 1      ; drive number (0=A, 1=B, 2=C...)
 startup_path:       RESB 65     ; path returned by INT 21h AH=47h
 
 ; ---- TUI BSS ----
+tui_cga_snow:       RESB 1          ; 1 = CGA snow prevention in tui_blit
 shadow_buf:         RESB 4000
 fw_state:           RESB 16
 win_table:          RESB 320
