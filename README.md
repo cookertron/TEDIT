@@ -2,11 +2,12 @@
 
 ![TEDIT Screenshot](assets/screenshot.jpg)
 
-A text editor for DOS, written entirely in 8086 assembly language.
+A multi-document text editor for DOS, written entirely in 8086 assembly language.
 
-TEDIT is a single-document text editor built on a custom TUI (Text User
-Interface) framework. It targets real-mode DOS as a `.COM` binary and runs on
-IBM PC compatibles, DOSBox-X, and the agent86 emulator.
+TEDIT is built on a custom TUI (Text User Interface) framework with support for
+up to 8 simultaneous open files, a document side panel, project files, and
+disk-based document swapping. It targets real-mode DOS as a `.COM` binary and
+runs on IBM PC compatibles, DOSBox-X, and the agent86 emulator.
 
 ## Screenshot
 
@@ -59,22 +60,51 @@ This is line two of the document.
     performance, with permanent save (warned before proceeding)
 - Selection pre-fill: single-line selection populates the search field
 
+### Multi-Document Editing
+- Up to 8 files open simultaneously
+- Disk-based document swapping — only the active document is in memory;
+  inactive documents are saved to temporary swap files and restored on switch
+- Document switching: Alt+1–8 (direct slot), F6 (next document),
+  Ctrl+PgDn/PgUp (next/prev occupied slot)
+- Side panel (F1 or View > Document List): shows all open documents with
+  slot number, filename, dirty indicator, and arrow marker on the active
+  document. Navigate with Up/Down arrows, Enter to switch, Esc to close.
+  Drop shadow on the right edge
+- Duplicate file prevention — opening an already-open file switches to it
+- `[N/M]` status bar indicator when multiple documents are open
+
+### Project Files
+- Save Project (File > Save Project): writes all open file paths to a `.PRJ`
+  file (one path per line, plain text — hand-editable)
+- Load Project (File > Load Project): closes all current documents and opens
+  every file listed in the `.PRJ` file
+- Project files use `*.PRJ` wildcard filter in the file dialog
+
 ### File Operations
-- Open (File > Open) with Turbo Debugger-style file browser:
+- New (Ctrl+N), Open (Ctrl+O) with Turbo Debugger-style file browser:
   - Separate Files and Directories listboxes
   - Filename text field with wildcard support (`*.txt`, `*.asm`, etc.)
-  - Drive selection dropdown
-  - Path display
-- Save (Ctrl+S), Save As (File > Save As) with same file browser
+  - Wildcard persistence between opens
+  - Listbox double-click and Enter to open files
+  - Drive selection dropdown and path display
+- Save (Ctrl+S), Save As (Ctrl+Shift+S) with overwrite confirmation
+- Save All (Ctrl+Alt+S) — saves all dirty, named documents
+- Close (Ctrl+W) — single document resets to untitled; multiple documents
+  switches to the next
+- Close All (Ctrl+Alt+W) — prompts for each dirty document, resets to untitled
+- Shell to DOS (File > Shell to DOS) — spawns interactive COMMAND.COM via
+  COMSPEC; compatible with SHROOM utility for memory-efficient shelling
 - Word Wrap (Edit > Word Wrap) — permanent hard wrap at 80 columns
 - Go to Line (Ctrl+G)
 - Date/Time insertion (F5) — inserts `YYYY-MM-DD HH:MM:SS` at cursor
 - Working directory restored on exit
 
 ### Menu System
-- File: Open, Save, Save As, Quit
+- File: New, Open, Close, Close All, Save, Save As, Save All, Load Project,
+  Save Project, Shell to DOS, Quit
 - Edit: Undo, Redo, Cut, Copy, Paste, Find, Find Next, Find Prev,
   Replace, Goto, Date/Time, Word Wrap
+- View: Document List
 - Info: About
 
 ## Building
@@ -124,7 +154,7 @@ TEDIT myfile.txt /t 4
 ## Architecture
 
 TEDIT is a `.COM` flat-model program (ORG 100h, all segments equal).
-The binary is approximately 57 KB.
+The binary is approximately 62 KB.
 
 ### Piece Table Document Model
 
@@ -151,9 +181,10 @@ than moving text. This gives efficient editing regardless of file size.
 | `ed_sel.inc` | Selection management |
 | `ed_clip.inc` | Clipboard (copy, cut, paste) |
 | `ed_find.inc` | Find, replace, streaming replace |
-| `ed_draw.inc` | Rendering, tab expansion, cursor, status bar |
-| `ed_keys.inc` | Keyboard dispatch |
-| `ed_mouse.inc` | Mouse click and drag |
+| `ed_draw.inc` | Rendering, tab expansion, cursor, status bar, side panel |
+| `ed_keys.inc` | Keyboard dispatch, side panel navigation |
+| `ed_mouse.inc` | Mouse click and drag, side panel click |
+| `ed_multidoc.inc` | Document table, swap out/in, switching, slot management |
 | `TUI\tui.inc` | TUI framework (master include) |
 
 ### TUI Framework
@@ -177,7 +208,7 @@ things it intentionally does not attempt.
 
 ### Limitations
 
-- **Single document only.** One file open at a time. No tabs, no split views.
+- **8 documents maximum.** Up to 8 files open at once via disk-based swapping.
 - **No syntax highlighting.** All text renders in a single colour.
 - **No line numbers** in the editing area (line/column shown in status bar).
 - **No soft word wrap.** Lines display with horizontal scrolling. The Word
@@ -196,8 +227,8 @@ things it intentionally does not attempt.
   redo tail.
 - **Replace All for large batches (>50 matches) is permanent.** The streaming
   replace bypasses the undo system for performance. A warning is shown.
-- **CGA 80-column text mode only.** No graphics, no 132-column mode, no
-  colour themes.
+- **80-column text mode required.** 40-column and MDA modes are rejected at
+  startup. No graphics, no 132-column mode, no colour themes.
 - **16-bit real mode.** Maximum addressable file size is bounded by available
   conventional memory (~576 KB for data segments).
 
@@ -212,7 +243,7 @@ things it intentionally does not attempt.
 ## Version History
 
 See `CHANGELOG.md` for the full version history with detailed per-version
-changes. The editor has been developed through 50+ versions covering:
+changes. The editor has been developed through 60 versions covering:
 
 - Core editing and file I/O
 - Piece table engine with checkpoint-accelerated seeking
@@ -224,8 +255,12 @@ changes. The editor has been developed through 50+ versions covering:
 - Streaming replace for large batch operations
 - Tab support with configurable width
 - Insert/overwrite mode toggle
-- Turbo Debugger-style file browser with wildcard filtering
+- Turbo Debugger-style file browser with wildcard filtering and double-click
 - Word wrap, Go to Line, Date/Time insertion
+- Multi-document editing with disk-based swapping (up to 8 files)
+- Document side panel with navigation and drop shadow
+- Project file load/save
+- Shell to DOS with SHROOM compatibility
 
 ## Credits
 
