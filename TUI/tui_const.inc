@@ -274,7 +274,10 @@ MS_DRAG_WIN EQU 7           ; BYTE  - window slot being dragged (FFh=none)
 MS_PRESSED  EQU 8           ; WORD  - ptr to control being mouse-pressed (0=none)
 MS_PCOL     EQU 10          ; BYTE  - previous cell column (for move detection)
 MS_PROW     EQU 11          ; BYTE  - previous cell row
-MS_SIZE     EQU 16
+MS_LB_TICK  EQU 16          ; WORD  - BIOS tick of last listbox click
+MS_LB_CTRL  EQU 18          ; WORD  - control ptr of last listbox click
+MS_LB_SEL   EQU 20          ; BYTE  - item index of last listbox click
+MS_SIZE     EQU 21
 
 ; --- Mouse flags ---
 MSF_ENABLED   EQU 01h       ; mouse driver detected

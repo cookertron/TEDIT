@@ -1,5 +1,192 @@
 # TEDIT Changelog
 
+## v0.60.0 — File Menu Overhaul, Projects & Shell (2026-03-30)
+
+### File Menu Enhancements
+- **Ctrl+O**: new shortcut for File > Open
+- **Ctrl+Shift+S**: new shortcut for File > Save As, with overwrite confirmation
+  dialog ("File exists. Overwrite?") when target file already exists
+- **Save All (Ctrl+Alt+S)**: saves all dirty, named documents by switching to each
+  in turn; skips untitled documents (no filename to save to)
+- **Close All (Ctrl+Alt+W)**: prompts to save each dirty document (Yes/No/Cancel);
+  Cancel aborts entirely; resets to a single fresh untitled document after closing
+- **Close behavior fix**: closing the last document no longer quits TEDIT; untitled
+  + clean = no-op; dirty or named = prompt/reset to untitled
+
+### Project Files
+- **Save Project** (File menu, hotkey P): writes all open file paths to a `.PRJ`
+  file (one absolute path per line, CRLF-terminated). Skips untitled documents.
+  Shows overwrite confirmation if the target file exists
+- **Load Project** (File menu, hotkey D): opens a `.PRJ` file, closes all current
+  documents (with save prompts for dirty docs), then loads each listed file into
+  its own slot. Warns if the project exceeds the 8-file limit
+- Both dialogs use `*.PRJ` wildcard filter, with save/restore of the normal
+  `dlg_file_pattern` so regular Open dialogs remain `*.txt`
+- PRJ format: plain text, one path per line — hand-editable, no metadata
+
+### Shell to DOS
+- **File > Shell to DOS** (hotkey H): spawns an interactive COMMAND.COM shell via
+  INT 21h AH=4Bh (EXEC), using COMSPEC from the DOS environment
+- Clears screen, prints "Type EXIT to return to TEDIT." before shelling
+- On return: restores SS:SP, resets video mode 3, reinitializes mouse driver,
+  triggers full TUI screen redraw
+- Compatible with SHROOM utility for memory-efficient shelling (SHROOM intercepts
+  EXEC and swaps TEDIT's allocated memory to disk transparently)
+- Shows error if COMSPEC environment variable is not found
+
+### Save-Before-Open Prompt Removed
+- Opening a file no longer prompts to save the current document — the multi-doc
+  system swaps documents to disk, so nothing is lost. Removed leftover
+  single-document-era save prompt from `menu_open_handler`
+
+### 40-Column Display Guard
+- Startup now rejects text modes with fewer than 80 columns (e.g. CGA 40-column
+  mode) in addition to the existing MDA check, with a clear error message
+
+### Changes
+- **ed_keys.inc** — Ctrl+O dispatch; Ctrl+Shift+S → Save As; Ctrl+Alt+S → Save
+  All; Ctrl+Alt+W → Close All
+- **TEDIT.ASM** — File menu expanded to 15 entries (11 items + 4 dividers), DDW
+  widened to 28; `menu_saveall_handler`, `menu_closeall_handler`,
+  `menu_saveprj_handler`, `menu_loadprj_handler`, `menu_shell_handler` added;
+  close handler rewritten for single-doc reset; overwrite confirmation on Save As
+  and Save Project; 40-column startup guard; version bump to v0.60
+
+Binary size: 62,799 bytes (up from 60,651, +2,148 bytes / +3.5%).
+
+## v0.59.0 — Side Panel & File Dialog Polish (2026-03-30)
+
+### Side Panel Improvements
+- **Arrow indicator**: `»` (CP437 0xAF) marks the highlighted entry; space for
+  others. Layout: `│»N FILENAME.EXT*│`
+- **Drop shadow**: right edge of panel darkened using `tui_darken_cell`, preserving
+  underlying text — same effect as dialog box shadows
+- **Panel highlight sync**: opening or creating a document now updates `panel_sel`
+  to match `active_doc`, so the newly loaded file is always highlighted. Fixed in
+  `doc_swap_in`, `menu_open_handler`, and `menu_new_handler`
+- **View menu**: new "View" menu (Alt+V) between Edit and Info with "Document List"
+  entry (hotkey D) that toggles the side panel. Displays F1 as the accelerator
+- `PANEL_WIDTH` widened from 17 to 18 columns to accommodate the arrow indicator
+
+### File Dialog Enhancements
+- **Wildcard persistence**: default `*.txt` shown in textbox on first open;
+  pattern persists between opens (e.g. change to `*.asm`, open a file, next open
+  shows `*.asm`). Cancel restores the previous wildcard
+- **Textbox gets initial focus**: cursor starts in the filename textbox — no
+  tabbing required to start typing
+- **Enter key dispatch**: Enter on textbox with wildcard re-filters the file list
+  and moves focus to the listbox; Enter with a plain filename opens it directly
+- **Listbox Enter opens file**: pressing Enter on a selected file in the listbox
+  now closes the dialog and opens the file (previously only copied the filename)
+- **Smart OK button priority**: (1) plain filename in textbox → open file,
+  (2) wildcard from focused textbox → re-filter + focus listbox,
+  (3) OK button with file selected → open from list, (4) fallback → re-filter
+
+### Listbox Double-Click
+- Single click selects item and focuses the control; double click selects and
+  calls the handler (opens file / navigates directory)
+- New `mouse_state` fields: `MS_LB_TICK` (WORD), `MS_LB_CTRL` (WORD),
+  `MS_LB_SEL` (BYTE); `MS_SIZE` expanded from 16 to 21 bytes
+- Double-click window: 9 BIOS ticks (~500ms), same control and same item
+
+### Dead Code Removal
+- Removed unused `doc_draw_tabs` proc (138 lines) from `ed_draw.inc`
+- Removed stale PRINT debug line from `ed_multidoc.inc`
+
+### Changes
+- **ed_draw.inc** — removed `doc_draw_tabs`; added panel arrow indicator and
+  drop shadow in `ed_draw_panel`
+- **ed_multidoc.inc** — removed debug PRINT; `doc_swap_in` syncs `panel_sel`
+- **ed_const.inc** — `PANEL_WIDTH` 17→18
+- **ed_keys.inc** — F1 handler unchanged (toggle still works via panel intercept)
+- **TUI/tui_dialog.inc** — wildcard persistence (`dlg_file_pat_save`), textbox
+  initial focus, Enter dispatch, listbox-Enter-opens, smart OK priority
+- **TUI/tui_const.inc** — `MS_LB_TICK`, `MS_LB_CTRL`, `MS_LB_SEL`, `MS_SIZE`
+  16→21
+- **TUI/tui_mouse.inc** — listbox double-click detection
+- **TEDIT.ASM** — View menu (strings, entries, `menu_doclist_handler`); Info menu
+  shifted to X=18; menubar count 3→4; `panel_sel` sync in `menu_open_handler` and
+  `menu_new_handler`; `open_file_buf` clear; `dlg_file_pat_save` BSS;
+  `mouse_state` 16→21; version bump to v0.59
+
+Binary size: 60,651 bytes (up from 60,411, +240 bytes / +0.4%).
+
+## v0.58.0 — Multi-Document Editing (2026-03-27)
+
+7-phase project adding full multi-document support with up to 8 simultaneous
+open files, disk-based document swapping, tab bar UI, and robustness features.
+
+### Document Table and Swap Mechanism (Phases 1-2)
+- 8-slot document table with 152-byte slot descriptors tracking flags, filename,
+  swap path, cached display state, and slot ID
+- Disk-based swap: documents not currently active are written to temporary
+  `TEDTnnnn.SWP` files and their memory segments freed, then restored on switch
+- Swap file format: 64-byte header (magic, version, segment sizes, piece table
+  state, cursor position, dirty flag) followed by raw segment data (original
+  buffer, add buffer, piece table)
+- 12,440-byte contiguous document context block (`DOC_CTX`) swapped as a unit
+  via `REP MOVSW` between BSS and save segments
+
+### Document Switching (Phases 3-4)
+- `doc_switch`: saves active document to disk, loads target from swap file,
+  restores all editor state (cursor, scroll, dirty flag, undo buffer)
+- Keyboard shortcuts: Alt+1 through Alt+8 (direct slot), F6 (next doc),
+  Ctrl+PgDn/PgUp (next/prev occupied slot)
+- `doc_next_occupied` / `doc_prev_occupied`: wrapping search through occupied
+  slots for F6 and Ctrl+PgDn/PgUp navigation
+
+### File Menu Operations (Phase 5)
+- **File > New (Ctrl+N)**: allocates a free slot, swaps out active document,
+  initializes empty untitled document in new slot
+- **File > Open**: reuses current slot if untitled and clean; otherwise opens in
+  new slot with automatic swap-out of active document. Shows error when all 8
+  slots are occupied
+- **File > Close (Ctrl+W)**: prompts to save if dirty; single-document close
+  triggers quit; last-document close auto-creates empty untitled document
+- **Quit (Alt+Q)**: prompts for active document if dirty, warns about unsaved
+  swapped documents, deletes all swap files on exit
+- **Save As**: updates slot filename after save so tab bar reflects new name
+
+### Tab Bar UI (Phase 6)
+- Menu bar displays document tabs after "Info" menu: `1:basename 2:basename ...`
+- Active tab highlighted bright white on blue; inactive tabs use menu bar
+  attribute; dirty documents marked with `*` suffix
+- Basenames extracted from full path with extension stripped (8-char max display)
+- Tab bar hidden when only one document is open (no visual clutter)
+- `[N/M]` status bar indicator shows document position when multiple docs open
+
+### Robustness (Phase 7)
+- **Orphan swap file cleanup**: on startup, `doc_cleanup_orphans` scans for
+  `TEDT????.SWP` via FindFirst/FindNext and deletes them (crash recovery)
+- **Exit safety net**: walk all slots on program exit and delete any remaining
+  swap files, independent of quit handler
+- **Duplicate file prevention**: `doc_find_by_name` performs case-insensitive
+  filename comparison across all occupied slots; opening an already-open file
+  silently switches to the existing slot instead of creating a duplicate
+
+### TUI Framework Trimming
+- Removed ~3,800 bytes of dead TUI code (unused dialog types, unreachable
+  control paths) to reclaim headroom for multi-document features
+
+### Changes
+- **ed_multidoc.inc** (new) — 1,080 lines: `doc_table_init`, `doc_get_slot`,
+  `doc_find_free_slot`, `doc_slot_init`, `doc_slot_clear`, `doc_swap_out`,
+  `doc_swap_in`, `doc_switch`, `doc_next_occupied`, `doc_prev_occupied`,
+  `doc_cleanup_orphans`, `doc_find_by_name`
+- **ed_const.inc** — Multi-doc constants: `MAX_DOCS`, `DOC_SLOT_SIZE`,
+  `DOCF_OCCUPIED/SWAPPED/DIRTY/UNTITLED`, field offsets, swap header layout
+- **ed_draw.inc** — `doc_draw_tabs` proc; `[N/M]` status bar indicator
+- **ed_keys.inc** — Ctrl+N, Ctrl+W, Alt+1-8, F6, Ctrl+PgDn/PgUp dispatch
+- **TEDIT.ASM** — File menu expanded (New, Open, Close, Save, Save As, Quit);
+  `menu_new_handler`, `menu_close_handler` rewritten; `menu_open_handler` with
+  reuse/new-slot logic and duplicate check; `menu_quit_handler` multi-doc aware;
+  startup orphan cleanup; exit swap cleanup loop; version bump to v0.58
+- **TUI/tui_window.inc** — Tab bar rendering call after menu bar
+- **TUI/** — Dead code removal (~3,800 bytes reclaimed)
+
+Binary size: 59,380 bytes (up from 58,965, +415 bytes / +0.7%).
+Multi-doc internal growth was ~4,200 bytes offset by ~3,800 bytes of TUI trimming.
+
 ## v0.57.0 — Scrollbar Track Hold-to-Scroll + Display Compatibility (2026-03-26)
 
 ### Scrollbar Track Hold-to-Scroll

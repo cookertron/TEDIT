@@ -339,8 +339,8 @@ tui_compose: PROC
 .done:
     ; Draw menu bar + dropdown on top of everything
     CALL tui_menu_draw_bar
+    ; doc_draw_tabs removed — replaced by side panel (ed_draw_panel)
     CALL tui_menu_draw_dropdown
-    CALL tui_dd_draw_popup
 
     MOV BYTE [fw_state + FW_DIRTY], 0
     PopAll

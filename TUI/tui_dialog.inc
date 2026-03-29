@@ -656,256 +656,6 @@ tui_dlg_input: PROC
     RET
 ENDP
 
-; ============================================================================
-; tui_dlg_input2 - Dual text input dialog (two labeled fields + OK/Cancel)
-; Caller pre-sets memory vars before calling:
-;   [dlg_save_prompt2]  = second prompt string pointer
-;   [dlg_save_buf2]     = second buffer pointer
-;   [dlg_save_maxlen2]  = second max length
-; Input:  SI = prompt1 string, DI = title string,
-;         BX = buffer1 ptr, CL = maxlen1
-; Output: AL = DLG_OK (1) or DLG_CANCEL (0)
-;         Buffers contain entered text (valid only if AL=DLG_OK)
-;
-; Layout (interior rows 0-6, WIN_H=9 with border):
-;   Row 0: Label 1       Row 1: Textbox 1
-;   Row 2: (separator)   Row 3: Label 2
-;   Row 4: Textbox 2     Row 5: (separator)
-;   Row 6: [ OK ]  [ Cancel ]
-; ============================================================================
-tui_dlg_input2: PROC
-    PushAll
-
-    ; Save caller inputs to temp area
-    MOV [dlg_save_title], DI
-    MOV [dlg_save_buf], BX
-    MOV [dlg_save_maxlen], CL
-
-    ; Measure prompt1 length
-    CALL tui_dlg_strlen         ; CX = prompt1_len, SI preserved
-    MOV CH, CL                  ; CH = prompt1_len
-
-    ; Measure prompt2 length
-    PUSH SI
-    MOV SI, [dlg_save_prompt2]
-    CALL tui_dlg_strlen         ; CL = prompt2_len
-    POP SI
-
-    ; CH = prompt1_len, CL = prompt2_len → CH = max
-    CMP CH, CL
-    JAE .p1_longer
-    MOV CH, CL
-.p1_longer:
-
-    ; Interior width = max(max_prompt_len+4, btn_row_w=24, DLG_MIN_W=20)
-    MOV AL, CH
-    ADD AL, DLG_PAD
-    CMP AL, DLG_BTN_OK_W + DLG_BTN_CAN_W + DLG_BTN_GAP + DLG_PAD
-    JAE .w1
-    MOV AL, DLG_BTN_OK_W + DLG_BTN_CAN_W + DLG_BTN_GAP + DLG_PAD
-.w1:
-    CMP AL, DLG_MIN_W
-    JAE .w2
-    MOV AL, DLG_MIN_W
-.w2:
-    MOV BL, AL                  ; BL = interior width
-    ADD AL, 2
-    MOV BH, AL                  ; BH = total width (with borders)
-
-    ; Center on screen (height = 9)
-    MOV AL, SCR_W
-    SUB AL, BH
-    SHR AL, 1
-    MOV DL, AL                  ; DL = dialog X
-    MOV DH, (SCR_H - 9) / 2    ; DH = dialog Y (centered)
-
-    ; ---- Build prompt1 label at row 0, x=1 ----
-    PUSH CX
-    CALL tui_dlg_strlen         ; CX = prompt1_len (SI still = prompt1)
-
-    MOV DI, dlg_label
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
-    MOV BYTE [DI + CTRL_X], 1
-    MOV BYTE [DI + CTRL_Y], 0
-    MOV [DI + CTRL_W], CL
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_textbox
-    MOV [DI + CTRL_TEXT], SI
-    MOV BYTE [DI + CTRL_ATTR], CLR_LABEL
-    MOV BYTE [DI + CTRL_FATTR], CLR_LABEL
-    MOV WORD [DI + CTRL_HANDLER], 0
-    POP CX
-
-    ; ---- Build textbox1 at row 1, x=1, width = interior_w - 2 ----
-    MOV AL, BL
-    SUB AL, 2                   ; textbox visible width
-
-    MOV DI, dlg_textbox
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_TEXTBOX
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 1
-    MOV BYTE [DI + CTRL_Y], 1
-    MOV [DI + CTRL_W], AL
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_label2
-    PUSH AX
-    MOV AX, [dlg_save_buf]
-    MOV [DI + CTRL_TEXT], AX
-    POP AX
-    MOV BYTE [DI + CTRL_ATTR], CLR_TEXTBOX
-    MOV BYTE [DI + CTRL_FATTR], CLR_TB_FOCUS
-    MOV WORD [DI + CTRL_HANDLER], 0
-    PUSH AX
-    MOV AL, [dlg_save_maxlen]
-    MOV [DI + CTRL_TB_MAXLEN], AL
-    POP AX
-    MOV BYTE [DI + CTRL_TB_CURPOS], 0
-    MOV BYTE [DI + CTRL_TB_SCROLL], 0
-    ; Compute initial text length from buffer1
-    PUSH SI
-    PUSH CX
-    MOV SI, [dlg_save_buf]
-    XOR CX, CX
-.tb1_len:
-    CMP BYTE [SI], 0
-    JZ .tb1_len_done
-    INC SI
-    INC CL
-    JMP .tb1_len
-.tb1_len_done:
-    MOV [DI + CTRL_TB_LEN], CL
-    MOV [DI + CTRL_TB_CURPOS], CL   ; cursor at end of existing text
-    POP CX
-    POP SI
-
-    ; ---- Build prompt2 label at row 3, x=1 ----
-    PUSH SI
-    PUSH CX
-    MOV SI, [dlg_save_prompt2]
-    CALL tui_dlg_strlen         ; CX = prompt2_len
-
-    MOV DI, dlg_label2
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_LABEL
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
-    MOV BYTE [DI + CTRL_X], 1
-    MOV BYTE [DI + CTRL_Y], 3
-    MOV [DI + CTRL_W], CL
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_textbox2
-    MOV [DI + CTRL_TEXT], SI
-    MOV BYTE [DI + CTRL_ATTR], CLR_LABEL
-    MOV BYTE [DI + CTRL_FATTR], CLR_LABEL
-    MOV WORD [DI + CTRL_HANDLER], 0
-    POP CX
-    POP SI
-
-    ; ---- Build textbox2 at row 4, x=1, width = interior_w - 2 ----
-    MOV AL, BL
-    SUB AL, 2                   ; textbox visible width
-
-    MOV DI, dlg_textbox2
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_TEXTBOX
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV BYTE [DI + CTRL_X], 1
-    MOV BYTE [DI + CTRL_Y], 4
-    MOV [DI + CTRL_W], AL
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_btn1
-    PUSH AX
-    MOV AX, [dlg_save_buf2]
-    MOV [DI + CTRL_TEXT], AX
-    POP AX
-    MOV BYTE [DI + CTRL_ATTR], CLR_TEXTBOX
-    MOV BYTE [DI + CTRL_FATTR], CLR_TB_FOCUS
-    MOV WORD [DI + CTRL_HANDLER], 0
-    PUSH AX
-    MOV AL, [dlg_save_maxlen2]
-    MOV [DI + CTRL_TB_MAXLEN], AL
-    POP AX
-    MOV BYTE [DI + CTRL_TB_CURPOS], 0
-    MOV BYTE [DI + CTRL_TB_SCROLL], 0
-    ; Compute initial text length from buffer2
-    PUSH SI
-    PUSH CX
-    MOV SI, [dlg_save_buf2]
-    XOR CX, CX
-.tb2_len:
-    CMP BYTE [SI], 0
-    JZ .tb2_len_done
-    INC SI
-    INC CL
-    JMP .tb2_len
-.tb2_len_done:
-    MOV [DI + CTRL_TB_LEN], CL
-    MOV [DI + CTRL_TB_CURPOS], CL   ; cursor at end of existing text
-    POP CX
-    POP SI
-
-    ; ---- Build OK button at row 6 ----
-    MOV AL, BL
-    SUB AL, DLG_BTN_OK_W + DLG_BTN_GAP + DLG_BTN_CAN_W
-    SHR AL, 1
-    MOV CH, AL                  ; CH = ok_x
-
-    MOV DI, dlg_btn1
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV [DI + CTRL_X], CH
-    MOV BYTE [DI + CTRL_Y], 6
-    MOV BYTE [DI + CTRL_W], DLG_BTN_OK_W
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], dlg_btn2
-    MOV WORD [DI + CTRL_TEXT], dlg_str_ok
-    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
-    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
-    MOV WORD [DI + CTRL_HANDLER], dlg_handler_ok
-
-    ; ---- Build Cancel button at row 6 ----
-    MOV AL, CH
-    ADD AL, DLG_BTN_OK_W + DLG_BTN_GAP
-
-    MOV DI, dlg_btn2
-    MOV BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
-    MOV BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
-    MOV [DI + CTRL_X], AL
-    MOV BYTE [DI + CTRL_Y], 6
-    MOV BYTE [DI + CTRL_W], DLG_BTN_CAN_W
-    MOV BYTE [DI + CTRL_H], 1
-    MOV WORD [DI + CTRL_NEXT], 0
-    MOV WORD [DI + CTRL_TEXT], dlg_str_cancel
-    MOV BYTE [DI + CTRL_ATTR], CLR_BTN
-    MOV BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
-    MOV WORD [DI + CTRL_HANDLER], dlg_handler_cancel
-
-    ; ---- Build window template ----
-    MOV DI, dlg_tmpl
-    MOV BYTE [DI + WIN_FLAGS], WINF_VISIBLE + WINF_BORDER + WINF_TITLE + WINF_SHADOW
-    MOV [DI + WIN_X], DL
-    MOV [DI + WIN_Y], DH
-    MOV [DI + WIN_W], BH
-    MOV BYTE [DI + WIN_H], 9
-    MOV BYTE [DI + WIN_ATTR], CLR_WIN_BG
-    MOV BYTE [DI + WIN_BATTR], CLR_WIN_BDR
-    MOV BYTE [DI + WIN_TATTR], CLR_WIN_TTL
-    PUSH AX
-    MOV AX, [dlg_save_title]
-    MOV [DI + WIN_TITLE], AX
-    POP AX
-    MOV WORD [DI + WIN_FIRST], dlg_label
-    MOV WORD [DI + WIN_FOCUS], dlg_textbox
-    MOV WORD [DI + WIN_HANDLER], 0
-    MOV BYTE [DI + WIN_ZORDER], 0
-    MOV BYTE [DI + WIN_ID], 0
-    MOV BYTE [DI + WIN_SCROLLX], 0
-    MOV BYTE [DI + WIN_SCROLLY], 0
-
-    CALL tui_dlg_run_modal
-
-    PopAll
-    MOV AL, [fw_state + FW_DLG_RESULT]
-    RET
-ENDP
 
 ; ============================================================================
 ; File Selector Dialog
@@ -1106,7 +856,12 @@ dlg_file_lb_handler: PROC
     MOV [DI + CTRL_TB_LEN], CH
     MOV [DI + CTRL_TB_CURPOS], CH
     MOV BYTE [DI + CTRL_TB_SCROLL], 0
-    MOV BYTE [fw_state + FW_DIRTY], 1
+
+    ; Close dialog — file selected
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
+    MOV AL, [fw_state + FW_MODAL_WIN]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
 
     POP DI
     POP CX
@@ -1167,35 +922,85 @@ dlg_dir_lb_handler: PROC
     RET
 ENDP
 
-; dlg_file_ok_handler - OK button: if wildcard → re-filter, else close
+; dlg_file_ok_handler - OK button with priority dispatch
+; 1. Plain filename in textbox → open file
+; 2. File list has items → open selected file
+; 3. Wildcard in textbox → re-filter, focus file list
 dlg_file_ok_handler:
     PUSH AX
     PUSH BX
     PUSH CX
     PUSH SI
+    PUSH DI                              ; DI = window struct from caller
 
+    ; ---- Test 1: plain filename in textbox? ----
     MOV BX, [dlg_save_buf]
     CMP BYTE [BX], 0
-    JZ .dfoh_done                       ; empty → ignore
-
-    ; Check if textbox contains a wildcard (* or ?)
+    JZ .dfoh_not_filename                ; empty → not a filename
     MOV SI, BX
 .dfoh_scan:
     MOV AL, [SI]
     TEST AL, AL
-    JZ .dfoh_no_wild                    ; no wildcard found → close dialog
+    JZ .dfoh_open_file                   ; end of string, no wildcard → filename
     CMP AL, '*'
-    JE .dfoh_wildcard
+    JE .dfoh_not_filename
     CMP AL, '?'
-    JE .dfoh_wildcard
+    JE .dfoh_not_filename
     INC SI
     JMP .dfoh_scan
 
-.dfoh_wildcard:
-    ; Copy textbox content to dlg_file_pattern
+.dfoh_open_file:
+    ; Plain filename → close dialog
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
+    MOV AL, [fw_state + FW_MODAL_WIN]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
+    JMP .dfoh_done
+
+.dfoh_not_filename:
+    ; ---- Test 2: if textbox is focused (Enter from textbox), re-filter ----
+    CMP WORD [DI + WIN_FOCUS], dlg_textbox
+    JE .dfoh_no_files                    ; treat as wildcard re-filter
+
+    ; ---- Test 3: file list has a selected item? ----
+    MOV SI, dlg_listbox
+    CMP BYTE [SI + CTRL_LB_COUNT], 0
+    JZ .dfoh_no_files
+
+    ; Copy selected filename to buffer, then open
+    MOV AL, [SI + CTRL_LB_SEL]
+    XOR AH, AH
+    SHL AX, 1
+    MOV BX, [SI + CTRL_LB_ITEMS]
+    ADD BX, AX
+    MOV BX, [BX]                         ; BX = filename string ptr
+    MOV DI, [dlg_save_buf]
+    MOV CL, [dlg_save_maxlen]
+.dfoh_fl_copy:
+    MOV AL, [BX]
+    MOV [DI], AL
+    TEST AL, AL
+    JZ .dfoh_fl_open
+    INC BX
+    INC DI
+    DEC CL
+    JNZ .dfoh_fl_copy
+    MOV BYTE [DI], 0
+.dfoh_fl_open:
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
+    MOV AL, [fw_state + FW_MODAL_WIN]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
+    JMP .dfoh_done
+
+.dfoh_no_files:
+    ; ---- Fallback: re-filter with wildcard ----
+    MOV BX, [dlg_save_buf]
+    CMP BYTE [BX], 0
+    JZ .dfoh_done                        ; empty textbox, no files → ignore
     MOV SI, BX
     MOV DI, dlg_file_pattern
-    MOV CX, 13                          ; max pattern length
+    MOV CX, 13
 .dfoh_cpat:
     LODSB
     MOV [DI], AL
@@ -1203,203 +1008,35 @@ dlg_file_ok_handler:
     TEST AL, AL
     JZ .dfoh_cpat_done
     LOOP .dfoh_cpat
-    MOV BYTE [DI], 0                   ; null-terminate
+    MOV BYTE [DI], 0
 .dfoh_cpat_done:
-
-    ; Re-enumerate files with new pattern
     CALL tui_file_enumerate
-
-    ; Update file listbox
-    PUSH SI
     MOV SI, dlg_listbox
     MOV AL, [dlg_file_count]
     MOV [SI + CTRL_LB_COUNT], AL
     MOV BYTE [SI + CTRL_LB_SEL], 0
     MOV BYTE [SI + CTRL_LB_SCROLL], 0
-
-    ; Update dir listbox too (dirs always use *.*)
     MOV SI, dlg_listbox2
     MOV AL, [dlg_dir_count]
     MOV [SI + CTRL_LB_COUNT], AL
     MOV BYTE [SI + CTRL_LB_SEL], 0
     MOV BYTE [SI + CTRL_LB_SCROLL], 0
-    POP SI
 
+    ; Focus file list
+    POP DI
+    MOV WORD [DI + WIN_FOCUS], dlg_listbox
     MOV BYTE [fw_state + FW_DIRTY], 1
-    JMP .dfoh_done
-
-.dfoh_no_wild:
-    ; Plain filename → close dialog
-    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_OK
-    MOV AL, [fw_state + FW_MODAL_WIN]
-    CALL tui_win_close
-    MOV BYTE [fw_state + FW_RUNNING], 0
+    JMP .dfoh_done2
 
 .dfoh_done:
-    POP SI
-    POP CX
-    POP BX
-    POP AX
-    RET
-
-; ----------------------------------------------------------------------------
-; tui_file_detect_drives - Probe drives A-Z using IOCTL, fill dlg_drive_*
-; Output: dlg_drive_count, dlg_drive_items[], dlg_drive_names[] populated
-; ----------------------------------------------------------------------------
-tui_file_detect_drives: PROC
-    PUSH AX
-    PUSH BX
-    PUSH CX
-    PUSH DX
-    PUSH DI
-
-    MOV BYTE [dlg_drive_count], 0
-    MOV DI, dlg_drive_names          ; DI = next name slot
-    MOV CX, dlg_drive_items          ; CX = next item pointer slot
-    MOV BL, 1                        ; BL = drive number (1=A, 2=B, ...)
-
-.detect_loop:
-    CMP BL, 27
-    JAE .detect_done
-
-    ; IOCTL: check if block device
-    MOV AX, 4409h
-    INT 21h
-    JC .detect_next                  ; CF=1 means drive not available
-
-    ; Drive exists — store "X:" string
-    MOV AL, BL
-    ADD AL, 'A' - 1                  ; convert 1-based to letter
-    MOV [DI], AL
-    MOV BYTE [DI + 1], ':'
-    MOV BYTE [DI + 2], 0
-
-    ; Store pointer in items array
-    PUSH BX
-    MOV BX, CX
-    MOV [BX], DI
-    POP BX
-    ADD CX, 2                        ; advance item pointer
-    ADD DI, 3                        ; advance name slot
-    INC BYTE [dlg_drive_count]
-
-.detect_next:
-    INC BL
-    JMP .detect_loop
-
-.detect_done:
     POP DI
-    POP DX
+.dfoh_done2:
+    POP SI
     POP CX
     POP BX
     POP AX
     RET
-ENDP
 
-; ----------------------------------------------------------------------------
-; _dlg_file_find_cur_drive - Find index of current drive in dlg_drive_items
-; Output: AL = index into dlg_drive_items (0-based), or 0 if not found
-; ----------------------------------------------------------------------------
-_dlg_file_find_cur_drive: PROC
-    PUSH BX
-    PUSH CX
-    PUSH SI
-
-    ; Get current drive letter
-    MOV AH, 19h
-    INT 21h                          ; AL = 0=A, 1=B, ...
-    ADD AL, 'A'                      ; AL = drive letter
-    MOV AH, AL                       ; AH = target letter
-
-    ; Linear search dlg_drive_items
-    MOV SI, dlg_drive_items
-    MOV CL, [dlg_drive_count]
-    XOR BL, BL                       ; BL = index
-
-.find_loop:
-    OR CL, CL
-    JZ .find_notfound
-    PUSH BX
-    MOV BX, [SI]                     ; BX = ptr to "X:" string
-    CMP [BX], AH                     ; compare first char
-    POP BX
-    JZ .find_found
-    ADD SI, 2
-    INC BL
-    DEC CL
-    JMP .find_loop
-
-.find_found:
-    MOV AL, BL
-    JMP .find_ret
-
-.find_notfound:
-    XOR AL, AL                       ; default to index 0
-
-.find_ret:
-    POP SI
-    POP CX
-    POP BX
-    RET
-ENDP
-
-; ----------------------------------------------------------------------------
-; dlg_file_drive_handler - Dropdown commit handler for drive selection
-; Input: SI = dropdown control, DI = dialog window
-; Switches to selected drive, chdir root, re-enumerates files
-; ----------------------------------------------------------------------------
-dlg_file_drive_handler: PROC
-    PUSH AX
-    PUSH BX
-    PUSH DX
-
-    ; Get selected drive letter from items[SEL]
-    MOV AL, [SI + CTRL_DD_SEL]
-    XOR AH, AH
-    SHL AX, 1
-    MOV BX, [SI + CTRL_DD_ITEMS]
-    ADD BX, AX
-    MOV BX, [BX]                     ; BX = ptr to "X:" string
-    MOV AL, [BX]                     ; AL = drive letter
-
-    ; Select disk: AH=0Eh, DL = drive (0-based)
-    SUB AL, 'A'
-    MOV DL, AL
-    MOV AH, 0Eh
-    INT 21h
-
-    ; Chdir to root: AH=3Bh, DX = "\"
-    MOV AH, 3Bh
-    MOV DX, dlg_file_rootdir
-    INT 21h
-
-    ; Re-enumerate files and update path
-    CALL tui_file_enumerate
-    CALL tui_file_get_path
-
-    ; Update file listbox
-    PUSH SI
-    MOV SI, dlg_listbox
-    MOV AL, [dlg_file_count]
-    MOV [SI + CTRL_LB_COUNT], AL
-    MOV BYTE [SI + CTRL_LB_SEL], 0
-    MOV BYTE [SI + CTRL_LB_SCROLL], 0
-
-    ; Update dir listbox
-    MOV SI, dlg_listbox2
-    MOV AL, [dlg_dir_count]
-    MOV [SI + CTRL_LB_COUNT], AL
-    MOV BYTE [SI + CTRL_LB_SEL], 0
-    MOV BYTE [SI + CTRL_LB_SCROLL], 0
-    POP SI
-
-    MOV BYTE [fw_state + FW_DIRTY], 1
-
-    POP DX
-    POP BX
-    POP AX
-    RET
-ENDP
 
 ; ----------------------------------------------------------------------------
 ; tui_dlg_file - File selector dialog
@@ -1424,6 +1061,16 @@ tui_dlg_file: PROC
     MOV [dlg_save_title], DI
     MOV [dlg_save_buf], BX
     MOV [dlg_save_maxlen], CL
+
+    ; Save current pattern for Cancel restore
+    PUSH SI
+    PUSH CX
+    MOV SI, dlg_file_pattern
+    MOV DI, dlg_file_pat_save
+    MOV CX, 14
+    REP MOVSB
+    POP CX
+    POP SI
 
     ; Pre-populate textbox with wildcard pattern if buffer is empty
     CMP BYTE [BX], 0
@@ -1618,7 +1265,7 @@ tui_dlg_file: PROC
     MOV [DI + WIN_TITLE], AX
     POP AX
     MOV WORD [DI + WIN_FIRST], dlg_label2
-    MOV WORD [DI + WIN_FOCUS], dlg_listbox
+    MOV WORD [DI + WIN_FOCUS], dlg_textbox
     MOV WORD [DI + WIN_HANDLER], 0
     MOV BYTE [DI + WIN_ZORDER], 0
     MOV BYTE [DI + WIN_ID], 0
@@ -1626,6 +1273,19 @@ tui_dlg_file: PROC
     MOV BYTE [DI + WIN_SCROLLY], 0
 
     CALL tui_dlg_run_modal
+
+    ; If cancelled, restore the saved wildcard pattern
+    CMP BYTE [fw_state + FW_DLG_RESULT], DLG_CANCEL
+    JNE ._dfp_no_restore
+    PUSH SI
+    PUSH CX
+    MOV SI, dlg_file_pat_save
+    MOV DI, dlg_file_pattern
+    MOV CX, 14
+    REP MOVSB
+    POP CX
+    POP SI
+._dfp_no_restore:
 
     PopAll
     MOV AL, [fw_state + FW_DLG_RESULT]

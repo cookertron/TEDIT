@@ -13,15 +13,97 @@
 ; ============================================================
 
 tui_ed_handle_key PROC
+    ; ---- Side panel intercept ----
+    CMP     BYTE [panel_visible], 0
+    JZ      .panel_not_open
+
+    ; Panel is open — intercept all keys
+    CMP     AH, KTYPE_EXTENDED
+    JNZ     .panel_normal_key
+
+    ; Extended keys while panel open
+    CMP     AL, KEY_F1
+    JE      .panel_close
+    CMP     AL, 48h                     ; Up arrow
+    JE      .panel_up
+    CMP     AL, 50h                     ; Down arrow
+    JE      .panel_down
+    JMP     .panel_eat                  ; ignore other extended keys
+
+.panel_normal_key:
+    CMP     AL, 0Dh                     ; Enter
+    JE      .panel_select
+    CMP     AL, 1Bh                     ; ESC
+    JE      .panel_close
+    JMP     .panel_eat
+
+.panel_up:
+    ; Find previous occupied slot from panel_sel
+    MOV     AL, [panel_sel]
+.pu_loop:
+    DEC     AL
+    CMP     AL, 0FFh
+    JNE     .pu_check
+    MOV     AL, MAX_DOCS - 1            ; wrap to last slot
+.pu_check:
+    CMP     AL, [panel_sel]
+    JE      .panel_eat                  ; wrapped all the way — only one slot
+    PUSH    AX
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    POP     AX
+    JZ      .pu_loop
+    MOV     [panel_sel], AL
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .panel_eat
+
+.panel_down:
+    ; Find next occupied slot from panel_sel
+    MOV     AL, [panel_sel]
+.pd_loop:
+    INC     AL
+    CMP     AL, MAX_DOCS
+    JB      .pd_check
+    XOR     AL, AL                      ; wrap to slot 0
+.pd_check:
+    CMP     AL, [panel_sel]
+    JE      .panel_eat                  ; wrapped all the way
+    PUSH    AX
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    POP     AX
+    JZ      .pd_loop
+    MOV     [panel_sel], AL
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .panel_eat
+
+.panel_select:
+    ; Switch to selected document
+    MOV     BYTE [panel_visible], 0
+    MOV     AL, [panel_sel]
+    CMP     AL, [active_doc]
+    JE      .panel_eat_dirty            ; already active — just close
+    CALL    doc_switch
+    JMP     .panel_eat_dirty
+
+.panel_close:
+    MOV     BYTE [panel_visible], 0
+.panel_eat_dirty:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+.panel_eat:
+    CLC
+    RET
+
+.panel_not_open:
     ; ---- Check key type ----
     CMP     AH, KTYPE_EXTENDED
     JZ      .extended
 
     ; ---- Normal key dispatch ----
 
-    ; Ctrl+S (ASCII 13h = 19 decimal)
+    ; Ctrl+S / Ctrl+Alt+S (ASCII 13h = 19 decimal)
     CMP     AL, 13h
-    JZ      .do_save
+    JZ      .do_save_dispatch
 
     ; Ctrl+Z / Ctrl+Shift+Z (ASCII 1Ah)
     CMP     AL, 1Ah
@@ -46,6 +128,18 @@ tui_ed_handle_key PROC
     ; Ctrl+G (ASCII 07h)
     CMP     AL, 07h
     JZ      .do_goto
+
+    ; Ctrl+N (ASCII 0Eh) — new document
+    CMP     AL, 0Eh
+    JZ      .do_new
+
+    ; Ctrl+O (ASCII 0Fh) — open file
+    CMP     AL, 0Fh
+    JZ      .do_open
+
+    ; Ctrl+W / Ctrl+Alt+W (ASCII 17h) — close document
+    CMP     AL, 17h
+    JZ      .do_close_dispatch
 
     ; Enter
     CMP     AL, KEY_ENTER
@@ -334,12 +428,31 @@ tui_ed_handle_key PROC
     RET
 
 ; ============================================================
-; Ctrl+S — save file
+; Ctrl+S / Ctrl+Alt+S dispatch
 ; ============================================================
+.do_save_dispatch:
+    TEST    BYTE [_key_modifiers], 08h  ; Alt held?
+    JNZ     .do_saveall
+    TEST    BYTE [_key_modifiers], 03h  ; Shift held?
+    JNZ     .do_saveas
+
+; Ctrl+S — save file
 .do_save:
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [undo_group_active], 0
     CALL    menu_save_handler
+    CLC
+    RET
+
+; Ctrl+Shift+S — save as
+.do_saveas:
+    CALL    menu_saveas_handler
+    CLC
+    RET
+
+; Ctrl+Alt+S — save all
+.do_saveall:
+    CALL    menu_saveall_handler
     CLC
     RET
 
@@ -423,6 +536,30 @@ tui_ed_handle_key PROC
     CLC
     RET
 
+.do_new:
+    CALL    menu_new_handler
+    CLC
+    RET
+
+.do_open:
+    CALL    menu_open_handler
+    CLC
+    RET
+
+.do_close_dispatch:
+    TEST    BYTE [_key_modifiers], 08h  ; Alt held?
+    JNZ     .do_closeall
+
+.do_close:
+    CALL    menu_close_handler
+    CLC
+    RET
+
+.do_closeall:
+    CALL    menu_closeall_handler
+    CLC
+    RET
+
 .do_paste:
     MOV     BYTE [undo_group_active], 0 ; break typing group
     CALL    ed_paste
@@ -446,6 +583,17 @@ tui_ed_handle_key PROC
 ; Extended key dispatch (navigation + Delete)
 ; ============================================================
 .extended:
+    ; ---- F1: toggle document side panel ----
+    CMP     AL, KEY_F1
+    JNE     .ext_not_f1
+    MOV     AL, [active_doc]
+    MOV     [panel_sel], AL
+    MOV     BYTE [panel_visible], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+.ext_not_f1:
+
     ; Pre-capture anchor for Shift+nav (must be before cursor moves)
     TEST    BYTE [_key_modifiers], 03h
     JZ      .ext_dispatch
@@ -535,6 +683,46 @@ tui_ed_handle_key PROC
     JNZ     .do_findprv                     ; Shift+52h → Find Prev
     JMP     .do_toggle_ovr                  ; plain 52h → Insert toggle
 .not_insert:
+
+    ; ---- Alt+1..8: switch document slot ----
+    CMP     AL, 78h
+    JB      .not_alt_num
+    CMP     AL, 7Fh
+    JA      .not_alt_num
+    SUB     AL, 78h                 ; AL = slot index (0-7)
+    CALL    doc_switch
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+.not_alt_num:
+
+    ; ---- F6 / Ctrl+PgDn: next document ----
+    CMP     AL, 40h                 ; F6
+    JE      .next_doc
+    CMP     AL, 76h                 ; Ctrl+PgDn
+    JE      .next_doc
+    JMP     .not_next_doc
+.next_doc:
+    CALL    doc_next_occupied
+    JC      .doc_nav_done           ; only one doc open
+    CALL    doc_switch
+.doc_nav_done:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+.not_next_doc:
+
+    ; ---- Ctrl+PgUp: previous document ----
+    CMP     AL, 84h
+    JNE     .not_prev_doc
+    CALL    doc_prev_occupied
+    JC      .doc_nav_done2
+    CALL    doc_switch
+.doc_nav_done2:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    CLC
+    RET
+.not_prev_doc:
 
     ; Unrecognized extended key
     STC

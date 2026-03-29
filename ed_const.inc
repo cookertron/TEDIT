@@ -20,6 +20,12 @@ ED_ATTR_NORM    EQU 1Fh         ; bright white on blue (text content)
 ED_ATTR_STAT    EQU 70h         ; black on light gray (status bar)
 ED_ATTR_SEL     EQU 71h         ; blue on light gray (selected text)
 
+; Side panel constants
+PANEL_WIDTH     EQU 18          ; total columns (│»N FILENAME.EXT*│)
+PANEL_ATTR_NORM EQU 3Fh         ; bright white on cyan (normal entry)
+PANEL_ATTR_HI   EQU 3Eh         ; yellow on cyan (highlighted entry)
+KEY_F1          EQU 3Bh         ; F1 scan code (extended key)
+
 ; ---- Piece table ----
 PT_DESC_SIZE    EQU 10
 PT_F_SOURCE     EQU 0
@@ -101,4 +107,70 @@ REPL_PERM_THRESHOLD EQU 50         ; matches above this → permanent (no undo)
 FIND_MAX_LEN    EQU 64              ; max search/replace term length (bytes)
 FIND_FLAG_CI    EQU 01h             ; bit 0: case-insensitive search
 FIND_FLAG_SEL   EQU 02h             ; bit 1: find in selection only
+
+; ---- Multi-document (Hot Seat architecture) ----
+MAX_DOCS         EQU 8              ; maximum simultaneous document slots
+
+; Document slot flags (DOC_FLAGS byte, bit field)
+DOCF_OCCUPIED    EQU 01h            ; bit 0: slot is in use
+DOCF_SWAPPED     EQU 02h            ; bit 1: document state is on disk
+DOCF_DIRTY       EQU 04h            ; bit 2: cached dirty flag (for tab display)
+DOCF_UNTITLED    EQU 08h            ; bit 3: no filename (new unsaved document)
+
+; Document table slot layout (152 bytes per slot)
+DOC_FLAGS        EQU 0              ; BYTE  - DOCF_* flags
+DOC_SLOT_ID      EQU 1              ; BYTE  - slot index (0-7)
+DOC_FILENAME     EQU 2              ; 128 bytes - full file path (null-terminated)
+DOC_SWAP_PATH    EQU 130            ; 14 bytes  - swap temp filename (null-terminated)
+DOC_CACHED_LINES EQU 144            ; WORD  - cached total_lines (for tab display)
+DOC_CACHED_LINE  EQU 146            ; WORD  - cached cur_line
+DOC_CACHED_COL   EQU 148            ; WORD  - cached cur_col
+DOC_RESERVED     EQU 150            ; WORD  - reserved (zero)
+DOC_SLOT_SIZE    EQU 152            ; total bytes per slot
+
+; Swap file constants
+SWAP_MAGIC       EQU 4554h          ; 'TE' (little-endian: 54h='T', 45h='E')
+SWAP_VERSION     EQU 2
+SWAP_HEADER_SIZE EQU 128            ; bytes in swap file header
+
+; Swap header field offsets (128-byte header)
+SWH_MAGIC        EQU 0              ; WORD  - 'TE' (4554h)
+SWH_VERSION      EQU 2              ; WORD  - version (1)
+SWH_PT_COUNT     EQU 4              ; WORD  - piece table entry count
+SWH_ADD_USED     EQU 6              ; WORD  - add buffer bytes used
+SWH_UNDO_POS     EQU 8              ; WORD  - undo write cursor
+SWH_UNDO_COUNT   EQU 10             ; WORD  - undo record count
+SWH_UNDO_SPOS    EQU 12             ; WORD  - undo_save_pos
+SWH_RD_SAVE_USED EQU 14             ; WORD  - rd_save_used count
+SWH_CUR_LINE     EQU 16             ; WORD  - cursor line
+SWH_CUR_COL      EQU 18             ; WORD  - cursor column
+SWH_TOP_LINE     EQU 20             ; WORD  - scroll top line
+SWH_LEFT_COL     EQU 22             ; WORD  - horizontal scroll offset
+SWH_DIRTY        EQU 24             ; BYTE  - dirty flag
+SWH_META_DIRTY   EQU 25             ; BYTE  - always 1 (rebuild on load)
+SWH_OVERWRITE    EQU 26             ; BYTE  - overwrite mode
+SWH_FIND_FLAGS   EQU 27             ; BYTE  - find flags
+SWH_TAB_WIDTH    EQU 28             ; WORD  - tab width
+SWH_TAB_MASK     EQU 30             ; WORD  - tab mask
+SWH_TOTAL_LINES  EQU 32             ; WORD  - total lines (informational)
+SWH_ORIG_COUNT   EQU 34             ; WORD  - orig_count (for swap-in alloc)
+SWH_DOC_CWD      EQU 36             ; 68 bytes - document's CWD "D:\path\0"
+SWH_DOC_CWD_SIZE EQU 68
+SWH_RESERVED     EQU 104            ; 24 bytes reserved (zero-filled)
+
+; ---- Multi-doc constant verification ----
+ASSERT DOC_SLOT_SIZE                         ; must be nonzero
+ASSERT DOC_SLOT_SIZE, 152                    ; exact size match
+ASSERT MAX_DOCS * DOC_SLOT_SIZE, 1216        ; total table size
+ASSERT DOC_SWAP_PATH, 130                    ; offset sanity
+ASSERT DOC_CACHED_LINES, 144                 ; offset sanity
+ASSERT SWAP_HEADER_SIZE, 128
+ASSERT SWH_DOC_CWD + SWH_DOC_CWD_SIZE, 104  ; CWD ends at reserved
+ASSERT SWH_RESERVED + 24, SWAP_HEADER_SIZE   ; reserved fills to 128
+ASSERT SWH_MAGIC, 0
+ASSERT SWH_PT_COUNT, 4
+ASSERT SWH_ORIG_COUNT, 34
+PRINT "DOC_SLOT_SIZE = ", DOC_SLOT_SIZE
+PRINT "DOC_TABLE_TOTAL = ", MAX_DOCS * DOC_SLOT_SIZE
+PRINT "SWAP_HEADER_SIZE = ", SWAP_HEADER_SIZE
 

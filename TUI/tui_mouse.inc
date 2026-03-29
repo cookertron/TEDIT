@@ -130,37 +130,6 @@ tui_mouse_poll: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
-; tui_mouse_draw_cursor - Overlay cursor on shadow_buf (invert attr)
-; Called after compose, before blit.
-; ----------------------------------------------------------------------------
-tui_mouse_draw_cursor: PROC
-    PUSH AX
-    PUSH CX
-    PUSH DI
-    PUSH DX
-
-    TEST BYTE [mouse_state + MS_FLAGS], MSF_ENABLED
-    JZ .done
-
-    MOV DH, [mouse_state + MS_ROW]
-    MOV DL, [mouse_state + MS_COL]
-    CALL calc_vram_offset   ; DI = shadow_buf address
-
-    ; Read attribute byte, swap nibbles (FG <-> BG)
-    MOV AL, [DI + 1]
-    MOV CL, 4
-    ROL AL, CL
-    MOV [DI + 1], AL
-
-.done:
-    POP DX
-    POP DI
-    POP CX
-    POP AX
-    RET
-ENDP
-
-; ----------------------------------------------------------------------------
 ; tui_mouse_dispatch - Handle mouse state changes
 ; Input: AL = change flags from tui_mouse_poll
 ; ----------------------------------------------------------------------------
@@ -787,22 +756,14 @@ tui_mouse_on_press: PROC
     JZ .press_button
     CMP BYTE [BX + CTRL_TYPE], CTYPE_CHECKBOX
     JZ .press_checkbox
-    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
-    JZ .press_radio
     CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTBOX
     JZ .press_textbox
-    CMP BYTE [BX + CTRL_TYPE], CTYPE_DROPDOWN
-    JZ .press_dropdown
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
     JZ .press_listbox
-    CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTVIEW
-    JZ .go_press_textview
     CMP BYTE [BX + CTRL_TYPE], CTYPE_EDITOR
     JZ .go_press_editor
     JMP .press_done
 
-.go_press_textview:
-    JMP .press_textview
 .go_press_editor:
     JMP .press_editor
 
@@ -817,17 +778,6 @@ tui_mouse_on_press: PROC
     MOV AL, [BX + CTRL_CB_STATE]
     XOR AL, 1
     MOV [BX + CTRL_CB_STATE], AL
-    ; Call handler if any
-    CALL tui_mouse_call_handler
-    JMP .press_done
-
-.press_radio:
-    ; Select this radio (deselect others in group)
-    CMP BYTE [BX + CTRL_CB_STATE], 1
-    JNZ .press_radio_do
-    JMP .press_done          ; already selected
-.press_radio_do:
-    CALL tui_radio_group_select
     ; Call handler if any
     CALL tui_mouse_call_handler
     JMP .press_done
@@ -852,11 +802,6 @@ tui_mouse_on_press: PROC
 .ptb_pos_ok:
     MOV [BX + CTRL_TB_CURPOS], AH
     CALL tui_tb_ensure_visible
-    JMP .press_done
-
-.press_dropdown:
-    ; Open dropdown popup
-    CALL tui_dd_open
     JMP .press_done
 
 .press_listbox:
@@ -966,246 +911,43 @@ tui_mouse_on_press: PROC
 .plb_ok:
     MOV [BX + CTRL_LB_SEL], AH
     CALL tui_lb_ensure_visible
+
+    ; Double-click detection: same control + same item + within 9 ticks
+    PUSH DX
+    CMP [mouse_state + MS_LB_CTRL], BX
+    JNE .plb_single
+    CMP AH, [mouse_state + MS_LB_SEL]
+    JNE .plb_single
+    ; Read BIOS tick counter
+    PUSH ES
+    PUSH BX
+    MOV BX, 0040h
+    MOV ES, BX
+    MOV DX, ES:[006Ch]
+    POP BX
+    POP ES
+    SUB DX, [mouse_state + MS_LB_TICK]
+    CMP DX, 9
+    JA .plb_single
+    ; Double click — clear state and call handler
+    MOV WORD [mouse_state + MS_LB_CTRL], 0
+    POP DX
     CALL tui_mouse_call_handler
     JMP .press_done
 
-.press_textview:
-    ; Check vbar: click on rightmost col when COUNT > eff_h
-    PUSH CX
-
-    ; Compute needs_vbar and needs_hbar (same auto-hide logic as draw)
-    XOR CH, CH                  ; CH = needs_vbar
-    MOV AL, [BX + CTRL_TV_COUNT]
-    CMP AL, [BX + CTRL_H]
-    JBE .ptv_nvb1
-    MOV CH, 1
-.ptv_nvb1:
-    MOV CL, [BX + CTRL_W]
-    SUB CL, CH                  ; CL = eff_w
-    XOR AH, AH                  ; AH = needs_hbar
-    MOV AL, [BX + CTRL_TV_MAXLEN]
-    CMP AL, CL
-    JBE .ptv_nhb1
-    MOV AH, 1
-.ptv_nhb1:
-    ; eff_h = CTRL_H - needs_hbar
-    MOV AL, [BX + CTRL_H]
-    SUB AL, AH
-    ; Recheck: if hbar and not vbar, does COUNT > eff_h?
-    OR AH, AH
-    JZ .ptv_ah_done
-    OR CH, CH
-    JNZ .ptv_ah_done
-    PUSH CX
-    MOV CL, [BX + CTRL_TV_COUNT]
-    CMP CL, AL
-    POP CX
-    JBE .ptv_ah_done
-    MOV CH, 1
-    MOV CL, [BX + CTRL_W]
-    DEC CL                      ; eff_w = CTRL_W - 1
-.ptv_ah_done:
-    ; CH=needs_vbar, AH=needs_hbar, CL=eff_w, AL=eff_h
-    ; Save eff_h and eff_w for later
-    PUSH AX                     ; AL=eff_h, AH=needs_hbar
-
-    ; Compute abs origin of control
-    MOV AL, [SI + WIN_X]
-    TEST BYTE [SI + WIN_FLAGS], WINF_BORDER
-    JZ .ptv_no_bdr_x
-    INC AL
-.ptv_no_bdr_x:
-    ADD AL, [BX + CTRL_X]      ; AL = abs left col
-
-    ; Check vbar click: col == abs_x + CTRL_W - 1, and needs_vbar
-    OR CH, CH
-    JNZ .ptv_has_vbar
-    JMP .ptv_no_vbar_click
-.ptv_has_vbar:
-    PUSH AX
-    MOV AH, AL
-    ADD AH, [BX + CTRL_W]
-    DEC AH                      ; AH = abs vbar col
-    CMP DL, AH
-    POP AX
-    JNZ .ptv_no_vbar_click
-
-    ; Click on vbar column - compute relative row
-    MOV AL, [SI + WIN_Y]
-    TEST BYTE [SI + WIN_FLAGS], WINF_BORDER
-    JZ .ptv_vb_no_bdr
-    INC AL
-.ptv_vb_no_bdr:
-    ADD AL, [BX + CTRL_Y]      ; AL = abs top row
-    MOV AH, DH
-    SUB AH, AL                  ; AH = rel row in vbar
-    POP CX                      ; CL = eff_h (was AL pushed earlier), CH = needs_hbar
-    PUSH CX
-
-    ; Range check: if rel_row >= eff_h, click is on corner cell, not vbar
-    CMP AH, CL
-    JAE .ptv_no_vbar_click
-
-    ; 0 = up arrow, eff_h-1 = down arrow
-    CMP AH, 0
-    JZ .ptv_vb_up
-    DEC CL                      ; CL = eff_h - 1
-    CMP AH, CL
-    JZ .ptv_vb_down
-
-    ; Track/thumb click
-    INC CL                      ; restore CL = eff_h
-    ; AH = rel_row still valid, set AL/CL/CH
-    MOV CH, [BX + CTRL_TV_COUNT]
-    MOV AL, [BX + CTRL_TV_SCROLL]
-    ; AH = rel_row preserved
-    CALL tui_sb_vbar_click_generic
-    MOV [BX + CTRL_TV_SCROLL], AL
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP AX
-    POP CX
-    JMP .press_done
-
-.ptv_vb_up:
-    CMP BYTE [BX + CTRL_TV_SCROLL], 0
-    JZ .ptv_vb_up_done
-    DEC BYTE [BX + CTRL_TV_SCROLL]
-.ptv_vb_up_done:
-    MOV [mouse_state + MS_SB_CTRL], BX
-    MOV BYTE [mouse_state + MS_SB_DIR], 0
-    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP AX
-    POP CX
-    JMP .press_done
-
-.ptv_vb_down:
-    MOV AL, [BX + CTRL_TV_COUNT]
-    POP CX                      ; CL = eff_h
-    PUSH CX
-    SUB AL, CL                  ; AL = max_scroll
-    CMP [BX + CTRL_TV_SCROLL], AL
-    JAE .ptv_vb_dn_done
-    INC BYTE [BX + CTRL_TV_SCROLL]
-.ptv_vb_dn_done:
-    MOV [mouse_state + MS_SB_CTRL], BX
-    MOV BYTE [mouse_state + MS_SB_DIR], 1
-    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP AX
-    POP CX
-    JMP .press_done
-
-.ptv_no_vbar_click:
-    ; Check hbar click: row == abs_y + CTRL_H - 1, and needs_hbar
-    POP AX                      ; AL=eff_h, AH=needs_hbar
-    OR AH, AH
-    JNZ .ptv_hbar_check
-    JMP .ptv_no_hbar_click
-.ptv_hbar_check:
-
-    PUSH AX
-    MOV AL, [SI + WIN_Y]
-    TEST BYTE [SI + WIN_FLAGS], WINF_BORDER
-    JZ .ptv_hb_no_bdr
-    INC AL
-.ptv_hb_no_bdr:
-    ADD AL, [BX + CTRL_Y]
-    ADD AL, [BX + CTRL_H]
-    DEC AL                      ; AL = abs hbar row
-    CMP DH, AL
-    POP AX
-    JNZ .ptv_no_hbar_click
-
-    ; Click on hbar row - compute relative col
-    PUSH AX                     ; save eff_h/needs_hbar
-    MOV AL, [SI + WIN_X]
-    TEST BYTE [SI + WIN_FLAGS], WINF_BORDER
-    JZ .ptv_hb_no_bdr2
-    INC AL
-.ptv_hb_no_bdr2:
-    ADD AL, [BX + CTRL_X]      ; AL = abs left col of hbar
-    MOV AH, DL
-    SUB AH, AL                  ; AH = rel col in hbar
-    POP CX                      ; CL = eff_h (not needed), CL reuse
-
-    ; hbar width = eff_w = CTRL_W - needs_vbar
-    MOV CL, [BX + CTRL_W]
-    SUB CL, CH                  ; CL = hbar_width (eff_w)
-
-    ; Range check: if rel_col >= hbar_width, not on hbar (corner cell)
-    CMP AH, CL
-    JAE .ptv_no_hbar_click
-
-    ; 0 = left arrow, eff_w-1 = right arrow
-    CMP AH, 0
-    JZ .ptv_hb_left
-    PUSH CX
-    DEC CL
-    CMP AH, CL
-    POP CX
-    JZ .ptv_hb_right
-
-    ; Track/thumb click for horizontal
-    ; AH = rel_col still valid, set AL/CL/CH
-    MOV CH, [BX + CTRL_TV_MAXLEN]  ; total = max_content_w
-    MOV AL, [BX + CTRL_TV_SCROLLX]
-    ; CL = bar_width (eff_w), AH = rel_col preserved
-    CALL tui_sb_hbar_click_generic
-    MOV [BX + CTRL_TV_SCROLLX], AL
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP CX
-    JMP .press_done
-
-.ptv_hb_left:
-    CMP BYTE [BX + CTRL_TV_SCROLLX], 0
-    JZ .ptv_hb_l_done
-    DEC BYTE [BX + CTRL_TV_SCROLLX]
-.ptv_hb_l_done:
-    MOV [mouse_state + MS_SB_CTRL], BX
-    MOV BYTE [mouse_state + MS_SB_DIR], 2       ; 2 = left
-    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP CX
-    JMP .press_done
-
-.ptv_hb_right:
-    MOV AL, [BX + CTRL_TV_MAXLEN]
-    MOV AH, [BX + CTRL_W]
-    SUB AH, CH                  ; AH = eff_w
-    SUB AL, AH                  ; AL = max_scroll_x
-    CMP [BX + CTRL_TV_SCROLLX], AL
-    JAE .ptv_hb_r_done
-    INC BYTE [BX + CTRL_TV_SCROLLX]
-.ptv_hb_r_done:
-    MOV [mouse_state + MS_SB_CTRL], BX
-    MOV BYTE [mouse_state + MS_SB_DIR], 3       ; 3 = right
-    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_ARROW
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    POP CX
-    JMP .press_done
-
-.ptv_no_hbar_click:
-    POP CX
-
-    ; Normal content click: curline = SCROLL + (click_row - ctrl_abs_row)
-    MOV AL, [SI + WIN_Y]
-    TEST BYTE [SI + WIN_FLAGS], WINF_BORDER
-    JZ .ptv_no_bdr
-    INC AL
-.ptv_no_bdr:
-    ADD AL, [BX + CTRL_Y]       ; AL = abs top row of textview
-    MOV AH, DH                  ; AH = click row
-    SUB AH, AL                  ; AH = relative row within textview
-    ADD AH, [BX + CTRL_TV_SCROLL] ; AH = line index
-    ; Clamp: if AH >= COUNT, AH = COUNT-1
-    CMP AH, [BX + CTRL_TV_COUNT]
-    JB .ptv_ok
-    MOV AH, [BX + CTRL_TV_COUNT]
-    DEC AH
-.ptv_ok:
-    MOV [BX + CTRL_TV_CURLINE], AH
-    CALL tui_tv_ensure_visible
+.plb_single:
+    ; Record click for future double-click check
+    MOV [mouse_state + MS_LB_CTRL], BX
+    MOV [mouse_state + MS_LB_SEL], AH
+    PUSH ES
+    PUSH BX
+    MOV BX, 0040h
+    MOV ES, BX
+    MOV DX, ES:[006Ch]
+    POP BX
+    POP ES
+    MOV [mouse_state + MS_LB_TICK], DX
+    POP DX
     JMP .press_done
 
 .press_editor:
@@ -1806,118 +1548,9 @@ tui_sb_vbar_click_generic: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
-; tui_sb_hbar_click_generic - Handle click on hbar track/thumb area
-; Input:  AH = relative col within bar (1..bar_width-2, excluding arrows)
-;         AL = current scroll_x, CL = bar_width (= eff_w),
-;         CH = total_w (max_content_w)
-;         BX = control ptr, SI = window ptr
-; Output: AL = new scroll_x value
-; Clobbers: AH, CX, DX
-; Uses sb_scratch for thumb math.
-; ----------------------------------------------------------------------------
-tui_sb_hbar_click_generic: PROC
-    PUSH DI
-    PUSH BP
-
-    MOV [sb_scratch], AL        ; [0] = scroll_x
-    MOV [sb_scratch + 1], CL   ; [1] = visible_w (= bar_width)
-    MOV [sb_scratch + 2], CH   ; [2] = total_w
-
-    MOV DI, CX
-    PUSH BX                     ; save control ptr before corrupting BL
-    MOV BL, CL
-    SUB BL, 2                   ; BL = track_len
-
-    MOV AL, [sb_scratch + 1]
-    MOV BP, AX                  ; save AH (click_rel_col)
-
-    MUL BL
-    MOV CL, [sb_scratch + 2]
-    XOR CH, CH
-    XOR DX, DX
-    DIV CX
-    OR AL, AL
-    JNZ .shc_ts_ok
-    MOV AL, 1
-.shc_ts_ok:
-    CMP AL, BL
-    JBE .shc_ts_clamp
-    MOV AL, BL
-.shc_ts_clamp:
-    MOV [sb_scratch + 3], AL   ; thumb_size
-
-    MOV CL, [sb_scratch + 2]
-    SUB CL, [sb_scratch + 1]
-    XOR CH, CH
-    OR CL, CL
-    JZ .shc_thumb_at_zero
-
-    MOV AH, BL
-    SUB AH, [sb_scratch + 3]
-    MOV AL, [sb_scratch]
-    MUL AH
-    XOR DX, DX
-    DIV CX
-    JMP .shc_have_tpos
-
-.shc_thumb_at_zero:
-    XOR AL, AL
-
-.shc_have_tpos:
-    ; AL = thumb_pos, BP = saved AX (low=visible_w, high=click_rel_col)
-    MOV CX, BP
-    MOV AH, CH                  ; AH = click_rel_col
-    DEC AH                      ; 0-based
-
-    CMP AH, AL
-    JB .shc_page_left
-    MOV CL, AL
-    ADD CL, [sb_scratch + 3]
-    CMP AH, CL
-    JAE .shc_page_right
-
-    ; ON thumb → start drag
-    SUB AH, AL
-    POP BX
-    MOV [mouse_state + MS_SB_CTRL], BX
-    MOV BYTE [mouse_state + MS_SB_DIR], 1   ; horizontal
-    MOV [mouse_state + MS_SB_OFFSET], AH
-    OR BYTE [mouse_state + MS_FLAGS], MSF_SB_DRAG
-    MOV AL, [sb_scratch]
-    JMP .shc_ret_no_pop
-
-.shc_page_left:
-    POP BX
-    MOV AL, [sb_scratch]
-    MOV AH, [sb_scratch + 1]
-    CMP AL, AH
-    JAE .shc_pgl_sub
-    XOR AL, AL
-    JMP .shc_ret_no_pop
-.shc_pgl_sub:
-    SUB AL, AH
-    JMP .shc_ret_no_pop
-
-.shc_page_right:
-    POP BX
-    MOV AL, [sb_scratch]
-    ADD AL, [sb_scratch + 1]
-    MOV AH, [sb_scratch + 2]
-    SUB AH, [sb_scratch + 1]
-    CMP AL, AH
-    JBE .shc_ret_no_pop
-    MOV AL, AH
-
-.shc_ret_no_pop:
-    POP BP
-    POP DI
-    RET
-ENDP
-
-; ----------------------------------------------------------------------------
 ; tui_mouse_on_sb_arrow - Repeat scroll bar arrow action each frame
 ; Called while MSF_SB_ARROW is active. MS_SB_CTRL = control, MS_SB_DIR = dir
-; Direction: 0=up, 1=down, 2=left, 3=right
+; Direction: 0=up, 1=down
 ; ----------------------------------------------------------------------------
 tui_mouse_on_sb_arrow: PROC
     PUSH AX
@@ -1929,8 +1562,6 @@ tui_mouse_on_sb_arrow: PROC
 
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
     JZ .sba_listbox
-    CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTVIEW
-    JZ .sba_textview
     CMP BYTE [BX + CTRL_TYPE], CTYPE_EDITOR
     JZ .sba_editor
     JMP .sba_done
@@ -1949,47 +1580,6 @@ tui_mouse_on_sb_arrow: PROC
     CMP [BX + CTRL_LB_SCROLL], AL
     JAE .sba_done
     INC BYTE [BX + CTRL_LB_SCROLL]
-    JMP .sba_dirty
-
-.sba_textview:
-    MOV AL, [mouse_state + MS_SB_DIR]
-    CMP AL, 2
-    JAE .sba_tv_horiz
-    ; Vertical: 0=up, 1=down
-    OR AL, AL
-    JNZ .sba_tv_vdown
-    CMP BYTE [BX + CTRL_TV_SCROLL], 0
-    JZ .sba_done
-    DEC BYTE [BX + CTRL_TV_SCROLL]
-    JMP .sba_dirty
-.sba_tv_vdown:
-    PUSH CX
-    MOV AL, [BX + CTRL_TV_COUNT]
-    MOV CL, [BX + CTRL_H]
-    DEC CL                          ; eff_h = H - 1 (hbar)
-    SUB AL, CL
-    CMP [BX + CTRL_TV_SCROLL], AL
-    POP CX
-    JAE .sba_done
-    INC BYTE [BX + CTRL_TV_SCROLL]
-    JMP .sba_dirty
-.sba_tv_horiz:
-    CMP AL, 2
-    JNZ .sba_tv_hright
-    CMP BYTE [BX + CTRL_TV_SCROLLX], 0
-    JZ .sba_done
-    DEC BYTE [BX + CTRL_TV_SCROLLX]
-    JMP .sba_dirty
-.sba_tv_hright:
-    PUSH CX
-    MOV AL, [BX + CTRL_TV_MAXLEN]
-    MOV CL, [BX + CTRL_W]
-    DEC CL                          ; eff_w = W - 1 (vbar)
-    SUB AL, CL
-    CMP [BX + CTRL_TV_SCROLLX], AL
-    POP CX
-    JAE .sba_done
-    INC BYTE [BX + CTRL_TV_SCROLLX]
     JMP .sba_dirty
 
 .sba_editor:
@@ -2159,9 +1749,7 @@ tui_mouse_on_sb_drag: PROC
     ADD DH, [BX + CTRL_Y]
     ; DL = abs left col, DH = abs top row
 
-    CMP BYTE [mouse_state + MS_SB_DIR], 0
-    JZ .sbd_vertical
-    JMP .sbd_horizontal
+    ; Only vertical drag (horizontal was textview-only, now removed)
 .sbd_vertical:
 
     ; --- Vertical drag ---
@@ -2175,10 +1763,6 @@ tui_mouse_on_sb_drag: PROC
     ; Determine control type for field offsets
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
     JZ .sbd_v_listbox
-    CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTVIEW
-    JNZ .sbd_not_tv
-    JMP .sbd_v_textview
-.sbd_not_tv:
     CMP BYTE [BX + CTRL_TYPE], CTYPE_EDITOR
     JNZ .sbd_not_ed
     JMP .sbd_v_editor
@@ -2269,79 +1853,6 @@ tui_mouse_on_sb_drag: PROC
     POP DX                      ; balance stack
     JMP .sbd_done
 
-.sbd_v_textview:
-    ; For textview: compute eff_h via auto-hide, same as draw
-    ; Simplified: check needs_hbar
-    PUSH DX
-
-    MOV CL, [BX + CTRL_H]      ; start with CTRL_H
-    ; Check needs_hbar: MAXLEN > CTRL_W - 1 (assumes vbar present since we're dragging it)
-    MOV AL, [BX + CTRL_TV_MAXLEN]
-    MOV AH, [BX + CTRL_W]
-    DEC AH                      ; eff_w with vbar
-    CMP AL, AH
-    JBE .sbd_vt_no_hbar
-    DEC CL                      ; eff_h = CTRL_H - 1 (hbar present)
-.sbd_vt_no_hbar:
-    ; CL = eff_h = bar_height for vbar
-    MOV CH, [BX + CTRL_TV_COUNT]
-
-    ; Same math as listbox vbar drag
-    MOV [sb_scratch], CL
-    MOV [sb_scratch + 1], CH
-    MOV AL, CL
-    SUB AL, 2                   ; AL = track_len
-    MOV [sb_scratch + 2], AL
-
-    PUSH AX
-    MOV AL, CL
-    MUL BYTE [sb_scratch + 2]
-    MOV CL, [sb_scratch + 1]
-    XOR CH, CH
-    XOR DX, DX
-    DIV CX
-    OR AL, AL
-    JNZ .sbd_vt_ts_ok
-    MOV AL, 1
-.sbd_vt_ts_ok:
-    MOV [sb_scratch + 3], AL
-    POP AX
-
-    SUB AL, [sb_scratch + 3]
-    OR AL, AL
-    JZ .sbd_vt_no_range
-
-    POP DX
-    MOV AH, [mouse_state + MS_ROW]
-    SUB AH, DH
-    DEC AH
-    SUB AH, [mouse_state + MS_SB_OFFSET]
-
-    CMP AH, 80h
-    JB .sbd_vt_not_neg
-    XOR AH, AH
-.sbd_vt_not_neg:
-    CMP AH, AL
-    JBE .sbd_vt_rel_ok
-    MOV AH, AL
-.sbd_vt_rel_ok:
-    PUSH AX
-    MOV AL, AH
-    MOV CL, [sb_scratch + 1]
-    SUB CL, [sb_scratch]
-    MUL CL
-    POP CX
-    XOR CH, CH
-    XOR DX, DX
-    DIV CX
-    MOV [BX + CTRL_TV_SCROLL], AL
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    JMP .sbd_done
-
-.sbd_vt_no_range:
-    POP DX
-    JMP .sbd_done
-
 .sbd_v_editor:
     ; --- Vertical drag for editor control ---
     ; BX = control ptr, DH = abs_top_row
@@ -2419,69 +1930,6 @@ tui_mouse_on_sb_drag: PROC
 .sbd_ve_no_range:
     POP DI
     JMP .sbd_done
-
-.sbd_horizontal:
-    ; --- Horizontal drag (textview only) ---
-    ; bar is at bottom row, width = eff_w = CTRL_W - 1 (vbar always present when hbar is)
-    PUSH DX
-
-    MOV CL, [BX + CTRL_W]
-    DEC CL                      ; CL = eff_w = bar_width
-    MOV CH, [BX + CTRL_TV_MAXLEN] ; total_w
-
-    MOV [sb_scratch], CL
-    MOV [sb_scratch + 1], CH
-    MOV AL, CL
-    SUB AL, 2
-    MOV [sb_scratch + 2], AL   ; track_len
-
-    PUSH AX
-    MOV AL, CL
-    MUL BYTE [sb_scratch + 2]
-    MOV CL, [sb_scratch + 1]
-    XOR CH, CH
-    XOR DX, DX
-    DIV CX
-    OR AL, AL
-    JNZ .sbd_h_ts_ok
-    MOV AL, 1
-.sbd_h_ts_ok:
-    MOV [sb_scratch + 3], AL
-    POP AX
-
-    SUB AL, [sb_scratch + 3]
-    OR AL, AL
-    JZ .sbd_h_no_range
-
-    POP DX
-    MOV AH, [mouse_state + MS_COL]
-    SUB AH, DL
-    DEC AH
-    SUB AH, [mouse_state + MS_SB_OFFSET]
-
-    CMP AH, 80h
-    JB .sbd_h_not_neg
-    XOR AH, AH
-.sbd_h_not_neg:
-    CMP AH, AL
-    JBE .sbd_h_rel_ok
-    MOV AH, AL
-.sbd_h_rel_ok:
-    PUSH AX
-    MOV AL, AH
-    MOV CL, [sb_scratch + 1]
-    SUB CL, [sb_scratch]
-    MUL CL
-    POP CX
-    XOR CH, CH
-    XOR DX, DX
-    DIV CX
-    MOV [BX + CTRL_TV_SCROLLX], AL
-    MOV BYTE [fw_state + FW_DIRTY], 1
-    JMP .sbd_done
-
-.sbd_h_no_range:
-    POP DX
 
 .sbd_done:
     POP BP

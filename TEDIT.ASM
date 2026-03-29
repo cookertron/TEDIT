@@ -29,7 +29,7 @@ INCLUDE TUI\tui.inc
 s_usage:     DB 'Usage: TEDIT <filename>', 0Dh, 0Ah, '$'
 s_nofile:    DB 'Error: cannot open file', 0Dh, 0Ah, '$'
 s_nomem:     DB 'Error: out of memory', 0Dh, 0Ah, '$'
-s_err_mda:   DB 'Error: MDA display not supported (requires CGA/EGA/VGA)', 0Dh, 0Ah, '$'
+s_err_mda:   DB 'Error: Requires 80-column text mode (CGA/EGA/VGA)', 0Dh, 0Ah, '$'
 
 ; ---- Status bar strings (null-terminated, for shadow_buf writing) ----
 s_stat_ln:   DB ' Line ', 0
@@ -84,6 +84,12 @@ INCLUDE ed_clip.inc
 INCLUDE ed_find.inc
 
 ; ============================================================
+; Editor Multi-Document Support
+; ============================================================
+
+INCLUDE ed_multidoc.inc
+
+; ============================================================
 ; Editor Rendering
 ; ============================================================
 
@@ -106,15 +112,41 @@ INCLUDE ed_mouse.inc
 ; ============================================================
 
 m_str_file:     DB 'File', 0
+m_str_new:      DB 'New', 0
 m_str_open:     DB 'Open...', 0
+m_str_close:    DB 'Close', 0
 m_str_save:     DB 'Save', 0
 m_str_saveas:   DB 'Save As...', 0
+m_str_closeall: DB 'Close All', 0
+m_str_saveall:  DB 'Save All', 0
+m_str_loadprj:  DB 'Load Project...', 0
+m_str_saveprj:  DB 'Save Project...', 0
+m_str_lprj_ttl: DB 'Load Project', 0
+m_str_sprj_ttl: DB 'Save Project', 0
+s_prj_pattern:  DB '*.PRJ', 0
+s_prj_crlf:     DB 0Dh, 0Ah
+s_err_prj_open: DB 'Cannot open project file.', 0
+s_prj_truncated: DB 'Project exceeds 8 file limit.', 0
+m_str_shell:    DB 'Shell to DOS', 0
+s_shell_msg:    DB 'Type EXIT to return to TEDIT.', 0Dh, 0Ah, '$'
+s_comspec_key:  DB 'COMSPEC='
+S_COMSPEC_LEN   EQU 8
+s_err_no_comspec: DB 'COMSPEC not found.', 0
 m_str_quit:     DB 'Quit', 0
+m_str_acc_cn:   DB 'Ctrl+N', 0
+m_str_acc_co:   DB 'Ctrl+O', 0
+m_str_acc_cw:   DB 'Ctrl+W', 0
 m_str_acc_cs:   DB 'Ctrl+S', 0
+m_str_acc_css:  DB 'Ctrl+Shift+S', 0
+m_str_acc_caw:  DB 'Ctrl+Alt+W', 0
+m_str_acc_cas:  DB 'Ctrl+Alt+S', 0
 m_str_acc_aq:   DB 'Alt+Q', 0
+m_str_view:      DB 'View', 0
+m_str_doclist:   DB 'Document List', 0
+m_str_acc_f1:    DB 'F1', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.57', 0
+m_str_about_1:   DB 'TEDIT v0.60', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -122,6 +154,8 @@ m_str_about_5:   DB 'github: cookertron/TEDIT', 0
 m_str_open_ttl:  DB 'Open File', 0
 m_str_save_ttl:  DB 'Save As', 0
 m_str_save_pr:   DB 'Filename:', 0
+m_str_overwrite: DB 'File exists. Overwrite?', 0
+m_str_save_warn: DB 'Save As', 0
 m_str_quit_ttl:  DB 'Quit', 0
 m_str_quit_ask:  DB 'Save changes before closing?', 0
 m_str_error:     DB 'Error', 0
@@ -141,6 +175,10 @@ s_err_file_trunc:  DB 'Warning: File exceeds 32MB limit.', 0
 s_err_copy_big:    DB 'Selection exceeds copy limit.', 0
 s_err_paste_pt:    DB 'Paste failed: table full.', 0
 s_err_redo_noop:   DB 'Redo not available for paste.', 0
+s_err_swap_out:    DB 'Cannot swap document to disk.', 0
+s_err_swap_in:     DB 'Cannot load target document.', 0
+s_err_max_docs:    DB 'Maximum 8 documents open.', 0
+s_quit_unsaved:    DB 'Other documents have unsaved changes.', 0
 
 ; ---- Find dialog strings ----
 s_find_title:        DB 'Find', 0
@@ -205,9 +243,33 @@ m_str_acc_f5:    DB 'F5', 0
 ; ============================================================
 
 m_file_entries:
+    ; New
+    DW m_str_new, menu_new_handler
+    DB 0, 'N'
+    DW m_str_acc_cn
+    DB 0, 0
+
     ; Open...
     DW m_str_open, menu_open_handler
     DB 0, 'O'
+    DW m_str_acc_co
+    DB 0, 0
+
+    ; Close
+    DW m_str_close, menu_close_handler
+    DB 0, 'C'
+    DW m_str_acc_cw
+    DB 0, 0
+
+    ; Close All
+    DW m_str_closeall, menu_closeall_handler
+    DB 6, 'A'
+    DW m_str_acc_caw
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
     DW 0
     DB 0, 0
 
@@ -220,6 +282,42 @@ m_file_entries:
     ; Save As...
     DW m_str_saveas, menu_saveas_handler
     DB 5, 'A'
+    DW m_str_acc_css
+    DB 0, 0
+
+    ; Save All
+    DW m_str_saveall, menu_saveall_handler
+    DB 5, 'L'
+    DW m_str_acc_cas
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
+    ; Load Project...
+    DW m_str_loadprj, menu_loadprj_handler
+    DB 3, 'D'
+    DW 0
+    DB 0, 0
+
+    ; Save Project...
+    DW m_str_saveprj, menu_saveprj_handler
+    DB 5, 'P'
+    DW 0
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
+    ; Shell to DOS
+    DW m_str_shell, menu_shell_handler
+    DB 0, 'H'
     DW 0
     DB 0, 0
 
@@ -326,6 +424,13 @@ m_edit_entries:
     DW 0
     DB 0, 0
 
+m_view_entries:
+    ; Document List
+    DW m_str_doclist, menu_doclist_handler
+    DB 0, 'D'
+    DW m_str_acc_f1
+    DB 0, 0
+
 m_info_entries:
     DW m_str_about, menu_about_handler
     DB 0, 'A'
@@ -336,7 +441,7 @@ m_menu_items:
     DW m_str_file
     DB 0, 6                         ; MI_X=0, MI_W=6
     DW m_file_entries
-    DB 5, 18                        ; MI_ECOUNT=5 (4+1 divider), MI_DDW=18
+    DB 15, 28                       ; MI_ECOUNT=15 (11+4 dividers), MI_DDW=28
     DB 0, 21h                       ; MI_HOTIDX=0, MI_ALTKEY=21h (Alt+F)
 
     ; Edit menu (NEW)
@@ -346,14 +451,21 @@ m_menu_items:
     DB 15, 24                       ; MI_ECOUNT=15 (12+3 dividers), MI_DDW=24
     DB 0, 12h                       ; MI_HOTIDX=0 ('E'), MI_ALTKEY=12h (Alt+E)
 
-    DW m_str_info
+    ; View menu
+    DW m_str_view
     DB 12, 6                        ; MI_X=12, MI_W=6
+    DW m_view_entries
+    DB 1, 20                        ; MI_ECOUNT=1, MI_DDW=20
+    DB 0, 2Fh                       ; MI_HOTIDX=0 ('V'), MI_ALTKEY=2Fh (Alt+V)
+
+    DW m_str_info
+    DB 18, 6                        ; MI_X=18, MI_W=6
     DW m_info_entries
     DB 1, 12
     DB 0, 17h
 
 m_menubar:
-    DB 3, 0FFh, 0, 0FFh
+    DB 4, 0FFh, 0, 0FFh
     DB CLR_MENUBAR, CLR_MENU_SEL
     DW m_menu_items
 
@@ -394,14 +506,17 @@ ed_win_tmpl:
 ; Menu Handlers
 ; ============================================================
 
+; ============================================================
+; menu_quit_handler — Multi-document quit
+; Prompts for active doc if dirty, warns about other dirty
+; swapped docs, deletes all swap files on exit.
+; ============================================================
 menu_quit_handler:
-    PUSH    SI
-    PUSH    DI
-    PUSH    BX
-    PUSH    CX
+    PushAll
 
+    ; ---- Check active document dirty ----
     CMP     BYTE [dirty], 0
-    JE      .quit_now
+    JE      .quit_check_others
 
     MOV     SI, m_str_quit_ask
     MOV     DI, m_str_quit_ttl
@@ -410,17 +525,18 @@ menu_quit_handler:
     CMP     AL, DLG_YES
     JE      .quit_save
     CMP     AL, DLG_NO
-    JE      .quit_now
-    ; Cancel — abort quit
-    JMP     .quit_done
+    JE      .quit_check_others
+    JMP     .quit_done              ; Cancel — abort quit
 
 .quit_save:
-    CMP     BYTE [filename], 0
-    JE      .quit_save_as
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JNZ     .quit_save_as
     CALL    save_file
     MOV     AX, [undo_pos]
     MOV     [undo_save_pos], AX
-    JMP     .quit_now
+    JMP     .quit_check_others
 
 .quit_save_as:
     MOV     SI, m_str_save_pr
@@ -436,41 +552,189 @@ menu_quit_handler:
     MOV     AX, [undo_pos]
     MOV     [undo_save_pos], AX
 
+.quit_check_others:
+    ; ---- Check for other dirty (swapped) documents ----
+    MOV     DI, doc_table
+    XOR     CX, CX                  ; CX = slot counter
+    XOR     BL, BL                  ; BL = dirty-swapped count
+.quit_walk:
+    CMP     CL, MAX_DOCS
+    JAE     .quit_walk_done
+    CMP     CL, [active_doc]
+    JE      .quit_walk_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .quit_walk_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_DIRTY
+    JZ      .quit_walk_next
+    INC     BL
+.quit_walk_next:
+    ADD     DI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .quit_walk
+
+.quit_walk_done:
+    TEST    BL, BL
+    JZ      .quit_now
+
+    ; ---- Warn about unsaved swapped documents ----
+    MOV     SI, s_quit_unsaved
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+    CMP     AL, DLG_YES
+    JE      .quit_now
+    CMP     AL, DLG_NO
+    JE      .quit_now
+    JMP     .quit_done              ; Cancel = abort quit
+
 .quit_now:
+    ; ---- Delete all swap files ----
+    MOV     DI, doc_table
+    XOR     CX, CX
+.quit_del:
+    CMP     CL, MAX_DOCS
+    JAE     .quit_del_done
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .quit_del_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_SWAPPED
+    JZ      .quit_del_next
+    PUSH    CX
+    PUSH    DI
+    MOV     DX, DI
+    ADD     DX, DOC_SWAP_PATH
+    MOV     AH, 41h
+    INT     21h                     ; delete swap file, ignore error
+    POP     DI
+    POP     CX
+.quit_del_next:
+    ADD     DI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .quit_del
+.quit_del_done:
+
     MOV     BYTE [fw_state + FW_RUNNING], 0
 
 .quit_done:
-    POP     CX
-    POP     BX
-    POP     DI
-    POP     SI
+    PopAll
     RET
 
-menu_open_handler:
+; ============================================================
+; menu_new_handler — Create a new untitled document in a new slot
+; ============================================================
+menu_new_handler:
+    PushAll
+
+    ; ---- Find a free slot ----
+    CALL    doc_find_free_slot
+    JNC     .new_have_slot
+
+    MOV     SI, s_err_max_docs
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    JMP     .new_done
+
+.new_have_slot:
+    PUSH    AX                      ; save free slot index
+
+    ; ---- Swap out active document ----
+    CALL    doc_swap_out
+    JC      .new_swap_fail
+    ; doc_swap_out CHDIRs to startup dir — restore to doc_cwd
+    ; New untitled doc inherits the previous doc's working directory
     PUSH    SI
-    PUSH    DI
-    PUSH    BX
-    PUSH    CX
+    MOV     SI, doc_cwd
+    CALL    swap_chdir
+    POP     SI
 
-    ; ---- If dirty, ask to save first ----
+    ; ---- Initialize new slot ----
+    POP     AX
+    PUSH    AX
+    XOR     SI, SI                  ; SI=0 = untitled
+    CALL    doc_slot_init
+    INC     BYTE [doc_count]
+
+    ; ---- Copy generated "unsavedN.txt" to BSS filename ----
+    POP     AX
+    PUSH    AX                      ; AL = new slot index (peek from stack)
+    CALL    doc_get_slot            ; DI = slot
+    MOV     SI, DI
+    ADD     SI, DOC_FILENAME
+    MOV     DI, filename
+.new_cp_fn:
+    LODSB
+    MOV     [DI], AL
+    INC     DI
+    TEST    AL, AL
+    JNZ     .new_cp_fn
+
+    ; ---- Create empty document structures ----
+    CALL    ed_new_doc
+    JC      .new_alloc_fail
+
+    ; ---- Set as active document ----
+    POP     AX
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+
+    ; ---- Initialize editor state for new doc ----
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     WORD [top_line], 0
+    MOV     WORD [left_col], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [sel_active], 0
+    MOV     BYTE [overwrite_mode], 0
+    CALL    undo_init
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .new_done
+
+.new_swap_fail:
+    POP     AX
+    JMP     .new_done
+
+.new_alloc_fail:
+    POP     AX
+    MOV     AL, [active_doc]
+    CALL    doc_swap_in
+    JMP     .new_done
+
+.new_done:
+    PopAll
+    RET
+
+; ============================================================
+; menu_open_handler — Open file (multi-document aware)
+; Reuses current slot if untitled+clean, else opens in new slot.
+; ============================================================
+menu_open_handler:
+    PushAll
+
+    ; ---- Determine if we need a new slot or can reuse current ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JZ      .open_need_new
     CMP     BYTE [dirty], 0
-    JE      .open_dlg
+    JNE     .open_need_new
+    MOV     BYTE [open_reuse_flag], 1
+    JMP     .open_show_dlg
 
-    MOV     SI, m_str_quit_ask
-    MOV     DI, m_str_quit_ttl
-    CALL    tui_dlg_confirm
+.open_need_new:
+    MOV     BYTE [open_reuse_flag], 0
+    CALL    doc_find_free_slot
+    JNC     .open_show_dlg
+    MOV     SI, s_err_max_docs
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    JMP     .open_done
 
-    CMP     AL, DLG_YES
-    JE      .open_save
-    CMP     AL, DLG_NO
-    JE      .open_dlg
-    JMP     .open_done              ; Cancel — abort open
-
-.open_save:
-    CALL    menu_save_handler
-
+.open_show_dlg:
 .open_dlg:
     ; ---- Show file selector ----
+    MOV     BYTE [open_file_buf], 0     ; clear so wildcard pattern pre-fills
     MOV     DI, m_str_open_ttl
     MOV     BX, open_file_buf
     MOV     CL, 13
@@ -478,9 +742,7 @@ menu_open_handler:
     CMP     AL, DLG_OK
     JNE     .open_done
 
-    ; ---- Copy filename and load ----
-    PUSH    SI
-    PUSH    DI
+    ; ---- Copy selected filename to BSS filename ----
     MOV     SI, open_file_buf
     MOV     DI, filename
 .open_copy:
@@ -490,16 +752,227 @@ menu_open_handler:
     INC     DI
     TEST    AL, AL
     JNZ     .open_copy
+
+    ; ---- Save new file's CWD (dialog may have changed it) ----
+    PUSH    DI
+    MOV     DI, rd_save_buf         ; temp: reuse range delete scratch
+    CALL    swap_get_cwd
     POP     DI
+
+    ; ---- Check for duplicate: is this file already open? ----
+    MOV     SI, filename
+    CALL    doc_find_by_name
+    JC      .open_not_dup
+
+    ; File is already open in slot AL — switch to it
+    CALL    doc_switch
+    JMP     .open_done
+
+.open_not_dup:
+    ; ---- Reuse or new slot? ----
+    CMP     BYTE [open_reuse_flag], 1
+    JE      .open_load_current
+
+    ; ---- New slot path: swap out active, init new slot ----
+    CALL    doc_find_free_slot
+    JC      .open_done
+    PUSH    AX
+
+    CALL    doc_swap_out
+    JC      .open_swap_fail
+
+    POP     AX
+    PUSH    AX
+    MOV     SI, filename
+    CALL    doc_slot_init
+    INC     BYTE [doc_count]
+
+    POP     AX
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+
+.open_load_current:
+    ; ---- Update doc_cwd to new file's directory ----
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX
+    MOV     SI, rd_save_buf
+    MOV     DI, doc_cwd
+    MOV     CX, SWH_DOC_CWD_SIZE
+    REP     MOVSB
+    POP     ES
+    ; ---- CHDIR to new file's dir (no-op if already there) ----
+    PUSH    SI
+    MOV     SI, doc_cwd
+    CALL    swap_chdir
     POP     SI
 
+    ; ---- Load file into current slot ----
     CALL    ed_load_file
 
-.open_done:
-    POP     CX
-    POP     BX
+    ; ---- Update document table slot with new filename ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    PUSH    DI
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX
+    MOV     SI, filename
+    ADD     DI, DOC_FILENAME
+    MOV     CX, 127
+.open_slot_copy:
+    LODSB
+    STOSB
+    TEST    AL, AL
+    JZ      .open_slot_done
+    DEC     CX
+    JNZ     .open_slot_copy
+    MOV     BYTE [DI-1], 0
+.open_slot_done:
+    POP     ES
     POP     DI
-    POP     SI
+    AND     BYTE [DI + DOC_FLAGS], ~DOCF_UNTITLED
+
+    JMP     .open_done
+
+.open_swap_fail:
+    POP     AX
+
+.open_done:
+    PopAll
+    RET
+
+; ============================================================
+; menu_close_handler — Close the active document
+; Single doc: untitled+clean = no-op; else reset to fresh untitled.
+; Multiple docs: close + switch to next.
+; ============================================================
+menu_close_handler:
+    PushAll
+
+    ; ---- If only one document open, handle specially ----
+    CMP     BYTE [doc_count], 1
+    JA      .close_multi
+
+    ; Single doc — if untitled and clean, do nothing
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JZ      .close_single_prompt
+    CMP     BYTE [dirty], 0
+    JE      .close_done
+
+.close_single_prompt:
+    ; Dirty or named file — ask to save
+    CMP     BYTE [dirty], 0
+    JE      .close_single_reset
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+
+    CMP     AL, DLG_YES
+    JE      .close_single_save
+    CMP     AL, DLG_NO
+    JE      .close_single_reset
+    JMP     .close_done             ; Cancel — abort
+
+.close_single_save:
+    CALL    menu_save_handler
+
+.close_single_reset:
+    ; Reset to fresh untitled document
+    CALL    free_all
+    CALL    ed_new_doc
+    JC      .close_done
+
+    ; Update slot to untitled
+    MOV     AL, [active_doc]
+    XOR     SI, SI
+    CALL    doc_slot_init
+
+    ; Copy generated filename to BSS
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    MOV     SI, DI
+    ADD     SI, DOC_FILENAME
+    MOV     DI, filename
+.close_cp_fn:
+    LODSB
+    MOV     [DI], AL
+    INC     DI
+    TEST    AL, AL
+    JNZ     .close_cp_fn
+
+    ; Reset editor state
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     WORD [top_line], 0
+    MOV     WORD [left_col], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [sel_active], 0
+    MOV     BYTE [overwrite_mode], 0
+    CALL    undo_init
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .close_done
+
+.close_multi:
+    ; ---- If dirty, ask to save ----
+    CMP     BYTE [dirty], 0
+    JE      .close_do_it
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+
+    CMP     AL, DLG_YES
+    JE      .close_save
+    CMP     AL, DLG_NO
+    JE      .close_do_it
+    JMP     .close_done             ; Cancel — abort close
+
+.close_save:
+    CALL    menu_save_handler
+
+.close_do_it:
+    ; ---- Free active document memory ----
+    CALL    free_all
+
+    ; ---- Delete swap file if it exists ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    MOV     DX, DI
+    ADD     DX, DOC_SWAP_PATH
+    MOV     AH, 41h
+    INT     21h                     ; ignore error
+
+    ; ---- Clear the slot ----
+    MOV     AL, [active_doc]
+    CALL    doc_slot_clear
+
+    ; ---- Switch to next occupied slot ----
+    CALL    doc_next_occupied
+    JC      .close_done
+
+    CALL    doc_swap_in
+    JC      .close_swap_fail
+
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .close_done
+
+.close_swap_fail:
+    MOV     BYTE [filename], 0
+    CALL    ed_new_doc
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.close_done:
+    PopAll
     RET
 
 menu_save_handler:
@@ -508,8 +981,11 @@ menu_save_handler:
     PUSH    BX
     PUSH    CX
 
-    CMP     BYTE [filename], 0
-    JE      .save_as
+    ; Check DOCF_UNTITLED flag — unsaved docs need Save As
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JNZ     .save_as
 
     ; ---- Direct save ----
     CALL    save_file
@@ -519,30 +995,716 @@ menu_save_handler:
     JMP     .save_done
 
 .save_as:
-    ; ---- No filename — prompt for one ----
-    MOV     SI, m_str_save_pr
-    MOV     DI, m_str_save_ttl
-    MOV     BX, filename
-    MOV     CL, 80
-    CALL    tui_dlg_input
-    CMP     AL, DLG_OK
-    JNE     .save_done
-
-    ; Check that user actually typed something
-    CMP     BYTE [filename], 0
-    JE      .save_done
-
-    ; Save to the new filename
-    CALL    save_file
-    MOV     AX, [undo_pos]
-    MOV     [undo_save_pos], AX
-    MOV     BYTE [fw_state + FW_DIRTY], 1
+    ; ---- Untitled doc — delegate to Save As (file browser) ----
+    POP     CX
+    POP     BX
+    POP     DI
+    POP     SI
+    JMP     menu_saveas_handler     ; tail call (handles everything)
 
 .save_done:
     POP     CX
     POP     BX
     POP     DI
     POP     SI
+    RET
+
+; ============================================================
+; menu_closeall_handler — Close all documents, reset to untitled
+; Prompts to save each dirty document. Cancel aborts entirely.
+; ============================================================
+menu_closeall_handler:
+    PushAll
+
+    ; ---- Prompt for each dirty document ----
+    ; First: active doc
+    CMP     BYTE [dirty], 0
+    JE      .ca_walk
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+    CMP     AL, DLG_YES
+    JE      .ca_save_active
+    CMP     AL, DLG_NO
+    JE      .ca_walk
+    JMP     .ca_abort               ; Cancel — abort close all
+
+.ca_save_active:
+    CALL    menu_save_handler
+
+.ca_walk:
+    ; Walk non-active slots for dirty docs
+    XOR     CL, CL
+.ca_prompt_loop:
+    CMP     CL, MAX_DOCS
+    JAE     .ca_do_close
+
+    CMP     CL, [active_doc]
+    JE      .ca_prompt_next
+
+    MOV     AL, CL
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .ca_prompt_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_DIRTY
+    JZ      .ca_prompt_next
+
+    ; Dirty swapped doc — switch to it and prompt
+    MOV     AL, CL
+    PUSH    CX
+    CALL    doc_switch
+
+    MOV     SI, m_str_quit_ask
+    MOV     DI, m_str_quit_ttl
+    CALL    tui_dlg_confirm
+    CMP     AL, DLG_YES
+    JE      .ca_save_switched
+    CMP     AL, DLG_NO
+    JE      .ca_switched_skip
+    POP     CX
+    JMP     .ca_abort               ; Cancel — abort
+
+.ca_save_switched:
+    CALL    menu_save_handler
+.ca_switched_skip:
+    POP     CX
+
+.ca_prompt_next:
+    INC     CL
+    JMP     .ca_prompt_loop
+
+.ca_do_close:
+    ; ---- Free all documents and their swap files ----
+    XOR     CL, CL
+.ca_free_loop:
+    CMP     CL, MAX_DOCS
+    JAE     .ca_reset
+
+    MOV     AL, CL
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .ca_free_next
+
+    ; Delete swap file if it exists
+    CMP     CL, [active_doc]
+    JE      .ca_free_clear          ; active doc has no swap file
+    PUSH    DX
+    MOV     DX, DI
+    ADD     DX, DOC_SWAP_PATH
+    MOV     AH, 41h
+    INT     21h                     ; ignore error
+    POP     DX
+
+.ca_free_clear:
+    MOV     AL, CL
+    PUSH    CX
+    CALL    doc_slot_clear
+    POP     CX
+
+.ca_free_next:
+    INC     CL
+    JMP     .ca_free_loop
+
+.ca_reset:
+    ; ---- Free active doc memory and create fresh untitled ----
+    CALL    free_all
+    CALL    ed_new_doc
+
+    ; Re-init slot 0 as untitled
+    MOV     BYTE [active_doc], 0
+    MOV     BYTE [panel_sel], 0
+    MOV     BYTE [doc_count], 1
+    XOR     AL, AL
+    XOR     SI, SI
+    CALL    doc_slot_init
+
+    ; Copy generated filename to BSS
+    XOR     AL, AL
+    CALL    doc_get_slot
+    MOV     SI, DI
+    ADD     SI, DOC_FILENAME
+    MOV     DI, filename
+.ca_cp_fn:
+    LODSB
+    MOV     [DI], AL
+    INC     DI
+    TEST    AL, AL
+    JNZ     .ca_cp_fn
+
+    ; Reset editor state
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     WORD [top_line], 0
+    MOV     WORD [left_col], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [sel_active], 0
+    MOV     BYTE [overwrite_mode], 0
+    CALL    undo_init
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.ca_abort:
+    PopAll
+    RET
+
+; ============================================================
+; menu_saveall_handler — Save all dirty, named documents
+; Skips untitled documents (no filename to save to).
+; ============================================================
+menu_saveall_handler:
+    PushAll
+
+    ; Remember which doc was active so we can return to it
+    MOV     AL, [active_doc]
+    PUSH    AX                      ; stack: original active_doc
+
+    ; ---- Save active doc first (if dirty + named) ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JNZ     .sal_walk
+    CMP     BYTE [dirty], 0
+    JE      .sal_walk
+    CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
+
+.sal_walk:
+    ; ---- Walk all other slots ----
+    XOR     CL, CL
+.sal_loop:
+    CMP     CL, MAX_DOCS
+    JAE     .sal_restore
+
+    ; Skip active doc (already handled)
+    CMP     CL, [active_doc]
+    JE      .sal_next
+
+    ; Get slot
+    MOV     AL, CL
+    CALL    doc_get_slot
+
+    ; Skip unoccupied
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .sal_next
+
+    ; Skip untitled
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JNZ     .sal_next
+
+    ; Skip clean
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_DIRTY
+    JZ      .sal_next
+
+    ; Switch to this doc, save it
+    MOV     AL, CL
+    PUSH    CX
+    CALL    doc_switch
+    CALL    save_file
+    MOV     AX, [undo_pos]
+    MOV     [undo_save_pos], AX
+    POP     CX
+
+.sal_next:
+    INC     CL
+    JMP     .sal_loop
+
+.sal_restore:
+    ; Switch back to original doc
+    POP     AX                      ; AL = original active_doc
+    CMP     AL, [active_doc]
+    JE      .sal_done
+    CALL    doc_switch
+
+.sal_done:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    PopAll
+    RET
+
+; ============================================================
+; menu_saveprj_handler — Save all open file paths to a .PRJ file
+; ============================================================
+menu_saveprj_handler:
+    PushAll
+    MOV     AX, DS
+    MOV     ES, AX
+
+    ; ---- Save and set dlg_file_pattern to *.PRJ ----
+    MOV     SI, dlg_file_pattern
+    MOV     DI, prj_pat_save
+    MOV     CX, 14
+    REP     MOVSB
+    MOV     DI, dlg_file_pattern
+    MOV     SI, s_prj_pattern
+    MOV     CX, 6
+    REP     MOVSB
+    ; zero-pad remaining 8 bytes
+    XOR     AL, AL
+    MOV     CX, 8
+    REP     STOSB
+
+    ; ---- Show file dialog ----
+    MOV     BYTE [open_file_buf], 0
+    MOV     DI, m_str_sprj_ttl
+    MOV     BX, open_file_buf
+    MOV     CL, 13
+    CALL    tui_dlg_file
+
+    PUSH    AX                      ; save dialog result
+    ; ---- Restore dlg_file_pattern ----
+    MOV     SI, prj_pat_save
+    MOV     DI, dlg_file_pattern
+    MOV     CX, 14
+    REP     MOVSB
+    POP     AX
+
+    CMP     AL, DLG_OK
+    JNE     .sprj_done
+
+    ; ---- Check if file exists ----
+    MOV     DX, open_file_buf
+    MOV     AL, 0
+    MOV     AH, 3Dh
+    INT     21h
+    JC      .sprj_create
+
+    MOV     BX, AX
+    MOV     AH, 3Eh
+    INT     21h
+    MOV     SI, m_str_overwrite
+    MOV     DI, m_str_save_warn
+    CALL    tui_dlg_confirm
+    CMP     AL, DLG_YES
+    JNE     .sprj_done
+
+.sprj_create:
+    ; ---- Create the PRJ file ----
+    MOV     DX, open_file_buf
+    XOR     CX, CX
+    MOV     AH, 3Ch
+    INT     21h
+    JC      .sprj_err
+    MOV     [prj_file_hnd], AX
+
+    ; ---- Walk all slots, write occupied non-untitled paths ----
+    XOR     CL, CL
+.sprj_walk:
+    CMP     CL, MAX_DOCS
+    JAE     .sprj_close
+
+    MOV     AL, CL
+    PUSH    CX
+    CALL    doc_get_slot
+    POP     CX
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .sprj_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    JNZ     .sprj_next
+
+    ; ---- For active doc use BSS filename; others use slot ----
+    PUSH    CX
+    CMP     CL, [active_doc]
+    JNE     .sprj_use_slot
+    MOV     DX, filename
+    JMP     .sprj_write
+.sprj_use_slot:
+    MOV     DX, DI
+    ADD     DX, DOC_FILENAME
+.sprj_write:
+    ; Compute string length
+    PUSH    DI
+    MOV     DI, DX
+    XOR     CX, CX
+.sprj_strlen:
+    CMP     BYTE [DI], 0
+    JE      .sprj_strlen_done
+    INC     DI
+    INC     CX
+    CMP     CX, 128
+    JB      .sprj_strlen
+.sprj_strlen_done:
+    POP     DI
+
+    ; Write filename
+    MOV     BX, [prj_file_hnd]
+    MOV     AH, 40h
+    INT     21h
+
+    ; Write CRLF
+    MOV     DX, s_prj_crlf
+    MOV     CX, 2
+    MOV     AH, 40h
+    INT     21h
+
+    POP     CX
+
+.sprj_next:
+    INC     CL
+    JMP     .sprj_walk
+
+.sprj_close:
+    MOV     BX, [prj_file_hnd]
+    MOV     AH, 3Eh
+    INT     21h
+
+.sprj_done:
+    PopAll
+    RET
+
+.sprj_err:
+    MOV     SI, s_err_prj_open
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    PopAll
+    RET
+
+; ============================================================
+; menu_loadprj_handler — Load a .PRJ file and open all listed files
+; ============================================================
+menu_loadprj_handler:
+    PushAll
+    MOV     AX, DS
+    MOV     ES, AX
+
+    ; ---- Save and set dlg_file_pattern to *.PRJ ----
+    MOV     SI, dlg_file_pattern
+    MOV     DI, prj_pat_save
+    MOV     CX, 14
+    REP     MOVSB
+    MOV     DI, dlg_file_pattern
+    MOV     SI, s_prj_pattern
+    MOV     CX, 6
+    REP     MOVSB
+    XOR     AL, AL
+    MOV     CX, 8
+    REP     STOSB
+
+    ; ---- Show file dialog ----
+    MOV     BYTE [open_file_buf], 0
+    MOV     DI, m_str_lprj_ttl
+    MOV     BX, open_file_buf
+    MOV     CL, 13
+    CALL    tui_dlg_file
+
+    PUSH    AX
+    ; ---- Restore dlg_file_pattern ----
+    MOV     SI, prj_pat_save
+    MOV     DI, dlg_file_pattern
+    MOV     CX, 14
+    REP     MOVSB
+    POP     AX
+
+    CMP     AL, DLG_OK
+    JNE     .lprj_done
+
+    ; ---- Open and read the PRJ file into rd_save_buf ----
+    MOV     DX, open_file_buf
+    MOV     AL, 0
+    MOV     AH, 3Dh
+    INT     21h
+    JC      .lprj_err_open
+    MOV     BX, AX
+
+    MOV     DX, rd_save_buf
+    MOV     CX, 1020
+    MOV     AH, 3Fh
+    INT     21h
+    PUSH    AX                      ; save bytes read
+    ; Close PRJ file
+    MOV     AH, 3Eh
+    INT     21h
+    POP     AX
+    MOV     [prj_bytes_read], AX
+
+    CMP     WORD [prj_bytes_read], 0
+    JE      .lprj_done              ; empty file
+
+    ; ---- Close all existing documents ----
+    CALL    menu_closeall_handler
+
+    ; After closeall: active_doc=0, doc_count=1, slot 0 = untitled+clean
+    MOV     BYTE [prj_first_file], 1
+
+    ; ---- Parse rd_save_buf line by line ----
+    MOV     SI, rd_save_buf
+    MOV     CX, [prj_bytes_read]
+
+.lprj_parse_line:
+    ; Skip leading CR/LF/spaces
+    OR      CX, CX
+    JZ      .lprj_final
+.lprj_skip_ws:
+    CMP     BYTE [SI], 0Dh
+    JE      .lprj_skip1
+    CMP     BYTE [SI], 0Ah
+    JE      .lprj_skip1
+    CMP     BYTE [SI], ' '
+    JE      .lprj_skip1
+    JMP     .lprj_got_line
+.lprj_skip1:
+    INC     SI
+    DEC     CX
+    JNZ     .lprj_skip_ws
+    JMP     .lprj_final
+
+.lprj_got_line:
+    ; Copy chars until CR/LF/end into filename BSS
+    MOV     DI, filename
+    XOR     BL, BL                  ; BL = char count
+.lprj_copy_ch:
+    OR      CX, CX
+    JZ      .lprj_line_end
+    MOV     AL, [SI]
+    CMP     AL, 0Dh
+    JE      .lprj_line_end
+    CMP     AL, 0Ah
+    JE      .lprj_line_end
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    INC     BL
+    DEC     CX
+    CMP     BL, 127
+    JB      .lprj_copy_ch
+
+.lprj_line_end:
+    MOV     BYTE [DI], 0           ; null-terminate
+    TEST    BL, BL
+    JZ      .lprj_parse_line        ; empty line — skip
+
+    ; ---- Load this file ----
+    PUSH    CX
+    PUSH    SI                      ; save parse state
+
+    CMP     BYTE [prj_first_file], 1
+    JNE     .lprj_new_slot
+
+    ; First file: reuse untitled slot 0
+    MOV     BYTE [prj_first_file], 0
+    MOV     AL, 0
+    MOV     SI, filename
+    CALL    doc_slot_init
+
+    CALL    ed_load_file
+    JMP     .lprj_update_slot
+
+.lprj_new_slot:
+    ; Check 8-file limit
+    CMP     BYTE [doc_count], MAX_DOCS
+    JAE     .lprj_too_many
+
+    CALL    doc_find_free_slot
+    JC      .lprj_too_many
+    PUSH    AX
+
+    CALL    doc_swap_out
+    JC      .lprj_swap_fail
+
+    POP     AX
+    PUSH    AX
+    MOV     SI, filename
+    CALL    doc_slot_init
+    INC     BYTE [doc_count]
+
+    POP     AX
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+
+    CALL    ed_load_file
+
+.lprj_update_slot:
+    ; Update slot filename + clear untitled flag
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    PUSH    DI
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX
+    MOV     SI, filename
+    ADD     DI, DOC_FILENAME
+    MOV     CX, 127
+.lprj_scopy:
+    LODSB
+    STOSB
+    TEST    AL, AL
+    JZ      .lprj_scopy_done
+    DEC     CX
+    JNZ     .lprj_scopy
+    MOV     BYTE ES:[DI-1], 0
+.lprj_scopy_done:
+    POP     ES
+    POP     DI
+    AND     BYTE [DI + DOC_FLAGS], ~DOCF_UNTITLED
+
+    POP     SI
+    POP     CX
+    JMP     .lprj_parse_line
+
+.lprj_too_many:
+    POP     SI
+    POP     CX
+    MOV     SI, s_prj_truncated
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    JMP     .lprj_final
+
+.lprj_swap_fail:
+    POP     AX                      ; discard slot index
+    POP     SI
+    POP     CX
+
+.lprj_final:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.lprj_done:
+    PopAll
+    RET
+
+.lprj_err_open:
+    MOV     SI, s_err_prj_open
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    PopAll
+    RET
+
+; ============================================================
+; menu_shell_handler — Shell to DOS via COMSPEC
+; Swaps out the screen, runs COMMAND.COM, restores on return.
+; ============================================================
+menu_shell_handler:
+    PushAll
+
+    ; ---- Find COMSPEC in environment ----
+    MOV     AX, [002Ch]             ; environment segment from PSP
+    TEST    AX, AX
+    JZ      .sh_no_comspec
+    MOV     ES, AX
+
+    XOR     DI, DI                  ; ES:DI = start of environment
+.sh_env_loop:
+    CMP     BYTE ES:[DI], 0         ; end of environment?
+    JE      .sh_no_comspec
+
+    ; Compare "COMSPEC=" against ES:DI
+    MOV     SI, s_comspec_key
+    MOV     CX, S_COMSPEC_LEN
+.sh_cmp:
+    MOV     AL, ES:[DI]
+    CMP     AL, [SI]
+    JNE     .sh_skip_var
+    INC     DI
+    INC     SI
+    DEC     CX
+    JNZ     .sh_cmp
+
+    ; Match — ES:DI now points to the value after "COMSPEC="
+    ; Copy to shell_comspec
+    MOV     SI, DI                  ; SI = offset in env segment
+    MOV     DI, shell_comspec
+    PUSH    DS
+    PUSH    ES
+    POP     DS                      ; DS = environment segment
+    MOV     AX, CS
+    MOV     ES, AX                  ; ES = our segment
+.sh_copy_cs:
+    LODSB
+    STOSB
+    TEST    AL, AL
+    JNZ     .sh_copy_cs
+    POP     DS                      ; restore DS
+    MOV     AX, DS
+    MOV     ES, AX                  ; restore ES = DS
+    JMP     .sh_found
+
+.sh_skip_var:
+    ; Skip to end of this env string (find the null)
+    CMP     BYTE ES:[DI], 0
+    JE      .sh_next_var
+    INC     DI
+    JMP     .sh_skip_var
+.sh_next_var:
+    INC     DI                      ; skip past the null
+    JMP     .sh_env_loop
+
+.sh_no_comspec:
+    MOV     AX, DS
+    MOV     ES, AX
+    MOV     SI, s_err_no_comspec
+    MOV     DI, m_str_error
+    CALL    tui_dlg_msgbox
+    JMP     .sh_done
+
+.sh_found:
+    ; ---- Build EXEC parameter block ----
+    MOV     BYTE [shell_cmdtail], 0
+    MOV     BYTE [shell_cmdtail+1], 0Dh
+
+    ; Zero out FCB
+    MOV     DI, shell_fcb
+    XOR     AL, AL
+    MOV     CX, 37
+    REP     STOSB
+
+    ; Fill exec parameter block
+    MOV     DI, shell_exec_pb
+    XOR     AX, AX
+    STOSW                           ; environment = 0 (inherit)
+    MOV     AX, shell_cmdtail
+    STOSW                           ; command tail offset
+    MOV     AX, DS
+    STOSW                           ; command tail segment
+    MOV     AX, shell_fcb
+    STOSW                           ; FCB1 offset
+    MOV     AX, DS
+    STOSW                           ; FCB1 segment
+    MOV     AX, shell_fcb
+    STOSW                           ; FCB2 offset
+    MOV     AX, DS
+    STOSW                           ; FCB2 segment
+
+    ; ---- Clear screen and print shell message ----
+    MOV     AX, 0003h               ; INT 10h: set mode 3 (80x25 text, clears screen)
+    INT     10h
+    MOV     AH, 09h
+    MOV     DX, s_shell_msg
+    INT     21h
+
+    ; ---- Save SS:SP and call EXEC ----
+    MOV     [shell_save_ss], SS
+    MOV     [shell_save_sp], SP
+
+    MOV     DX, shell_comspec       ; DS:DX = program path
+    MOV     BX, shell_exec_pb       ; ES:BX = parameter block (ES=DS)
+    MOV     AX, 4B00h               ; EXEC: load and execute
+    INT     21h
+
+    ; ---- Restore SS:SP (EXEC clobbers all registers) ----
+    CLI
+    MOV     SS, CS:[shell_save_ss]
+    MOV     SP, CS:[shell_save_sp]
+    STI
+
+    ; ---- Restore DS and ES ----
+    MOV     AX, CS
+    MOV     DS, AX
+    MOV     ES, AX
+
+    ; ---- Restore video mode and TUI screen ----
+    MOV     AX, 0003h               ; reset mode 3
+    INT     10h
+
+    ; Reinitialize mouse driver
+    MOV     AX, 0000h
+    INT     33h
+
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.sh_done:
+    PopAll
     RET
 
 menu_undo_handler:
@@ -601,6 +1763,25 @@ menu_saveas_handler:
     CMP     AL, DLG_OK
     JNE     .sa_done
 
+    ; ---- Check if file exists (try open for read) ----
+    MOV     DX, open_file_buf
+    MOV     AL, 0                       ; read-only
+    MOV     AH, 3Dh
+    INT     21h
+    JC      .sa_no_exist                ; CF=1 = doesn't exist, proceed
+
+    ; File exists — close handle and prompt
+    MOV     BX, AX
+    MOV     AH, 3Eh
+    INT     21h
+
+    MOV     SI, m_str_overwrite
+    MOV     DI, m_str_save_warn
+    CALL    tui_dlg_confirm
+    CMP     AL, DLG_YES
+    JNE     .sa_done                    ; No or Cancel — abort
+
+.sa_no_exist:
     ; Copy result to filename buffer
     MOV     SI, open_file_buf
     MOV     DI, filename
@@ -616,6 +1797,35 @@ menu_saveas_handler:
     MOV     AX, [undo_pos]
     MOV     [undo_save_pos], AX
     MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    ; ---- Update document table slot with new filename ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    PUSH    DI
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX
+    MOV     SI, filename
+    ADD     DI, DOC_FILENAME
+    MOV     CX, 127
+.sa_slot_copy:
+    LODSB
+    STOSB
+    TEST    AL, AL
+    JZ      .sa_slot_done
+    DEC     CX
+    JNZ     .sa_slot_copy
+    MOV     BYTE [DI-1], 0
+.sa_slot_done:
+    POP     ES
+    POP     DI
+    AND     BYTE [DI + DOC_FLAGS], ~DOCF_UNTITLED
+
+    ; ---- Update doc_cwd (Save As may have changed directory) ----
+    PUSH    DI
+    MOV     DI, doc_cwd
+    CALL    swap_get_cwd
+    POP     DI
 
 .sa_done:
     POP     CX
@@ -1211,6 +2421,19 @@ menu_datetime_handler:
     POP     CX
     RET
 
+; ============================================================
+; menu_doclist_handler — Toggle document side panel
+; ============================================================
+menu_doclist_handler:
+    XOR     BYTE [panel_visible], 1
+    CMP     BYTE [panel_visible], 0
+    JE      .vdl_done
+    MOV     AL, [active_doc]
+    MOV     [panel_sel], AL
+.vdl_done:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    RET
+
 menu_about_handler:
     PushAll
 
@@ -1332,9 +2555,13 @@ menu_about_handler:
 main:
     ; ---- Reject MDA display (we write directly to B800h) ----
     MOV     AH, 0Fh
-    INT     10h                         ; AL = current video mode
+    INT     10h                         ; AL = mode, AH = columns
     CMP     AL, 07h                     ; mode 7 = MDA monochrome
-    JNE     .video_ok
+    JE      .video_fail
+    ; ---- Reject 40-column modes (need 80x25 minimum) ----
+    CMP     AH, 80
+    JAE     .video_ok
+.video_fail:
     MOV     DX, s_err_mda
     MOV     AH, 09h
     INT     21h
@@ -1353,6 +2580,12 @@ main:
 
     CALL    shrink_mem
 
+    ; ---- Clean up orphaned swap files from previous crashes ----
+    CALL    doc_cleanup_orphans
+
+    ; ---- Initialize document table ----
+    CALL    doc_table_init
+
     ; ---- Save startup working directory (restored on exit) ----
     MOV     AH, 19h
     INT     21h                         ; AL = current drive (0=A)
@@ -1362,6 +2595,15 @@ main:
     MOV     SI, startup_path
     MOV     AH, 47h
     INT     21h                         ; DS:SI filled with CWD (no leading \)
+
+    ; ---- Build startup_cwd in "D:\path" format ----
+    MOV     DI, startup_cwd
+    CALL    swap_get_cwd
+    ; ---- Initialize doc_cwd = startup_cwd ----
+    MOV     SI, startup_cwd
+    MOV     DI, doc_cwd
+    MOV     CX, 68
+    REP     MOVSB
 
     ; ---- Initialize tab defaults (before parse_args may override) ----
     MOV     WORD [tab_width], ED_TAB_DEFAULT
@@ -1401,11 +2643,69 @@ main:
     CALL    rebuild_meta
     CALL    clamp_cursor
     MOV     BYTE [meta_dirty], 0
+
+    ; ---- Register in document table slot 0 ----
+    MOV     AL, 0
+    MOV     SI, filename
+    CALL    doc_slot_init
+    MOV     BYTE [active_doc], 0
+    MOV     BYTE [doc_count], 1
+
+    ; ---- Runtime verification (--build_trace only) ----
+    ASSERT_EQ BYTE [active_doc], 0
+    ASSERT_EQ BYTE [doc_count], 1
+    ASSERT_EQ BYTE [doc_table + DOC_FLAGS], DOCF_OCCUPIED
+    ASSERT_EQ BYTE [doc_table + DOC_SLOT_ID], 0
+    ASSERT_EQ BYTE [doc_table + DOC_SWAP_PATH], 'T'
+    ASSERT_EQ BYTE [doc_table + DOC_SWAP_PATH + 7], '0'
+    LOG "slot0_flags", BYTE [doc_table + DOC_FLAGS]
+    LOG "slot0_swap_0", BYTE [doc_table + DOC_SWAP_PATH]
+    LOG "active_doc", BYTE [active_doc]
+    LOG "doc_count", BYTE [doc_count]
+
+    ; ---- Verify slots 1-7 are unoccupied ----
+    ASSERT_EQ BYTE [doc_table + DOC_SLOT_SIZE + DOC_FLAGS], 0
+    ASSERT_EQ BYTE [doc_table + DOC_SLOT_SIZE * 2 + DOC_FLAGS], 0
+    ASSERT_EQ BYTE [doc_table + DOC_SLOT_SIZE * 7 + DOC_FLAGS], 0
+
+    ; ---- Snapshot doc_table for passivity check ----
+    MEM_SNAPSHOT doc_tbl_snap, DS, doc_table, MAX_DOCS * DOC_SLOT_SIZE
+
     JMP     .start_tui
 
 .no_file:
     CALL    ed_new_doc
     JC      .err_nomem
+
+    ; ---- Register untitled doc in slot 0 ----
+    MOV     AL, 0
+    XOR     SI, SI
+    CALL    doc_slot_init
+    MOV     BYTE [active_doc], 0
+    MOV     BYTE [doc_count], 1
+
+    ; ---- Copy generated "unsaved1.txt" to BSS filename ----
+    MOV     SI, doc_table + DOC_FILENAME
+    MOV     DI, filename
+.nf_cp:
+    LODSB
+    MOV     [DI], AL
+    INC     DI
+    TEST    AL, AL
+    JNZ     .nf_cp
+
+    ; ---- Runtime verification (--build_trace only) ----
+    ASSERT_EQ BYTE [active_doc], 0
+    ASSERT_EQ BYTE [doc_count], 1
+    ASSERT_EQ BYTE [doc_table + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
+    ASSERT_EQ BYTE [doc_table + DOC_SLOT_ID], 0
+    ASSERT_EQ BYTE [doc_table + DOC_FILENAME], 'u'
+    ASSERT_EQ BYTE [doc_table + DOC_SWAP_PATH], 'T'
+    ASSERT_EQ BYTE [doc_table + DOC_SWAP_PATH + 7], '0'
+    LOG "untitled_flags", BYTE [doc_table + DOC_FLAGS]
+
+    ; ---- Snapshot doc_table for passivity check ----
+    MEM_SNAPSHOT doc_tbl_snap, DS, doc_table, MAX_DOCS * DOC_SLOT_SIZE
 
 .start_tui:
     ; ---- Allocate undo buffer (if not already allocated) ----
@@ -1454,8 +2754,37 @@ main:
     MOV     SI, ed_win_tmpl
     CALL    tui_win_create
 
+    ; ---- Verify doc_table unchanged through TUI init ----
+    MEM_ASSERT doc_tbl_snap, DS, doc_table, MAX_DOCS * DOC_SLOT_SIZE
+
+    ; ---- Phase 1 trace-mode checkpoint (all init complete) ----
+    BREAKPOINT p1_ready, 999 : VRAMOUT
+
+    ; Multi-document: slots are populated via File > New / File > Open.
+    ; Switching via Alt+1-8, F6, Ctrl+PgDn/PgUp.
+
     ; ---- Run event loop ----
     CALL    tui_run
+
+    ; ---- Delete all swap files (safety net) ----
+    MOV     DI, doc_table
+    XOR     CX, CX
+.exit_del_swp:
+    CMP     CL, MAX_DOCS
+    JAE     .exit_del_done
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .exit_del_next
+    TEST    BYTE [DI + DOC_FLAGS], DOCF_SWAPPED
+    JZ      .exit_del_next
+    MOV     DX, DI
+    ADD     DX, DOC_SWAP_PATH
+    MOV     AH, 41h
+    INT     21h                     ; ignore errors
+.exit_del_next:
+    ADD     DI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .exit_del_swp
+.exit_del_done:
 
     ; ---- Cleanup and exit ----
     CALL    free_all
@@ -1476,22 +2805,8 @@ main:
     INT     21h
 .exit:
     ; ---- Restore startup working directory ----
-    MOV     DL, [startup_drive]
-    MOV     AH, 0Eh
-    INT     21h                         ; set drive
-    ; Build "\path" from startup_path (AH=47h returns without leading \)
-    MOV     BYTE [open_file_buf], '\'
-    MOV     SI, startup_path
-    MOV     DI, open_file_buf + 1
-.exit_cp:
-    LODSB
-    MOV     [DI], AL
-    INC     DI
-    TEST    AL, AL
-    JNZ     .exit_cp
-    MOV     DX, open_file_buf
-    MOV     AH, 3Bh
-    INT     21h                         ; CHDIR
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
 
     ; ---- Restore 80x25 text mode (clears screen) ----
     MOV     AX, 0003h
@@ -1695,12 +3010,30 @@ ed_sb_active:       RESB 1      ; 1 if vertical scrollbar visible
 ; ---- Overwrite mode ----
 overwrite_mode:     RESB 1      ; 0 = insert, 1 = overwrite
 
+; ---- Document side panel ----
+panel_visible:      RESB 1      ; 0 = hidden, 1 = shown
+panel_sel:          RESB 1      ; highlighted slot index (0-7)
+
 ; ---- Goto ----
 goto_buf:           RESB 6      ; line number input (max 5 digits + null)
 
 ; ---- Startup CWD (restored on exit) ----
 startup_drive:      RESB 1      ; drive number (0=A, 1=B, 2=C...)
 startup_path:       RESB 65     ; path returned by INT 21h AH=47h
+startup_cwd:        RESB 68     ; "D:\path\0" format, filled at startup
+doc_cwd:            RESB 68     ; active document's CWD, "D:\path\0" format
+swap_hnd:           RESW 1      ; swap file handle during swap-in
+
+; ---- Multi-document state ----
+active_doc:     RESB 1          ; index of currently active document slot (0-7)
+doc_count:      RESB 1          ; number of occupied slots (1-8)
+doc_table:      RESB MAX_DOCS * DOC_SLOT_SIZE   ; 8 × 152 = 1216 bytes
+
+; ---- Open handler scratch ----
+open_reuse_flag:  RESB 1          ; 1 = reuse current slot, 0 = new slot
+
+; ---- Swap I/O buffer ----
+swap_hdr_buf:   RESB SWAP_HEADER_SIZE   ; 64-byte swap file header staging
 
 ; ---- TUI BSS ----
 tui_cga_snow:       RESB 1          ; 1 = CGA snow prevention in tui_blit
@@ -1710,7 +3043,7 @@ win_table:          RESB 320
 z_order:            RESB 16
 bdr_scratch:        RESB 7
 ctrl_dispatch_addr: RESW 1
-mouse_state:        RESB 16
+mouse_state:        RESB 21
 sb_scratch:         RESB 4
 dlg_tmpl:           RESB 20
 dlg_label:          RESB 14
@@ -1737,10 +3070,17 @@ dlg_chk1:           RESB 15         ; dialog checkbox 1 (match case)
 dlg_chk2:           RESB 15         ; dialog checkbox 2 (in selection)
 dlg_chk3:           RESB 15         ; dialog checkbox 3 (replace all)
 dlg_listbox2:       RESB 19         ; directory listbox for file dialog
-dlg_drive_dd:       RESB 21
-dlg_drive_count:    RESB 1
-dlg_drive_items:    RESB 52
-dlg_drive_names:    RESB 78
 dlg_dir_count:      RESB 1          ; directory entry count
 dlg_dir_items:      RESB 64         ; 32 dir pointers (32 × 2)
 dlg_dir_names:      RESB 448        ; 32 dir names (32 × 14)
+dlg_file_pat_save:  RESB 14         ; saved pattern for Cancel restore
+prj_file_hnd:       RESW 1          ; PRJ file handle during load/save
+prj_bytes_read:     RESW 1          ; bytes read from PRJ file
+prj_first_file:     RESB 1          ; flag: first file reuses slot 0
+prj_pat_save:       RESB 14         ; saved dlg_file_pattern for project dialogs
+shell_comspec:      RESB 128        ; COMSPEC path from environment
+shell_cmdtail:      RESB 2          ; empty command tail (00h, 0Dh)
+shell_fcb:          RESB 37         ; dummy FCB for EXEC
+shell_exec_pb:      RESB 14         ; EXEC parameter block
+shell_save_ss:      RESW 1          ; saved SS before EXEC
+shell_save_sp:      RESW 1          ; saved SP before EXEC

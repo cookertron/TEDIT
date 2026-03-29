@@ -40,6 +40,52 @@ tui_ed_mouse_press:
     MOV     AH, [mouse_state + MS_COL]
     SUB     AH, DL                  ; AH = ed_col
 
+    ; ---- Side panel click intercept ----
+    CMP     BYTE [panel_visible], 0
+    JZ      .press_no_panel
+
+    ; Check if click is inside panel area (cols 0-16)
+    CMP     AH, PANEL_WIDTH
+    JAE     .panel_click_outside
+
+    ; Map editor row to occupied slot index
+    PUSH    SI
+    MOV     SI, doc_table
+    XOR     CL, CL                 ; CL = slot counter
+    XOR     CH, CH                 ; CH = visible row counter
+.pc_find:
+    CMP     CL, MAX_DOCS
+    JAE     .pc_outside_pop        ; click row beyond occupied count
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .pc_next
+    CMP     CH, AL                 ; is this the clicked row?
+    JE      .pc_found
+    INC     CH
+.pc_next:
+    ADD     SI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .pc_find
+
+.pc_found:
+    POP     SI
+    MOV     [panel_sel], CL
+    MOV     BYTE [panel_visible], 0
+    MOV     AL, CL
+    CMP     AL, [active_doc]
+    JE      .panel_click_done
+    CALL    doc_switch
+.panel_click_done:
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .press_done
+
+.pc_outside_pop:
+    POP     SI
+.panel_click_outside:
+    MOV     BYTE [panel_visible], 0
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .press_done
+
+.press_no_panel:
     ; ---- Bounds check: click on status bar? ----
     CMP     AL, ED_TEXT_ROWS
     JAE     .press_done             ; status bar row or below -> ignore
