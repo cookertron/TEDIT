@@ -69,6 +69,7 @@ BOX_RT      EQU 0B4h        ; right T-junction ┤
 
 ; --- Key codes ---
 KEY_TAB     EQU 09h             ; Tab (normal key)
+KEY_SHIFT_TAB EQU 0Fh           ; Shift+Tab scan code (extended key)
 KEY_UP      EQU 48h             ; scan codes (extended keys)
 KEY_DOWN    EQU 50h
 KEY_LEFT    EQU 4Bh

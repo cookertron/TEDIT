@@ -133,6 +133,8 @@ tui_dispatch_key: PROC
 
 .extended:
     ; --- Extended key (AL = scan code) ---
+    CMP AL, KEY_SHIFT_TAB
+    JZ .shift_tab
     CMP AL, KEY_CTRL_UP
     JZ .ctrl_up
     CMP AL, KEY_CTRL_DOWN
@@ -145,29 +147,53 @@ tui_dispatch_key: PROC
     JZ .f6
     RET
 
+.shift_tab:
+    ; Focus previous control; fall back to reverse window cycling
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .stab_no_win
+
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .stab_cycle_win
+
+    CALL tui_ctrl_focus_prev
+    JNC .stab_done
+
+.stab_cycle_win:
+    CALL tui_zorder_cycle
+
+.stab_done:
+    POP SI
+    RET
+
+.stab_no_win:
+    POP SI
+    RET
+
 .ctrl_up:
     MOV AL, KEY_UP
-    CALL tui_win_move
-    RET
+    JMP tui_win_move
 
 .ctrl_down:
     MOV AL, KEY_DOWN
-    CALL tui_win_move
-    RET
+    JMP tui_win_move
 
 .ctrl_left:
     MOV AL, KEY_LEFT
-    CALL tui_win_move
-    RET
+    JMP tui_win_move
 
 .ctrl_right:
     MOV AL, KEY_RIGHT
-    CALL tui_win_move
-    RET
+    JMP tui_win_move
 
 .f6:
-    CALL tui_zorder_cycle
-    RET
+    JMP tui_zorder_cycle
 ENDP
 
 ; ----------------------------------------------------------------------------
@@ -197,6 +223,8 @@ tui_modal_dispatch: PROC
     RET                         ; ignore all other keys (q/Q etc.)
 
 .mdl_ext:
+    CMP AL, KEY_SHIFT_TAB
+    JZ .mdl_left                ; Shift+Tab = focus prev (same as Left)
     CMP AL, KEY_RIGHT
     JZ .mdl_tab                 ; Right arrow = focus next (same as Tab)
     CMP AL, KEY_LEFT

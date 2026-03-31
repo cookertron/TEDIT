@@ -20,6 +20,31 @@ shrink_mem:
     RET
 
 ; ============================================================
+; MUL_BX_10 — DI = BX * PT_DESC_SIZE (10)
+; Input:  BX = piece index
+; Output: DI = byte offset (BX * 10)
+; Clobbers: AX
+; ============================================================
+
+mul_bx_10:
+    MOV     DI, BX
+    SHL     DI, 1
+    MOV     AX, DI
+    SHL     DI, 1
+    SHL     DI, 1
+    ADD     DI, AX
+    RET
+
+; ============================================================
+; SHOW_ERROR_MSG — show msgbox with "Error" title
+; Input: SI = message string
+; ============================================================
+
+show_error_msg:
+    MOV     DI, m_str_error
+    JMP     tui_dlg_msgbox
+
+; ============================================================
 ; PARSE_ARGS
 ; ============================================================
 
@@ -30,8 +55,10 @@ parse_args:
     TEST    CX, CX
     JZ      .no_fn
 
+    MOV     BYTE [arg_file_count], 0
+    MOV     BYTE [arg_has_prj], 0
+
 .scan_loop:
-    ; Skip leading spaces
     TEST    CX, CX
     JZ      .scan_done
     CMP     BYTE [SI], ' '
@@ -41,38 +68,88 @@ parse_args:
     JMP     .scan_loop
 
 .got_token:
-    ; Check for /t or -t flag
     CMP     BYTE [SI], '/'
     JE      .check_flag
     CMP     BYTE [SI], '-'
     JE      .check_flag
 
-    ; Not a flag — if no filename yet, treat as filename
-    CMP     BYTE [filename], 0
-    JNE     .skip_token             ; already have filename
-
-    ; Copy token to filename
-    MOV     DI, filename
-.cfloop:
-    JCXZ    .fn_done
-    MOV     AL, [SI]
-    CMP     AL, ' '
-    JE      .fn_done
-    CMP     AL, 0Dh
-    JE      .fn_done
-    CMP     AL, 0Ah
-    JE      .fn_done
-    MOV     [DI], AL
+    ; ---- Filename token: find its extent ----
+    MOV     DX, SI                      ; DX = token start
+.tok_scan:
+    JCXZ    .tok_end
+    CMP     BYTE [SI], ' '
+    JE      .tok_end
+    CMP     BYTE [SI], 0Dh
+    JE      .tok_end
+    CMP     BYTE [SI], 0Ah
+    JE      .tok_end
     INC     SI
-    INC     DI
     DEC     CX
-    JMP     .cfloop
-.fn_done:
+    JMP     .tok_scan
+
+.tok_end:
+    ; DX = token start, SI = past end
+    ; Save token PSP offset in arg_offsets (up to MAX_DOCS)
+    CMP     BYTE [arg_file_count], MAX_DOCS
+    JAE     .skip_offset
+    PUSH    BX
+    MOV     BL, [arg_file_count]
+    XOR     BH, BH
+    SHL     BX, 1
+    MOV     [BX + rd_save_buf], DX
+    POP     BX
+.skip_offset:
+    INC     BYTE [arg_file_count]
+
+    ; Token length in BX
+    MOV     BX, SI
+    SUB     BX, DX
+
+    ; ---- Check for .PRJ extension (case-insensitive) ----
+    CMP     BX, 4
+    JB      .no_prj_ext
+    PUSH    DI
+    MOV     DI, SI
+    SUB     DI, 4
+    CMP     BYTE [DI], '.'
+    JNE     .no_prj_pop
+    MOV     AL, [DI+1]
+    OR      AL, 20h
+    CMP     AL, 'p'
+    JNE     .no_prj_pop
+    MOV     AL, [DI+2]
+    OR      AL, 20h
+    CMP     AL, 'r'
+    JNE     .no_prj_pop
+    MOV     AL, [DI+3]
+    OR      AL, 20h
+    CMP     AL, 'j'
+    JNE     .no_prj_pop
+    MOV     BYTE [arg_has_prj], 1
+.no_prj_pop:
+    POP     DI
+.no_prj_ext:
+
+    ; ---- If first filename, copy to [filename] ----
+    CMP     BYTE [arg_file_count], 1
+    JNE     .scan_loop
+
+    PUSH    SI
+    PUSH    CX
+    MOV     CX, BX                     ; CX = token length
+    CMP     CX, 127
+    JBE     .copy_len_ok
+    MOV     CX, 127
+.copy_len_ok:
+    MOV     SI, DX                     ; SI = token start
+    MOV     DI, filename
+    REP     MOVSB
     MOV     BYTE [DI], 0
+    POP     CX
+    POP     SI
     JMP     .scan_loop
 
 .check_flag:
-    ; SI points at '/'
     INC     SI
     DEC     CX
     TEST    CX, CX
@@ -81,7 +158,7 @@ parse_args:
     JE      .flag_t
     CMP     BYTE [SI], 'T'
     JE      .flag_t
-    JMP     .skip_token             ; unknown flag
+    JMP     .skip_token
 
 .flag_t:
     INC     SI
@@ -90,7 +167,7 @@ parse_args:
     JZ      .scan_done
     CMP     BYTE [SI], ' '
     JE      .flag_t_space
-    JMP     .flag_t_digit           ; digit immediately follows /t
+    JMP     .flag_t_digit
 
 .flag_t_space:
     INC     SI
@@ -110,7 +187,7 @@ parse_args:
     JE      .set_tab_4
     CMP     AL, '8'
     JE      .set_tab_8
-    JMP     .scan_loop              ; invalid value — ignore
+    JMP     .scan_loop
 
 .set_tab_2:
     MOV     WORD [tab_width], 2
@@ -136,7 +213,7 @@ parse_args:
     JMP     .skip_token
 
 .scan_done:
-    CMP     BYTE [filename], 0
+    CMP     BYTE [arg_file_count], 0
     JE      .no_fn
     CLC
     RET
@@ -215,8 +292,7 @@ load_file PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_file_trunc
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
 .lf_no_trunc:
@@ -326,12 +402,10 @@ resolve_piece PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     ; SI = BX * 10
-    MOV     SI, BX
-    SHL     SI, 1
-    MOV     AX, SI
-    SHL     SI, 1
-    SHL     SI, 1
-    ADD     SI, AX
+    PUSH    DI
+    CALL    mul_bx_10
+    MOV     SI, DI
+    POP     DI
     ; Read length
     MOV     DX, ES:[SI + PT_F_LENGTH]
     ; Read start
@@ -1194,12 +1268,7 @@ split_piece_at PROC
     MOV     ES, AX
 
     ; DI = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                  ; DI = BX * 10
+    CALL    mul_bx_10
 
     ; Save fields for right piece
     MOV     DX, ES:[DI + PT_F_LENGTH]
@@ -1225,12 +1294,7 @@ split_piece_at PROC
     ; Write right piece descriptor at slot BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                  ; DI = BX * 10
+    CALL    mul_bx_10
 
     POP     AX                      ; source
     MOV     ES:[DI + PT_F_SOURCE], AL
@@ -1402,12 +1466,7 @@ range_delete_pieces PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     MOV     BX, [rd_end_pi]
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     AX, ES:[DI + PT_F_LENGTH]
     MOV     [rd_end_plen], AX
     POP     ES
@@ -1478,12 +1537,9 @@ range_delete_pieces PROC
     ; Source: pt_seg, offset = start_pi * 10
     MOV     AX, [pt_seg]
     MOV     DS, AX
-    MOV     SI, CS:[rd_start_pi]
-    SHL     SI, 1
-    MOV     AX, SI
-    SHL     SI, 1
-    SHL     SI, 1
-    ADD     SI, AX                ; SI = start_pi * 10
+    MOV     BX, CS:[rd_start_pi]
+    CALL    mul_bx_10
+    MOV     SI, DI
 
     ; Dest: CS:rd_save_buf + rd_save_used * PT_DESC_SIZE (LIFO stack)
     PUSH    CS
@@ -1678,12 +1734,7 @@ pt_remove PROC
     MOV     CX, AX            ; CX = words to move
 
     ; Dest = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX            ; DI = BX * 10
+    CALL    mul_bx_10
 
     ; Source = (BX+1) * 10 = DI + 10
     MOV     SI, DI

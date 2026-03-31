@@ -28,7 +28,22 @@ tui_ed_handle_key PROC
     JE      .panel_up
     CMP     AL, 50h                     ; Down arrow
     JE      .panel_down
-    JMP     .panel_eat                  ; ignore other extended keys
+
+    ; Alt+1..0 / Alt+Shift+1..0: close panel and switch document
+    CMP     AL, 78h                     ; Alt+1 scancode
+    JB      .panel_eat
+    CMP     AL, 81h                     ; Alt+0 scancode
+    JA      .panel_eat
+    SUB     AL, 78h                     ; AL = 0-9
+    TEST    BYTE [_key_modifiers], 03h  ; Shift also held?
+    JZ      .panel_alt_go
+    ADD     AL, 10                      ; shift tier: slots 10-19
+.panel_alt_go:
+    MOV     BYTE [panel_visible], 0
+    CMP     AL, [active_doc]
+    JE      .panel_eat_dirty            ; already active — just close
+    CALL    doc_switch
+    JMP     .panel_eat_dirty
 
 .panel_normal_key:
     CMP     AL, 0Dh                     ; Enter
@@ -684,12 +699,16 @@ tui_ed_handle_key PROC
     JMP     .do_toggle_ovr                  ; plain 52h → Insert toggle
 .not_insert:
 
-    ; ---- Alt+1..8: switch document slot ----
-    CMP     AL, 78h
+    ; ---- Alt+1..0 / Alt+Shift+1..0: switch document slot ----
+    CMP     AL, 78h                 ; Alt+1 scancode
     JB      .not_alt_num
-    CMP     AL, 7Fh
+    CMP     AL, 81h                 ; Alt+0 scancode
     JA      .not_alt_num
-    SUB     AL, 78h                 ; AL = slot index (0-7)
+    SUB     AL, 78h                 ; AL = 0-9
+    TEST    BYTE [_key_modifiers], 03h  ; Shift also held?
+    JZ      .alt_no_shift
+    ADD     AL, 10                  ; shift tier: slots 10-19
+.alt_no_shift:
     CALL    doc_switch
     MOV     BYTE [fw_state + FW_DIRTY], 1
     CLC

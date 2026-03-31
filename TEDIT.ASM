@@ -26,10 +26,10 @@ INCLUDE TUI\tui.inc
 ; ============================================================
 
 ; ---- Error messages (DOS $-terminated, used before TUI init) ----
-s_usage:     DB 'Usage: TEDIT <filename>', 0Dh, 0Ah, '$'
-s_nofile:    DB 'Error: cannot open file', 0Dh, 0Ah, '$'
-s_nomem:     DB 'Error: out of memory', 0Dh, 0Ah, '$'
-s_err_mda:   DB 'Error: Requires 80-column text mode (CGA/EGA/VGA)', 0Dh, 0Ah, '$'
+s_nofile:    DB 'Cannot open file', 0Dh, 0Ah, '$'
+s_nomem:     DB 'Out of memory', 0Dh, 0Ah, '$'
+s_err_mda:   DB 'Requires 80-column text mode', 0Dh, 0Ah, '$'
+s_err_mixed: DB 'Cannot mix .PRJ and documents', 0Dh, 0Ah, '$'
 
 ; ---- Status bar strings (null-terminated, for shadow_buf writing) ----
 s_stat_ln:   DB ' Line ', 0
@@ -146,7 +146,7 @@ m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.60', 0
+m_str_about_1:   DB 'TEDIT v0.63', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -155,30 +155,30 @@ m_str_open_ttl:  DB 'Open File', 0
 m_str_save_ttl:  DB 'Save As', 0
 m_str_save_pr:   DB 'Filename:', 0
 m_str_overwrite: DB 'File exists. Overwrite?', 0
-m_str_save_warn: DB 'Save As', 0
-m_str_quit_ttl:  DB 'Quit', 0
+m_str_save_warn  EQU m_str_save_ttl
+m_str_quit_ttl   EQU m_str_quit
 m_str_quit_ask:  DB 'Save changes before closing?', 0
 m_str_error:     DB 'Error', 0
 m_str_err_open:  DB 'Cannot open file', 0
 m_str_err_mem:   DB 'Out of memory', 0
 m_str_buf_ttl:   DB 'Buffer Full', 0
-m_str_buf_ask:   DB 'Save+reload? Undo history cleared.', 0
+m_str_buf_ask:   DB 'Save+reload? Undo cleared.', 0
 m_str_buf_err:   DB 'Reload failed - file on disk', 0
-m_str_clip_full: DB 'Selection too large to copy', 0
+m_str_clip_full: DB 'Selection too large.', 0
 
 ; ---- Error/warning strings for preventive fixes ----
-s_err_save_fail:   DB 'Error: Could not save file.', 0
-s_err_save_write:  DB 'Error: Write failed (disk full?).', 0
-s_err_pt_full:     DB 'Piece table full. Save and reload.', 0
+s_err_save_fail:   DB 'Could not save file.', 0
+s_err_save_write:  DB 'Write failed (disk full?).', 0
+s_err_pt_full:     DB 'Table full. Save and reload.', 0
 s_err_undo_lost:   DB 'Cannot undo: history too old.', 0
-s_err_file_trunc:  DB 'Warning: File exceeds 32MB limit.', 0
+s_err_file_trunc:  DB 'File exceeds 32MB limit.', 0
 s_err_copy_big:    DB 'Selection exceeds copy limit.', 0
 s_err_paste_pt:    DB 'Paste failed: table full.', 0
 s_err_redo_noop:   DB 'Redo not available for paste.', 0
 s_err_swap_out:    DB 'Cannot swap document to disk.', 0
 s_err_swap_in:     DB 'Cannot load target document.', 0
-s_err_max_docs:    DB 'Maximum 8 documents open.', 0
-s_quit_unsaved:    DB 'Other documents have unsaved changes.', 0
+s_err_max_docs:    DB 'Maximum 20 documents open.', 0
+s_quit_unsaved:    DB 'Other docs have unsaved changes.', 0
 
 ; ---- Find dialog strings ----
 s_find_title:        DB 'Find', 0
@@ -197,7 +197,7 @@ s_repl_prompt:   DB 'Replace with:', 0
 s_repl_confirm:  DB 'Replace this match?', 0
 s_repl_done_sfx: DB ' replacements made.', 0
 s_repl_all:      DB 'Replace all', 0
-s_repl_perm:     DB 'Cannot undo. Save and replace all?', 0
+s_repl_perm:     DB 'Save and replace all?', 0
 s_repl_perm_ttl: DB 'Warning', 0
 
 ; ---- Goto dialog strings ----
@@ -207,7 +207,7 @@ s_goto_invalid:  DB 'Invalid line number.', 0
 s_goto_range:    DB 'Line number out of range.', 0
 
 ; ---- Word Wrap dialog strings ----
-s_wrap_confirm:  DB 'Save and wrap to 80 cols? Cannot undo.', 0
+s_wrap_confirm:  DB 'Save and wrap to 80 cols?', 0
 
 ; ---- Edit menu strings ----
 m_str_edit:      DB 'Edit', 0
@@ -628,8 +628,7 @@ menu_new_handler:
     JNC     .new_have_slot
 
     MOV     SI, s_err_max_docs
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     JMP     .new_done
 
 .new_have_slot:
@@ -727,8 +726,7 @@ menu_open_handler:
     CALL    doc_find_free_slot
     JNC     .open_show_dlg
     MOV     SI, s_err_max_docs
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     JMP     .open_done
 
 .open_show_dlg:
@@ -1357,8 +1355,7 @@ menu_saveprj_handler:
 
 .sprj_err:
     MOV     SI, s_err_prj_open
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     PopAll
     RET
 
@@ -1548,8 +1545,7 @@ menu_loadprj_handler:
     POP     SI
     POP     CX
     MOV     SI, s_prj_truncated
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     JMP     .lprj_final
 
 .lprj_swap_fail:
@@ -1566,8 +1562,7 @@ menu_loadprj_handler:
 
 .lprj_err_open:
     MOV     SI, s_err_prj_open
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     PopAll
     RET
 
@@ -1634,8 +1629,7 @@ menu_shell_handler:
     MOV     AX, DS
     MOV     ES, AX
     MOV     SI, s_err_no_comspec
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     JMP     .sh_done
 
 .sh_found:
@@ -1697,9 +1691,13 @@ menu_shell_handler:
     MOV     AX, 0003h               ; reset mode 3
     INT     10h
 
-    ; Reinitialize mouse driver
-    MOV     AX, 0000h
-    INT     33h
+    ; Hide BIOS text cursor (mode reset makes it visible again)
+    MOV     AH, 01h
+    MOV     CH, 20h                 ; start line > max = hidden
+    INT     10h
+
+    ; Reinitialize mouse driver (reset + set ranges + show cursor)
+    CALL    tui_mouse_init
 
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
@@ -1709,13 +1707,11 @@ menu_shell_handler:
 
 menu_undo_handler:
     MOV     BYTE [undo_group_active], 0
-    CALL    undo_execute
-    RET
+    JMP     undo_execute
 
 menu_redo_handler:
     MOV     BYTE [undo_group_active], 0
-    CALL    redo_execute
-    RET
+    JMP     redo_execute
 
 ; ============================================================
 ; menu_saveas_handler — Save As with file browser + text field
@@ -1870,8 +1866,7 @@ menu_wordwrap_handler:
 
 .ww_fail:
     MOV     SI, s_err_save_fail
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
 
 .ww_done:
     POP     CX
@@ -2615,7 +2610,17 @@ main:
     CALL    parse_args
     JC      .no_file
 
-    ; ---- Open and load file ----
+    ; ---- Check for project file or multiple files ----
+    CMP     BYTE [arg_has_prj], 0
+    JZ      .not_prj_cmdline
+    CMP     BYTE [arg_file_count], 1
+    JA      .err_mixed
+    JMP     .load_prj_cmdline
+.not_prj_cmdline:
+    CMP     BYTE [arg_file_count], 1
+    JA      .load_multi_cmdline
+
+    ; ---- Single file (existing code) ----
     CALL    open_file
     JC      .err_nofile
 
@@ -2672,6 +2677,249 @@ main:
     MEM_SNAPSHOT doc_tbl_snap, DS, doc_table, MAX_DOCS * DOC_SLOT_SIZE
 
     JMP     .start_tui
+
+; ====================================================================
+; .alloc_early — Allocate undo + clipboard before multi-file loading
+; doc_swap_out reads undo_pos/undo_count from BSS, so undo_init must
+; run first to zero them.  Returns: CF=1 if alloc fails.
+; ====================================================================
+.alloc_early:
+    MOV     BX, UNDO_SEG_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .ae_fail
+    MOV     [undo_seg], AX
+    CALL    undo_init
+    MOV     BX, CLIP_SEG_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .ae_fail
+    MOV     [clip_seg], AX
+    MOV     WORD [clip_used], 0
+    CLC
+    RET
+.ae_fail:
+    STC
+    RET
+
+; ====================================================================
+; .load_startup_file — Load [filename] into a document slot at startup
+; Uses [prj_first_file] to decide slot 0 vs new slot.
+; Returns: CF=0 success, CF=1 failure
+; ====================================================================
+.load_startup_file:
+    CMP     BYTE [prj_first_file], 1
+    JNE     .lsf_subsequent
+
+    ; ---- First file → slot 0 ----
+    MOV     BYTE [prj_first_file], 0
+    XOR     AL, AL
+    MOV     SI, filename
+    CALL    doc_slot_init
+    MOV     BYTE [active_doc], 0
+    MOV     BYTE [doc_count], 1
+    JMP     .lsf_open
+
+.lsf_subsequent:
+    ; ---- Subsequent → swap out current, allocate new slot ----
+    CALL    doc_swap_out
+    JC      .lsf_fail
+    CALL    doc_find_free_slot
+    JC      .lsf_fail
+    PUSH    AX                          ; save slot index (doc_slot_init clobbers AL)
+    MOV     SI, filename
+    CALL    doc_slot_init
+    POP     AX                          ; restore slot index
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+    INC     BYTE [doc_count]
+
+.lsf_open:
+    CALL    open_file
+    JC      .lsf_fail
+    CALL    load_file
+    JC      .lsf_fail
+    MOV     BX, [file_hnd]
+    MOV     AH, 3Eh
+    INT     21h
+    CALL    pt_init
+    JC      .lsf_fail
+    MOV     BX, ADD_BUF_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .lsf_fail
+    MOV     [add_seg], AX
+    MOV     WORD [add_used], 0
+    CALL    rebuild_meta
+    CALL    clamp_cursor
+    MOV     BYTE [meta_dirty], 0
+    MOV     WORD [top_line], 0
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    CALL    undo_init
+    CLC
+    RET
+.lsf_fail:
+    STC
+    RET
+
+; ====================================================================
+; .load_multi_cmdline — Load multiple files from command line
+; Iterates arg_offsets[], loading each file into a separate slot.
+; ====================================================================
+.load_multi_cmdline:
+    CALL    .alloc_early
+    JC      .err_nomem
+
+    MOV     BYTE [prj_first_file], 1
+    XOR     BX, BX                      ; BX = file index (BL used)
+
+.lm_loop:
+    CMP     BL, [arg_file_count]
+    JAE     .lm_done
+    CMP     BL, MAX_DOCS
+    JAE     .lm_done
+
+    ; ---- Get filename from saved PSP offset ----
+    PUSH    BX
+    XOR     BH, BH
+    SHL     BX, 1
+    MOV     SI, [BX + rd_save_buf]
+
+    ; Copy to [filename]
+    MOV     DI, filename
+.lm_copy:
+    MOV     AL, [SI]
+    CMP     AL, ' '
+    JE      .lm_copy_end
+    CMP     AL, 0Dh
+    JE      .lm_copy_end
+    CMP     AL, 0Ah
+    JE      .lm_copy_end
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    JMP     .lm_copy
+.lm_copy_end:
+    MOV     BYTE [DI], 0
+
+    CALL    .load_startup_file
+    JC      .lm_fail
+
+    POP     BX
+    INC     BL
+    JMP     .lm_loop
+
+.lm_fail:
+    POP     BX
+    JMP     .err_nofile
+
+.lm_done:
+    JMP     .start_tui
+
+; ====================================================================
+; .load_prj_cmdline — Load a .PRJ project file from command line
+; Opens the PRJ, reads filenames, loads each into a slot.
+; ====================================================================
+.load_prj_cmdline:
+    CALL    .alloc_early
+    JC      .err_nomem
+
+    ; ---- Open and read the .PRJ file ----
+    CALL    open_file
+    JC      .err_nofile
+
+    MOV     BX, [file_hnd]
+    MOV     DX, rd_save_buf
+    MOV     CX, 1020
+    MOV     AH, 3Fh
+    INT     21h
+    PUSH    AX                          ; save bytes read
+    MOV     BX, [file_hnd]
+    MOV     AH, 3Eh
+    INT     21h                         ; close PRJ file
+    POP     AX
+    MOV     [prj_bytes_read], AX
+
+    CMP     WORD [prj_bytes_read], 0
+    JE      .no_file                    ; empty PRJ → untitled doc
+
+    ; ---- Parse lines from rd_save_buf ----
+    MOV     BYTE [prj_first_file], 1
+    MOV     SI, rd_save_buf
+    MOV     CX, [prj_bytes_read]
+
+.lp_parse:
+    OR      CX, CX
+    JZ      .lp_done
+.lp_skip_ws:
+    CMP     BYTE [SI], 0Dh
+    JE      .lp_skip1
+    CMP     BYTE [SI], 0Ah
+    JE      .lp_skip1
+    CMP     BYTE [SI], ' '
+    JE      .lp_skip1
+    JMP     .lp_got_line
+.lp_skip1:
+    INC     SI
+    DEC     CX
+    JNZ     .lp_skip_ws
+    JMP     .lp_done
+
+.lp_got_line:
+    ; Copy line to [filename]
+    MOV     DI, filename
+    XOR     DL, DL                      ; DL = char count
+.lp_copy:
+    OR      CX, CX
+    JZ      .lp_line_end
+    MOV     AL, [SI]
+    CMP     AL, 0Dh
+    JE      .lp_line_end
+    CMP     AL, 0Ah
+    JE      .lp_line_end
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    INC     DL
+    DEC     CX
+    CMP     DL, 127
+    JB      .lp_copy
+.lp_line_end:
+    MOV     BYTE [DI], 0
+    TEST    DL, DL
+    JZ      .lp_parse                   ; empty line → skip
+
+    PUSH    CX
+    PUSH    SI
+
+    CALL    .load_startup_file
+    JC      .lp_fail
+
+    POP     SI
+    POP     CX
+    JMP     .lp_parse
+
+.lp_fail:
+    POP     SI
+    POP     CX
+    JMP     .err_nofile
+
+.lp_done:
+    CMP     BYTE [doc_count], 0
+    JE      .no_file
+    JMP     .start_tui
+
+; ====================================================================
+; .err_mixed — User specified both .PRJ and regular files
+; ====================================================================
+.err_mixed:
+    MOV     DX, s_err_mixed
+    MOV     AH, 09h
+    INT     21h
+    INT     20h
 
 .no_file:
     CALL    ed_new_doc
@@ -2845,6 +3093,8 @@ main:
 ; reads these fields by offset.
 ; ============================================================
 
+SECTION .bss
+
 ed_state:
 DOC_CTX:
 top_line:       RESW 1          ; +0   ED_SCROLLY
@@ -3012,7 +3262,7 @@ overwrite_mode:     RESB 1      ; 0 = insert, 1 = overwrite
 
 ; ---- Document side panel ----
 panel_visible:      RESB 1      ; 0 = hidden, 1 = shown
-panel_sel:          RESB 1      ; highlighted slot index (0-7)
+panel_sel:          RESB 1      ; highlighted slot index (0-19)
 
 ; ---- Goto ----
 goto_buf:           RESB 6      ; line number input (max 5 digits + null)
@@ -3025,9 +3275,9 @@ doc_cwd:            RESB 68     ; active document's CWD, "D:\path\0" format
 swap_hnd:           RESW 1      ; swap file handle during swap-in
 
 ; ---- Multi-document state ----
-active_doc:     RESB 1          ; index of currently active document slot (0-7)
-doc_count:      RESB 1          ; number of occupied slots (1-8)
-doc_table:      RESB MAX_DOCS * DOC_SLOT_SIZE   ; 8 × 152 = 1216 bytes
+active_doc:     RESB 1          ; index of currently active document slot (0-19)
+doc_count:      RESB 1          ; number of occupied slots (1-20)
+doc_table:      RESB MAX_DOCS * DOC_SLOT_SIZE   ; 20 × 152 = 3040 bytes
 
 ; ---- Open handler scratch ----
 open_reuse_flag:  RESB 1          ; 1 = reuse current slot, 0 = new slot
@@ -3078,6 +3328,9 @@ prj_file_hnd:       RESW 1          ; PRJ file handle during load/save
 prj_bytes_read:     RESW 1          ; bytes read from PRJ file
 prj_first_file:     RESB 1          ; flag: first file reuses slot 0
 prj_pat_save:       RESB 14         ; saved dlg_file_pattern for project dialogs
+arg_file_count:     RESB 1          ; number of filename args from command line
+arg_has_prj:        RESB 1          ; 1 if a .PRJ file was in command-line args
+; NOTE: arg offsets stored in rd_save_buf (reused — mutually exclusive with PRJ content)
 shell_comspec:      RESB 128        ; COMSPEC path from environment
 shell_cmdtail:      RESB 2          ; empty command tail (00h, 0Dh)
 shell_fcb:          RESB 37         ; dummy FCB for EXEC

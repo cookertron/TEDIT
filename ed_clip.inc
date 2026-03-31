@@ -265,19 +265,13 @@ ed_copy PROC
     ; ---- Show "Selection too large" dialog ----
     PUSH    SI                          ; prevent register leak to caller
     MOV     SI, m_str_clip_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     SI                          ; restore SI
     JMP     .ec_restore_fail
 
 .ec_offset_overflow:
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_copy_big
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .ec_restore_fail
 
 .ec_restore_fail:
@@ -307,8 +301,7 @@ ed_copy ENDP
 ; ============================================================
 
 menu_copy_handler:
-    CALL    ed_copy
-    RET
+    JMP     ed_copy
 
 ; ============================================================
 ; ed_cut — Cut selected text (Copy + Delete)
@@ -351,8 +344,7 @@ ed_cut ENDP
 ; ============================================================
 
 menu_cut_handler:
-    CALL    ed_cut
-    RET
+    JMP     ed_cut
 
 ; ============================================================
 ; ed_paste — Paste clipboard contents at cursor position
@@ -475,12 +467,7 @@ ed_paste PROC
     MOV     DS, AX
 
     ; Compute descriptor offset = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                  ; DI = BX * 10
+    CALL    mul_bx_10
 
     MOV     DX, [DI + PT_F_LENGTH]  ; DX = piece length (low word)
     POP     DS
@@ -512,12 +499,7 @@ ed_paste PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     ; Compute DI = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
@@ -543,12 +525,7 @@ ed_paste PROC
     PUSH    ES
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
@@ -580,12 +557,7 @@ ed_paste PROC
     MOV     ES, AX
 
     ; Compute DI = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                  ; DI = BX * 10
+    CALL    mul_bx_10
 
     ; Save fields for right piece (push order: source, start_lo, start_hi, right_len)
     MOV     AX, DX
@@ -611,12 +583,7 @@ ed_paste PROC
     ; Write right piece descriptor at BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     POP     AX                      ; source
     MOV     ES:[DI + PT_F_SOURCE], AL
@@ -642,12 +609,7 @@ ed_paste PROC
     ; Write paste piece descriptor at BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
@@ -724,13 +686,8 @@ ed_paste PROC
     MOV     [add_used], AX
 
     ; ---- Show error dialog ----
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_paste_pt
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
 
     POP     ES
     POP     DI
@@ -749,5 +706,4 @@ ed_paste ENDP
 ; ============================================================
 
 menu_paste_handler:
-    CALL    ed_paste
-    RET
+    JMP     ed_paste

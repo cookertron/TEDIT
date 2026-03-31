@@ -27,7 +27,7 @@ doc_table_init PROC
     MOV     BYTE [active_doc], 0
     MOV     BYTE [doc_count], 0
 
-    ; Write constant DOC_SLOT_ID for each slot (0-7)
+    ; Write constant DOC_SLOT_ID for each slot (0 to MAX_DOCS-1)
     MOV     DI, doc_table
     XOR     AL, AL
 .init_ids:
@@ -62,8 +62,8 @@ doc_get_slot ENDP
 ; doc_find_free_slot — Find first free slot in document table
 ;
 ; Input:  None
-; Output: CF=0 found: AL = slot index (0-7)
-;         CF=1 not found: all 8 slots occupied
+; Output: CF=0 found: AL = slot index (0 to MAX_DOCS-1)
+;         CF=1 not found: all slots occupied
 ; Clobbers: AX, DI
 ; ============================================================
 doc_find_free_slot PROC
@@ -90,7 +90,7 @@ doc_find_free_slot ENDP
 ; Sets the slot as occupied, copies a filename into it,
 ; clears cached fields, and generates the swap path.
 ;
-; Input:  AL = slot index (0-7)
+; Input:  AL = slot index (0 to MAX_DOCS-1)
 ;         SI = pointer to filename (null-terminated, or SI=0 for untitled)
 ; Output: DI = pointer to initialized slot
 ; Clobbers: AX, BX, CX, DI
@@ -115,7 +115,7 @@ doc_slot_init PROC
 
 .untitled:
     MOV     BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
-    ; Generate "unsavedN.txt" where N = slot index + 1
+    ; Generate "unsavedNN.txt" where NN = slot index + 1 (01-20)
     PUSH    DI
     PUSH    AX
     ADD     DI, DOC_FILENAME
@@ -126,13 +126,20 @@ doc_slot_init PROC
     MOV     BYTE [DI+4], 'v'
     MOV     BYTE [DI+5], 'e'
     MOV     BYTE [DI+6], 'd'
-    ADD     AL, '1'                 ; slot 0 → '1', slot 7 → '8'
+    INC     AL                      ; slot+1 → 1-20
+    XOR     AH, AH
+    MOV     CL, 10
+    DIV     CL                      ; AL = tens, AH = ones
+    ADD     AL, '0'
     MOV     [DI+7], AL
-    MOV     BYTE [DI+8], '.'
-    MOV     BYTE [DI+9], 't'
-    MOV     BYTE [DI+10], 'x'
-    MOV     BYTE [DI+11], 't'
-    MOV     BYTE [DI+12], 0
+    MOV     AL, AH
+    ADD     AL, '0'
+    MOV     [DI+8], AL
+    MOV     BYTE [DI+9], '.'
+    MOV     BYTE [DI+10], 't'
+    MOV     BYTE [DI+11], 'x'
+    MOV     BYTE [DI+12], 't'
+    MOV     BYTE [DI+13], 0
     POP     AX
     POP     DI
     JMP     .gen_swap
@@ -156,7 +163,7 @@ doc_slot_init PROC
     POP     DI
 
 .gen_swap:
-    ; Generate swap path "TEDT000N.SWP" where N = slot index + '0'
+    ; Generate swap path "TEDT00NN.SWP" where NN = slot index (00-19)
     POP     AX                  ; AL = slot index
     MOV     BX, DI
     ADD     BX, DOC_SWAP_PATH
@@ -166,7 +173,13 @@ doc_slot_init PROC
     MOV     BYTE [BX+3], 'T'
     MOV     BYTE [BX+4], '0'
     MOV     BYTE [BX+5], '0'
-    MOV     BYTE [BX+6], '0'
+    ; Two-digit slot index (00-19)
+    XOR     AH, AH
+    MOV     CL, 10
+    DIV     CL                  ; AL = tens, AH = ones
+    ADD     AL, '0'
+    MOV     [BX+6], AL
+    MOV     AL, AH
     ADD     AL, '0'
     MOV     [BX+7], AL
     MOV     BYTE [BX+8], '.'
@@ -943,8 +956,7 @@ doc_switch PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_swap_out
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     STC
@@ -961,8 +973,7 @@ doc_switch PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_swap_in
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     STC
@@ -1034,7 +1045,7 @@ doc_prev_occupied PROC
     DEC     AL
     CMP     AL, 0FFh                ; underflow check (was 0, now FFh)
     JNE     .no_wrap
-    MOV     AL, MAX_DOCS - 1         ; wrap to slot 7
+    MOV     AL, MAX_DOCS - 1         ; wrap to last slot
 .no_wrap:
     CMP     AL, [active_doc]
     JE      .none

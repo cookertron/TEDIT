@@ -421,8 +421,7 @@ undo_execute PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_undo_lost
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     JMP     .u_restore                  ; still restore cursor position
@@ -473,12 +472,7 @@ undo_execute PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     ; Compute DI = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                      ; DI = BX * 10
+    CALL    mul_bx_10
 
     ; Copy 5 words from DS:SI to ES:DI
     MOV     CX, 5
@@ -725,8 +719,7 @@ redo_execute PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_undo_lost
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     JMP     .r_advance                  ; skip deletion, advance undo_pos
@@ -798,8 +791,7 @@ redo_execute PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_redo_noop
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     JMP     .r_advance

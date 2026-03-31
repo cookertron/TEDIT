@@ -387,12 +387,10 @@ tui_ctrl_draw_editor:
     MOV     BX, AX
 
     ; SI = BX * 10
-    MOV     SI, BX
-    SHL     SI, 1
-    MOV     AX, SI
-    SHL     SI, 1
-    SHL     SI, 1
-    ADD     SI, AX
+    PUSH    DI
+    CALL    mul_bx_10
+    MOV     SI, DI
+    POP     DI
 
     ; Read descriptor from pt_seg via ES (temporarily)
     PUSH    ES
@@ -696,19 +694,43 @@ ed_draw_status_line PROC
     MOV     AL, '['
     STOSW
     MOV     AL, [active_doc]
-    INC     AL
-    ADD     AL, '0'
-    STOSW
+    INC     AL                      ; 1-20
+    CALL    .ed_write_num
     MOV     AL, '/'
     STOSW
-    MOV     AL, [doc_count]
-    ADD     AL, '0'
-    STOSW
+    MOV     AL, [doc_count]         ; 1-20
+    CALL    .ed_write_num
     MOV     AL, ']'
     STOSW
 .skip_doc_counter:
 
     RET
+
+; Write number AL (1-20) as 1 or 2 ASCII digits to ES:DI
+; Input:  AL = number, AH = attribute (preserved)
+; Output: DI advanced
+.ed_write_num:
+    CMP     AL, 20
+    JE      .ewn_20
+    CMP     AL, 10
+    JB      .ewn_single
+    ; 10-19: write '1' then ones digit
+    PUSH    AX
+    MOV     AL, '1'
+    STOSW
+    POP     AX
+    SUB     AL, 10
+.ewn_single:
+    ADD     AL, '0'
+    STOSW
+    RET
+.ewn_20:
+    MOV     AL, '2'
+    STOSW
+    MOV     AL, '0'
+    STOSW
+    RET
+
 ed_draw_status_line ENDP
 
 ; ============================================================
@@ -826,9 +848,10 @@ ed_draw_cursor ENDP
 ; ============================================================
 ; ed_draw_panel — Draw document switcher side panel overlay
 ;
-; When panel_visible=1, draws an overlay on the left side of
-; the editor area showing all occupied document slots.
-; Format per row: │N FILENAME.EXT*│  (17 chars, cols 0-16)
+; When panel_visible=1, draws a two-tier overlay on the left
+; side of the editor area. Tier 1 (ALT+n) shows slots 0-9,
+; tier 2 (ALT+SHFT+n) shows slots 10-19 if any are occupied.
+; Format per row: │»N FILENAME.EXT*│  (18 chars, cols 0-17)
 ;
 ; Input:  ES = DS = CS (from tui_ctrl_draw_editor context)
 ; Output: None
@@ -838,136 +861,68 @@ ed_draw_panel PROC
     CMP     BYTE CS:[panel_visible], 0
     JZ      .ep_done
 
-    ; Walk doc_table, draw only occupied slots
-    MOV     SI, doc_table
-    XOR     DL, DL                  ; DL = slot counter (0-7)
     MOV     DH, 1                   ; DH = screen row (start at row 1)
 
-.ep_slot_loop:
+    ; ---- Tier 1 header: "ALT+n:" ----
+    PUSH    SI
+    MOV     SI, .hdr_tier1
+    CALL    .ep_draw_hdr
+    POP     SI
+
+    ; ---- Tier 1 occupied slots (0-9) ----
+    MOV     SI, doc_table
+    XOR     DL, DL                  ; DL = slot counter
+.ep_t1_loop:
+    CMP     DL, 10
+    JAE     .ep_t1_done
+    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .ep_t1_next
+    CALL    .ep_draw_slot
+.ep_t1_next:
+    ADD     SI, DOC_SLOT_SIZE
+    INC     DL
+    JMP     .ep_t1_loop
+.ep_t1_done:
+    ; DL = 10, SI = doc_table + 10*DOC_SLOT_SIZE
+
+    ; ---- Check if tier 2 has any occupied slots ----
+    PUSH    SI
+    PUSH    DX
+    MOV     CL, DL                  ; CL = 10
+.ep_t2_check:
+    CMP     CL, MAX_DOCS
+    JAE     .ep_no_t2
+    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
+    JNZ     .ep_has_t2
+    ADD     SI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .ep_t2_check
+.ep_no_t2:
+    POP     DX
+    POP     SI
+    JMP     .ep_fill
+.ep_has_t2:
+    POP     DX
+    POP     SI
+    ; SI and DL restored to slot 10
+
+    ; ---- Tier 2 header: "ALT+SHFT+n:" ----
+    PUSH    SI
+    MOV     SI, .hdr_tier2
+    CALL    .ep_draw_hdr
+    POP     SI
+
+    ; ---- Tier 2 occupied slots (10-19) ----
+.ep_t2_loop:
     CMP     DL, MAX_DOCS
     JAE     .ep_fill
     TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
-    JZ      .ep_next_slot
-
-    ; ---- Compute shadow buffer position: row DH, col 0 ----
-    MOV     BL, DH
-    XOR     BH, BH
-    SHL     BX, 1
-    MOV     DI, CS:[BX + row_offsets]
-    ADD     DI, shadow_buf
-
-    ; ---- Determine attribute ----
-    MOV     AH, PANEL_ATTR_NORM
-    CMP     DL, CS:[panel_sel]
-    JNE     .ep_not_sel
-    MOV     AH, PANEL_ATTR_HI
-.ep_not_sel:
-
-    ; ---- Col 0: left border │ ----
-    MOV     AL, 0B3h
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-
-    ; ---- Col 1: arrow indicator (» if highlighted, space if not) ----
-    MOV     AL, ' '
-    CMP     DL, CS:[panel_sel]
-    JNE     .ep_no_arrow
-    MOV     AL, 0AFh                ; » (CP437 175)
-.ep_no_arrow:
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-
-    ; ---- Col 2: slot number ----
-    MOV     AL, DL
-    ADD     AL, '1'
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-
-    ; ---- Col 2: space ----
-    MOV     AL, ' '
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-
-    ; ---- Cols 3-14: basename (12 chars, space-padded) ----
-    ; Find basename: scan DOC_FILENAME for last '\'
-    PUSH    SI
-    PUSH    DI
-    MOV     BX, SI
-    ADD     BX, DOC_FILENAME        ; BX = start of filename
-    MOV     DI, BX                  ; DI = best basename start
-.ep_scan_bs:
-    MOV     AL, CS:[BX]
-    TEST    AL, AL
-    JZ      .ep_found_base
-    CMP     AL, '\'
-    JNE     .ep_scan_next
-    MOV     DI, BX
-    INC     DI
-.ep_scan_next:
-    INC     BX
-    JMP     .ep_scan_bs
-.ep_found_base:
-    MOV     BX, DI                  ; BX = basename pointer
-    POP     DI
-    POP     SI
-
-    ; Write up to 12 chars of basename, pad with spaces
-    MOV     CX, 12
-.ep_write_name:
-    MOV     AL, CS:[BX]
-    TEST    AL, AL
-    JZ      .ep_pad_name
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-    INC     BX
-    DEC     CX
-    JNZ     .ep_write_name
-    JMP     .ep_after_name
-.ep_pad_name:
-    MOV     AL, ' '
-.ep_pad_loop:
-    JCXZ    .ep_after_name
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-    DEC     CX
-    JMP     .ep_pad_loop
-.ep_after_name:
-
-    ; ---- Col 15: dirty indicator ----
-    MOV     AL, ' '
-    ; Check dirty: for active doc use BSS dirty, for swapped use cached flag
-    CMP     DL, CS:[active_doc]
-    JNE     .ep_check_cached_dirty
-    CMP     BYTE CS:[dirty], 0
-    JE      .ep_write_dirty
-    MOV     AL, '*'
-    JMP     .ep_write_dirty
-.ep_check_cached_dirty:
-    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_DIRTY
-    JZ      .ep_write_dirty
-    MOV     AL, '*'
-.ep_write_dirty:
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-    ADD     DI, 2
-
-    ; ---- Col 17: right border │ ----
-    MOV     AL, 0B3h
-    MOV     ES:[DI], AL
-    MOV     ES:[DI+1], AH
-
-    INC     DH                      ; next screen row
-
-.ep_next_slot:
+    JZ      .ep_t2_next
+    CALL    .ep_draw_slot
+.ep_t2_next:
     ADD     SI, DOC_SLOT_SIZE
     INC     DL
-    JMP     .ep_slot_loop
+    JMP     .ep_t2_loop
 
     ; ---- Fill remaining rows to status bar with empty panel ----
 .ep_fill:
@@ -1008,7 +963,7 @@ ed_draw_panel PROC
     JMP     .ep_fill
 
     ; ---- Right shadow column ----
-    ; Darken col PANEL_WIDTH, rows 2..ED_TEXT_ROWS (1 row offset from panel top)
+    ; Darken col PANEL_WIDTH, rows 1..ED_TEXT_ROWS
 .ep_shadow:
     MOV     DH, 1
     MOV     DL, PANEL_WIDTH
@@ -1021,5 +976,173 @@ ed_draw_panel PROC
 
 .ep_done:
     RET
+
+; ---- Local helper: draw header row ----
+; Input:  SI = 16-char header string, DH = screen row
+; Output: DH incremented
+; Clobbers: AX, BX, CX, DI
+.ep_draw_hdr:
+    MOV     BL, DH
+    XOR     BH, BH
+    SHL     BX, 1
+    MOV     DI, CS:[BX + row_offsets]
+    ADD     DI, shadow_buf
+    ; Left border (always NORM white)
+    MOV     AL, 0B3h
+    MOV     BYTE ES:[DI], AL
+    MOV     BYTE ES:[DI+1], PANEL_ATTR_NORM
+    ADD     DI, 2
+    ; 16 chars of header text (HDR color)
+    MOV     AH, PANEL_ATTR_HDR
+    MOV     CX, 16
+.edh_copy:
+    MOV     AL, CS:[SI]
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+    INC     SI
+    DEC     CX
+    JNZ     .edh_copy
+    ; Right border (always NORM white)
+    MOV     AL, 0B3h
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], PANEL_ATTR_NORM
+    INC     DH
+    RET
+
+; ---- Local helper: draw one document slot row ----
+; Input:  DL = slot index (0-19), DH = screen row,
+;         SI = slot pointer in doc_table
+; Output: DH incremented
+; Clobbers: AX, BX, CX, DI
+.ep_draw_slot:
+    ; Compute shadow buffer position: row DH, col 0
+    MOV     BL, DH
+    XOR     BH, BH
+    SHL     BX, 1
+    MOV     DI, CS:[BX + row_offsets]
+    ADD     DI, shadow_buf
+
+    ; Determine attribute
+    MOV     AH, PANEL_ATTR_NORM
+    CMP     DL, CS:[panel_sel]
+    JNE     .eds_not_sel
+    MOV     AH, PANEL_ATTR_HI
+.eds_not_sel:
+
+    ; Col 0: left border │ (always NORM white)
+    MOV     AL, 0B3h
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], PANEL_ATTR_NORM
+    ADD     DI, 2
+
+    ; Col 1: arrow indicator (» if highlighted, space if not)
+    MOV     AL, ' '
+    CMP     DL, CS:[panel_sel]
+    JNE     .eds_no_arrow
+    MOV     AL, 0AFh                ; » (CP437 175)
+.eds_no_arrow:
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+
+    ; Col 2: digit label (1-9, 0 for slot 9/19)
+    MOV     AL, DL
+    CMP     AL, 10
+    JB      .eds_digit
+    SUB     AL, 10                  ; reduce tier 2 to 0-9
+.eds_digit:
+    INC     AL                      ; 1-10
+    CMP     AL, 10
+    JNE     .eds_not_zero
+    XOR     AL, AL                  ; 10 → 0
+.eds_not_zero:
+    ADD     AL, '0'
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+
+    ; Col 3: space
+    MOV     AL, ' '
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+
+    ; Cols 4-15: basename (12 chars, space-padded)
+    ; Find basename: scan DOC_FILENAME for last '\'
+    PUSH    SI
+    PUSH    DI
+    MOV     BX, SI
+    ADD     BX, DOC_FILENAME        ; BX = start of filename
+    MOV     DI, BX                  ; DI = best basename start
+.eds_scan_bs:
+    MOV     AL, CS:[BX]
+    TEST    AL, AL
+    JZ      .eds_found_base
+    CMP     AL, '\'
+    JNE     .eds_scan_next
+    MOV     DI, BX
+    INC     DI
+.eds_scan_next:
+    INC     BX
+    JMP     .eds_scan_bs
+.eds_found_base:
+    MOV     BX, DI                  ; BX = basename pointer
+    POP     DI
+    POP     SI
+
+    ; Write up to 12 chars of basename, pad with spaces
+    MOV     CX, 12
+.eds_write_name:
+    MOV     AL, CS:[BX]
+    TEST    AL, AL
+    JZ      .eds_pad_name
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+    INC     BX
+    DEC     CX
+    JNZ     .eds_write_name
+    JMP     .eds_after_name
+.eds_pad_name:
+    MOV     AL, ' '
+.eds_pad_loop:
+    JCXZ    .eds_after_name
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+    DEC     CX
+    JMP     .eds_pad_loop
+.eds_after_name:
+
+    ; Col 16: dirty indicator
+    MOV     AL, ' '
+    CMP     DL, CS:[active_doc]
+    JNE     .eds_check_cached
+    CMP     BYTE CS:[dirty], 0
+    JE      .eds_write_dirty
+    MOV     AL, '*'
+    JMP     .eds_write_dirty
+.eds_check_cached:
+    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_DIRTY
+    JZ      .eds_write_dirty
+    MOV     AL, '*'
+.eds_write_dirty:
+    MOV     ES:[DI], AL
+    MOV     ES:[DI+1], AH
+    ADD     DI, 2
+
+    ; Col 17: right border │ (always NORM white)
+    MOV     AL, 0B3h
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], PANEL_ATTR_NORM
+
+    INC     DH                      ; next screen row
+    RET
+
+; ---- Inline data: 16-char header strings (panel interior) ----
+.hdr_tier1: DB ' ALT+n:         '
+.hdr_tier2: DB ' ALT+SHFT+n:    '
+
 ed_draw_panel ENDP
 

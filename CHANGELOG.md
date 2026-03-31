@@ -1,5 +1,141 @@
 # TEDIT Changelog
 
+## v0.63.0 — Multi-File Command Line, Shell Fix, Shift+Tab (2026-03-31)
+
+### Shell-to-DOS Bug Fix
+- **Mouse restored after shell**: replaced bare `INT 33h AX=0000h` with
+  `CALL tui_mouse_init` — re-establishes horizontal/vertical ranges and shows
+  the hardware cursor (previously mouse was dead after returning from shell)
+- **Text cursor re-hidden**: added `INT 10h AH=01h, CH=20h` after the mode 3
+  reset — video mode reset makes the BIOS cursor visible again
+
+### Shift+Tab Focus Navigation
+- **KEY_SHIFT_TAB (0Fh)**: new constant in `tui_const.inc`
+- **Normal dispatch**: Shift+Tab cycles focus backward via `tui_ctrl_focus_prev`,
+  falls back to reverse window cycling (mirrors Tab behavior)
+- **Modal dispatch**: Shift+Tab routes to existing `.mdl_left` handler (focus prev)
+
+### Side Panel Alt+N Shortcuts
+- **Alt+1..0 / Alt+Shift+1..0 while panel open**: closes panel and switches to
+  the selected document, matching mouse-click-on-panel behavior
+- Previously these shortcuts were eaten by the panel's catch-all key intercept
+
+### Multi-File Command Line
+- **Multiple files**: `TEDIT a.txt b.txt c.asm` loads all files into separate
+  document slots — last file is active, earlier files are swapped to disk
+- **Project files**: `TEDIT myproject.prj` loads the project at startup, same
+  as File > Load Project but without the dialog
+- **Mixed detection**: specifying both .PRJ and regular files prints
+  "Cannot mix .PRJ and documents" and exits
+- **parse_args rewrite**: counts all filename tokens, detects .PRJ extension
+  (case-insensitive), saves PSP offsets in `rd_save_buf` for later loading
+- **Early undo/clip allocation**: `doc_swap_out` reads undo state from BSS,
+  so undo_seg must be allocated and `undo_init` called before the loading loop
+- **doc_slot_init AL clobber fix**: PUSH/POP AX around `doc_slot_init` call —
+  it uses DIV internally for swap path digits, destroying the slot index in AL
+
+### Changes
+- **TEDIT.ASM** — shell handler: `tui_mouse_init` + cursor hide; new `.alloc_early`,
+  `.load_startup_file`, `.load_multi_cmdline`, `.load_prj_cmdline`, `.err_mixed`
+  startup paths; `s_err_mixed` string; `arg_file_count`/`arg_has_prj` BSS vars;
+  removed unused `s_usage` string to reclaim code space
+- **ed_core.inc** — `parse_args` rewritten for multi-file + .PRJ detection
+- **ed_keys.inc** — side panel intercept: Alt+1..0 / Alt+Shift+1..0 close panel
+  and switch document
+- **TUI/tui_const.inc** — `KEY_SHIFT_TAB EQU 0Fh`
+- **TUI/tui_event.inc** — `.shift_tab` handler in normal dispatch;
+  `KEY_SHIFT_TAB` check in modal dispatch
+
+Binary: 40,530 bytes code, BSS ends at 65,529.
+
+## v0.62.0 — COM Binary Size Optimization (2026-03-31)
+
+### BSS Section Support
+- **SECTION .bss**: all zero-initialized buffers (DOC_CTX, shadow_buf, doc_table,
+  dialog buffers, find/replace state, etc.) moved to a true BSS section using
+  agent86's new `SECTION .bss` directive — these 24,687 bytes of zeros are no
+  longer emitted to the .COM file
+
+### Subroutine Factoring
+- **mul_bx_10**: extracted the 6-instruction `DI = BX * PT_DESC_SIZE` pattern
+  (12 bytes inline) into a shared subroutine, replaced 29 call sites across
+  ed_core.inc, ed_edit.inc, ed_clip.inc, ed_find.inc, ed_undo.inc, ed_draw.inc
+- **show_error_msg**: extracted the `MOV DI, m_str_error / CALL tui_dlg_msgbox`
+  pair (6 bytes inline) into a tail-call helper, replaced 30 call sites across
+  10 source files
+
+### Tail-Call Elimination
+- Converted 10 `CALL X / RET` sequences to `JMP X` in menu handler wrappers
+  (ed_clip.inc: copy/cut/paste, TEDIT.ASM: undo/redo, TUI/tui_event.inc:
+  window move/cycle)
+
+### String Deduplication & Shortening
+- `m_str_save_warn` and `m_str_quit_ttl` changed to EQU aliases of existing
+  identical strings (`m_str_save_ttl`, `m_str_quit`)
+- Removed redundant "Error: " and "Warning: " prefixes from 6 error messages
+  (dialog title already says "Error")
+- Shortened 7 verbose messages (e.g., "Piece table full" → "Table full",
+  "Selection too large to copy" → "Selection too large.")
+- Trimmed MDA error from 51 to 29 characters
+
+### Dead Code Removal
+- Removed 13 redundant `PUSH SI / PUSH DI` + `POP DI / POP SI` pairs around
+  error dialog calls where the function epilogue already restores registers
+  (ed_edit.inc: 9 sites, ed_clip.inc: 2 sites, ed_find.inc: 1 site)
+
+### Changes
+- **ed_core.inc** — new `mul_bx_10` and `show_error_msg` helper procs
+- **ed_edit.inc** — 14× mul_bx_10 refactor, 9× show_error_msg, 9× PUSH/POP removal
+- **ed_clip.inc** — 6× mul_bx_10, 3× show_error_msg, 2× PUSH/POP removal,
+  3× tail-call elimination
+- **ed_find.inc** — 2× mul_bx_10, 1× show_error_msg, 1× PUSH/POP removal
+- **ed_undo.inc** — 1× mul_bx_10, 3× show_error_msg
+- **ed_draw.inc** — 1× mul_bx_10 (SI variant with DI save/restore)
+- **ed_file.inc** — 3× show_error_msg
+- **ed_sel.inc** — 1× show_error_msg
+- **ed_multidoc.inc** — 2× show_error_msg
+- **TEDIT.ASM** — 7× show_error_msg, 2× tail-call, string dedup/shortening,
+  `SECTION .bss` before ed_state
+- **TUI/tui_event.inc** — 5× tail-call elimination
+
+Binary size: 39,789 bytes (down from 64,986, -25,197 bytes / -38.8%).
+Headroom to 65,280-byte COM limit: 25,491 bytes (was 294).
+
+## v0.61.0 — 20-Document Multi-Doc Expansion (2026-03-30)
+
+### Multi-Document Scaling (8 → 20)
+- **MAX_DOCS raised to 20**: two-tier keyboard switching scheme
+  - **Alt+1..0**: switch to documents 1–10 (slots 0–9)
+  - **Alt+Shift+1..0**: switch to documents 11–20 (slots 10–19)
+  - Detection uses BIOS scancode range 78h–81h with shift-flag check
+- **Side panel two-tier layout**: "ALT+n:" header (always shown) with tier 1
+  slots below; "ALT+SHFT+n:" header appears only when tier 2 has documents
+  - Header rows use distinct PANEL_ATTR_HDR (30h, black on cyan)
+  - Border bars (│) always use PANEL_ATTR_NORM (bright white) regardless of
+    row type
+  - Digit labels: 1–9, 0 per tier (matching the keyboard shortcut)
+- **Swap filenames**: TEDT00NN.SWP (2-digit slot index, was single digit)
+- **Untitled filenames**: unsavedNN.txt (2-digit, 01–20)
+- **Slot allocation**: lower gaps filled first (doc_find_free_slot scans from 0)
+- **Status bar [N/M]**: now renders 2-digit values correctly (was overflowing
+  for counts ≥ 10)
+- **Error message**: "Maximum 20 documents open."
+- **Panel click handler**: accounts for header rows in click-to-slot mapping
+
+### Changes
+- **ed_const.inc** — MAX_DOCS=20, PANEL_ATTR_HDR constant, ASSERT updated
+- **ed_multidoc.inc** — 2-digit swap/untitled filename generation via DIV;
+  comment updates for expanded slot ranges
+- **ed_keys.inc** — Alt+N dispatch extended to scancodes 78h–81h; shift-flag
+  check adds +10 for tier 2
+- **ed_draw.inc** — ed_draw_panel rewritten with .ep_draw_hdr/.ep_draw_slot
+  helpers; .ed_write_num helper for 2-digit status bar counter
+- **ed_mouse.inc** — panel click handler split into tier 1/tier 2 scan with
+  header-row skip logic
+- **TEDIT.ASM** — error message and BSS comments updated
+
+Binary size: 64,986 bytes (up from 62,799, +2,187 bytes / +3.5%).
+
 ## v0.60.0 — File Menu Overhaul, Projects & Shell (2026-03-30)
 
 ### File Menu Enhancements
@@ -19,7 +155,7 @@
   Shows overwrite confirmation if the target file exists
 - **Load Project** (File menu, hotkey D): opens a `.PRJ` file, closes all current
   documents (with save prompts for dirty docs), then loads each listed file into
-  its own slot. Warns if the project exceeds the 8-file limit
+  its own slot. Warns if the project exceeds the document limit
 - Both dialogs use `*.PRJ` wildcard filter, with save/restore of the normal
   `dlg_file_pattern` so regular Open dialogs remain `*.txt`
 - PRJ format: plain text, one path per line — hand-editable, no metadata

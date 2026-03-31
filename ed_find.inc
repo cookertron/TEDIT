@@ -1386,12 +1386,7 @@ _repl_insert PROC
     MOV     AX, [pt_seg]
     MOV     DS, AX
     ; Compute DI = BX * 10 (PT_DESC_SIZE)
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                      ; DI = BX * 10
+    CALL    mul_bx_10
     MOV     DX, [DI + PT_F_LENGTH]      ; DX = piece length (low word)
     POP     DS
 
@@ -1443,12 +1438,7 @@ _repl_insert PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     ; Compute DI = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1       ; source = add buffer
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
@@ -2023,13 +2013,8 @@ menu_replace_handler PROC
     JMP     .mr_done
 
 .mr_perm_fail:
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_save_fail
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .mr_done
 
     ; ---- Normal undoable Replace All: set up selection for first match ----

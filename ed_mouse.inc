@@ -48,23 +48,66 @@ tui_ed_mouse_press:
     CMP     AH, PANEL_WIDTH
     JAE     .panel_click_outside
 
-    ; Map editor row to occupied slot index
+    ; Map editor row to occupied slot index (accounting for header rows)
+    ; AL = editor-relative row: row 0 = tier 1 header "ALT+n:"
+    TEST    AL, AL
+    JZ      .panel_click_outside    ; clicked tier 1 header
+
     PUSH    SI
     MOV     SI, doc_table
-    XOR     CL, CL                 ; CL = slot counter
-    XOR     CH, CH                 ; CH = visible row counter
-.pc_find:
-    CMP     CL, MAX_DOCS
-    JAE     .pc_outside_pop        ; click row beyond occupied count
+    XOR     CL, CL                 ; CL = slot counter (0-19)
+    MOV     CH, 1                  ; CH = visible row (1 = first slot after hdr)
+
+    ; --- Tier 1 slots (0-9) ---
+.pc_t1:
+    CMP     CL, 10
+    JAE     .pc_t1_end
     TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
-    JZ      .pc_next
-    CMP     CH, AL                 ; is this the clicked row?
+    JZ      .pc_t1_next
+    CMP     CH, AL
     JE      .pc_found
     INC     CH
-.pc_next:
+.pc_t1_next:
     ADD     SI, DOC_SLOT_SIZE
     INC     CL
-    JMP     .pc_find
+    JMP     .pc_t1
+.pc_t1_end:
+    ; CL = 10, SI at slot 10 — check for tier 2 docs
+    PUSH    CX
+    PUSH    SI
+.pc_t2_scan:
+    CMP     CL, MAX_DOCS
+    JAE     .pc_no_t2_pop
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    JNZ     .pc_has_t2_pop
+    ADD     SI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .pc_t2_scan
+.pc_no_t2_pop:
+    POP     SI
+    POP     CX
+    JMP     .pc_outside_pop         ; no tier 2, click in empty area
+.pc_has_t2_pop:
+    POP     SI
+    POP     CX
+    ; CH = tier 2 header row
+    CMP     CH, AL
+    JE      .pc_outside_pop         ; clicked tier 2 header
+    INC     CH                      ; skip tier 2 header
+
+    ; --- Tier 2 slots (10-19) ---
+.pc_t2:
+    CMP     CL, MAX_DOCS
+    JAE     .pc_outside_pop
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    JZ      .pc_t2_next
+    CMP     CH, AL
+    JE      .pc_found
+    INC     CH
+.pc_t2_next:
+    ADD     SI, DOC_SLOT_SIZE
+    INC     CL
+    JMP     .pc_t2
 
 .pc_found:
     POP     SI

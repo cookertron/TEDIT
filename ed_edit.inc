@@ -52,12 +52,7 @@ insert_char PROC
     MOV     DS, AX
 
     ; Compute descriptor offset = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                 ; DI = BX * 10
+    CALL    mul_bx_10
 
     ; Check source == 1 (add buffer)
     CMP     BYTE [DI + PT_F_SOURCE], 1
@@ -101,12 +96,7 @@ insert_char PROC
     MOV     DS, AX
 
     ; Compute descriptor offset = BX * 10
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX            ; DI = BX * 10
+    CALL    mul_bx_10
 
     MOV     DX, [DI + PT_F_LENGTH]  ; DX = piece length (low word)
     POP     DS                 ; restore COM segment
@@ -127,13 +117,8 @@ insert_char PROC
     ADD     AX, 2
     CMP     AX, MAX_PT_PIECES
     JBE     .ic_split_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .ic_done
 .ic_split_ok:
     ; We need: [left(len=SI)] [new_char(len=1)] [right(len=DX-SI)]
@@ -165,12 +150,7 @@ insert_char PROC
     ; Write right piece descriptor at slot BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX                      ; DI = BX * 10
+    CALL    mul_bx_10
 
     POP     AX                          ; source
     MOV     ES:[DI + PT_F_SOURCE], AL
@@ -196,12 +176,7 @@ insert_char PROC
     ; Write new char piece at slot BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
     MOV     AX, [add_used]
@@ -231,13 +206,8 @@ insert_char PROC
     ; ---- S2: PRE-CHECK insert needs 1 free slot ----
     CMP     WORD [pt_count], MAX_PT_PIECES
     JB      .ic_ib_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .ic_done
 .ic_ib_ok:
     ; Insert new piece at index BX (before current piece)
@@ -250,12 +220,7 @@ insert_char PROC
     MOV     AX, [pt_seg]
     MOV     ES, AX
     ; Recompute DI for piece BX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
     MOV     AX, [add_used]
@@ -282,13 +247,8 @@ insert_char PROC
     ; ---- S3: PRE-CHECK insert needs 1 free slot ----
     CMP     WORD [pt_count], MAX_PT_PIECES
     JB      .ic_ia_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .ic_done
 .ic_ia_ok:
     ; Insert new piece at index BX+1 (after current piece)
@@ -299,12 +259,7 @@ insert_char PROC
     PUSH    ES
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
     MOV     AX, [add_used]
@@ -383,12 +338,7 @@ insert_crlf PROC
     PUSH    DS
     MOV     AX, [pt_seg]
     MOV     DS, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     DX, [DI + PT_F_LENGTH]
     POP     DS
 
@@ -403,13 +353,8 @@ insert_crlf PROC
     ADD     AX, 2
     CMP     AX, MAX_PT_PIECES
     JBE     .icr_split_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .icr_done
 .icr_split_ok:
     ; ---- Split piece: [left] [CRLF] [right] ----
@@ -437,12 +382,7 @@ insert_crlf PROC
     ; Write right piece at BX
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     POP     AX                          ; source
     MOV     ES:[DI + PT_F_SOURCE], AL
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
@@ -471,13 +411,8 @@ insert_crlf PROC
     ; ---- S5: PRE-CHECK insert needs 1 free slot ----
     CMP     WORD [pt_count], MAX_PT_PIECES
     JB      .icr_ib_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .icr_done
 .icr_ib_ok:
     CALL    pt_insert
@@ -488,13 +423,8 @@ insert_crlf PROC
     ; ---- S6: PRE-CHECK insert needs 1 free slot ----
     CMP     WORD [pt_count], MAX_PT_PIECES
     JB      .icr_ia_ok
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .icr_done
 .icr_ia_ok:
     INC     BX
@@ -507,12 +437,7 @@ insert_crlf PROC
     PUSH    ES
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
     MOV     AX, [add_used]
@@ -563,12 +488,7 @@ delete_byte PROC
     PUSH    DS
     MOV     AX, [pt_seg]
     MOV     DS, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX            ; DI = BX * 10
+    CALL    mul_bx_10
     MOV     DX, [DI + PT_F_LENGTH]
     POP     DS
 
@@ -599,12 +519,7 @@ delete_byte PROC
     PUSH    DS
     MOV     AX, [pt_seg]
     MOV     DS, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     MOV     AX, [DI + PT_F_START]
     ADD     AX, 1
     MOV     [DI + PT_F_START], AX
@@ -620,12 +535,7 @@ delete_byte PROC
     PUSH    DS
     MOV     AX, [pt_seg]
     MOV     DS, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
     DEC     WORD [DI + PT_F_LENGTH]
     POP     DS
     CLC
@@ -642,12 +552,7 @@ delete_byte PROC
     PUSH    DS
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     ; Save right piece fields
     MOV     AX, DX
@@ -680,12 +585,7 @@ delete_byte PROC
     ; Write right piece descriptor
     MOV     AX, [pt_seg]
     MOV     ES, AX
-    MOV     DI, BX
-    SHL     DI, 1
-    MOV     AX, DI
-    SHL     DI, 1
-    SHL     DI, 1
-    ADD     DI, AX
+    CALL    mul_bx_10
 
     POP     AX                          ; source
     MOV     ES:[DI + PT_F_SOURCE], AL
@@ -872,13 +772,8 @@ save_file PROC
     INT     21h
     JNC     .sf_created
     ; ---- Creation failed — show dialog ----
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_save_fail
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .sf_done           ; dirty flag remains set
 .sf_created:
 
@@ -945,13 +840,8 @@ save_file PROC
     CMP     AX, CX
     JE      .sf_write_ok_break
 .sf_write_failed_break:
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_save_write
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .sf_break_err
 
 .sf_write_ok_break:
@@ -981,13 +871,8 @@ save_file PROC
     CMP     AX, CX
     JE      .sf_close_ok
 .sf_write_failed_flush:
-    PUSH    SI
-    PUSH    DI
     MOV     SI, s_err_save_write
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
-    POP     DI
-    POP     SI
+    CALL    show_error_msg
     JMP     .sf_err
 
 .sf_close_ok:

@@ -261,8 +261,7 @@ sel_delete_legacy PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, s_err_pt_full
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     CALL    sel_clear

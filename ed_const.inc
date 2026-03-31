@@ -24,6 +24,7 @@ ED_ATTR_SEL     EQU 71h         ; blue on light gray (selected text)
 PANEL_WIDTH     EQU 18          ; total columns (│»N FILENAME.EXT*│)
 PANEL_ATTR_NORM EQU 3Fh         ; bright white on cyan (normal entry)
 PANEL_ATTR_HI   EQU 3Eh         ; yellow on cyan (highlighted entry)
+PANEL_ATTR_HDR  EQU 30h         ; black on cyan (section header)
 KEY_F1          EQU 3Bh         ; F1 scan code (extended key)
 
 ; ---- Piece table ----
@@ -109,7 +110,7 @@ FIND_FLAG_CI    EQU 01h             ; bit 0: case-insensitive search
 FIND_FLAG_SEL   EQU 02h             ; bit 1: find in selection only
 
 ; ---- Multi-document (Hot Seat architecture) ----
-MAX_DOCS         EQU 8              ; maximum simultaneous document slots
+MAX_DOCS         EQU 20             ; maximum simultaneous document slots
 
 ; Document slot flags (DOC_FLAGS byte, bit field)
 DOCF_OCCUPIED    EQU 01h            ; bit 0: slot is in use
@@ -119,7 +120,7 @@ DOCF_UNTITLED    EQU 08h            ; bit 3: no filename (new unsaved document)
 
 ; Document table slot layout (152 bytes per slot)
 DOC_FLAGS        EQU 0              ; BYTE  - DOCF_* flags
-DOC_SLOT_ID      EQU 1              ; BYTE  - slot index (0-7)
+DOC_SLOT_ID      EQU 1              ; BYTE  - slot index (0-19)
 DOC_FILENAME     EQU 2              ; 128 bytes - full file path (null-terminated)
 DOC_SWAP_PATH    EQU 130            ; 14 bytes  - swap temp filename (null-terminated)
 DOC_CACHED_LINES EQU 144            ; WORD  - cached total_lines (for tab display)
@@ -161,7 +162,7 @@ SWH_RESERVED     EQU 104            ; 24 bytes reserved (zero-filled)
 ; ---- Multi-doc constant verification ----
 ASSERT DOC_SLOT_SIZE                         ; must be nonzero
 ASSERT DOC_SLOT_SIZE, 152                    ; exact size match
-ASSERT MAX_DOCS * DOC_SLOT_SIZE, 1216        ; total table size
+ASSERT MAX_DOCS * DOC_SLOT_SIZE, 3040        ; total table size
 ASSERT DOC_SWAP_PATH, 130                    ; offset sanity
 ASSERT DOC_CACHED_LINES, 144                 ; offset sanity
 ASSERT SWAP_HEADER_SIZE, 128

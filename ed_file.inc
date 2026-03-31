@@ -74,8 +74,7 @@ ed_load_file PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, m_str_err_open
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
     ; Fall through to reinit empty doc
@@ -93,8 +92,7 @@ ed_load_file PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, m_str_err_mem
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
 
@@ -292,8 +290,7 @@ ed_compact PROC
     PUSH    SI
     PUSH    DI
     MOV     SI, m_str_buf_err
-    MOV     DI, m_str_error
-    CALL    tui_dlg_msgbox
+    CALL    show_error_msg
     POP     DI
     POP     SI
 
