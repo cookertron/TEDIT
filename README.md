@@ -5,7 +5,7 @@
 A multi-document text editor for DOS, written entirely in 8086 assembly language.
 
 TEDIT is built on a custom TUI (Text User Interface) framework with support for
-up to 8 simultaneous open files, a document side panel, project files, and
+up to 20 simultaneous open files, a document side panel, project files, and
 disk-based document swapping. It targets real-mode DOS as a `.COM` binary and
 runs on IBM PC compatibles, DOSBox-X, and the agent86 emulator.
 
@@ -61,15 +61,16 @@ This is line two of the document.
 - Selection pre-fill: single-line selection populates the search field
 
 ### Multi-Document Editing
-- Up to 8 files open simultaneously
+- Up to 20 files open simultaneously
 - Disk-based document swapping — only the active document is in memory;
   inactive documents are saved to temporary swap files and restored on switch
-- Document switching: Alt+1–8 (direct slot), F6 (next document),
-  Ctrl+PgDn/PgUp (next/prev occupied slot)
-- Side panel (F1 or View > Document List): shows all open documents with
-  slot number, filename, dirty indicator, and arrow marker on the active
-  document. Navigate with Up/Down arrows, Enter to switch, Esc to close.
-  Drop shadow on the right edge
+- Document switching: Alt+1–0 for documents 1–10, Alt+Shift+1–0 for
+  documents 11–20, F6 (next document), Ctrl+PgDn/PgUp (next/prev occupied slot)
+- Side panel (F1 or View > Document List): two-tier layout showing all open
+  documents with slot number, filename, dirty indicator, and arrow marker.
+  Navigate with Up/Down arrows, Enter to switch, Esc to close. Alt+N shortcuts
+  also work while the panel is open (closes panel and switches). Drop shadow
+  on the right edge
 - Duplicate file prevention — opening an already-open file switches to it
 - `[N/M]` status bar indicator when multiple documents are open
 
@@ -78,6 +79,8 @@ This is line two of the document.
   file (one path per line, plain text — hand-editable)
 - Load Project (File > Load Project): closes all current documents and opens
   every file listed in the `.PRJ` file
+- Command-line project loading: `TEDIT myproject.prj` loads the project at
+  startup without a dialog
 - Project files use `*.PRJ` wildcard filter in the file dialog
 
 ### File Operations
@@ -93,7 +96,8 @@ This is line two of the document.
   switches to the next
 - Close All (Ctrl+Alt+W) — prompts for each dirty document, resets to untitled
 - Shell to DOS (File > Shell to DOS) — spawns interactive COMMAND.COM via
-  COMSPEC; compatible with SHROOM utility for memory-efficient shelling
+  COMSPEC; mouse and cursor fully restored on return; compatible with SHROOM
+  utility for memory-efficient shelling
 - Word Wrap (Edit > Word Wrap) — permanent hard wrap at 80 columns
 - Go to Line (Ctrl+G)
 - Date/Time insertion (F5) — inserts `YYYY-MM-DD HH:MM:SS` at cursor
@@ -109,10 +113,11 @@ This is line two of the document.
 
 ## Building
 
-TEDIT is assembled using **[agent86](https://github.com/cookertron/agent86)**,
-a two-pass 8086 assembler and per-instruction JIT emulator targeting `.COM`
-binaries. agent86 is a standalone Windows tool designed for agentic AI
-workflows — all output is JSON on stdout, enabling automated build-test cycles.
+TEDIT is assembled using **[agent86](https://github.com/cookertron/agent86)**
+v0.21.0 or later (required for `SECTION .bss` support), a two-pass 8086
+assembler and per-instruction JIT emulator targeting `.COM` binaries. agent86
+is a standalone Windows tool designed for agentic AI workflows — all output is
+JSON on stdout, enabling automated build-test cycles.
 
 See `manual.md` for the full agent86 reference.
 
@@ -136,6 +141,18 @@ agent86 TEDIT.ASM --build_run --screen CGA80
 agent86 TEDIT.ASM --build_run --screen CGA80 --args "myfile.txt"
 ```
 
+### Run with multiple files
+
+```
+agent86 TEDIT.ASM --build_run --screen CGA80 --args "main.c header.h notes.txt"
+```
+
+### Run with a project file
+
+```
+agent86 TEDIT.ASM --build_run --screen CGA80 --args "myproject.prj"
+```
+
 ### Run with custom tab width
 
 ```
@@ -148,13 +165,15 @@ Copy `TEDIT.COM` to your DOSBox-X drive and run:
 
 ```
 TEDIT myfile.txt
+TEDIT main.c header.h notes.txt
+TEDIT myproject.prj
 TEDIT myfile.txt /t 4
 ```
 
 ## Architecture
 
 TEDIT is a `.COM` flat-model program (ORG 100h, all segments equal).
-The binary is approximately 62 KB.
+The binary is approximately 40 KB (code), with 24 KB of BSS.
 
 ### Piece Table Document Model
 
@@ -198,7 +217,7 @@ The editor is built on a custom TUI library (`TUI\` directory) that provides:
 - Menu bar with dropdown menus, hotkeys, and accelerators
 - Modal dialog system (message box, confirm, input, file selector)
 - Mouse support (click, drag, scroll bars)
-- Full keyboard navigation (Tab focus cycling, Enter activation)
+- Full keyboard navigation (Tab/Shift+Tab focus cycling, Enter activation)
 
 ## What TEDIT Is Not
 
@@ -208,7 +227,7 @@ things it intentionally does not attempt.
 
 ### Limitations
 
-- **8 documents maximum.** Up to 8 files open at once via disk-based swapping.
+- **20 documents maximum.** Up to 20 files open at once via disk-based swapping.
 - **No syntax highlighting.** All text renders in a single colour.
 - **No line numbers** in the editing area (line/column shown in status bar).
 - **No soft word wrap.** Lines display with horizontal scrolling. The Word
@@ -243,7 +262,7 @@ things it intentionally does not attempt.
 ## Version History
 
 See `CHANGELOG.md` for the full version history with detailed per-version
-changes. The editor has been developed through 60 versions covering:
+changes. The editor has been developed through 63 versions covering:
 
 - Core editing and file I/O
 - Piece table engine with checkpoint-accelerated seeking
@@ -257,10 +276,12 @@ changes. The editor has been developed through 60 versions covering:
 - Insert/overwrite mode toggle
 - Turbo Debugger-style file browser with wildcard filtering and double-click
 - Word wrap, Go to Line, Date/Time insertion
-- Multi-document editing with disk-based swapping (up to 8 files)
-- Document side panel with navigation and drop shadow
-- Project file load/save
+- Multi-document editing with disk-based swapping (up to 20 files)
+- Document side panel with two-tier navigation and drop shadow
+- Project file load/save (menu and command line)
+- Multi-file command-line loading
 - Shell to DOS with SHROOM compatibility
+- COM binary size optimization (BSS section, subroutine factoring)
 
 ## Credits
 
