@@ -1,27 +1,95 @@
 # TEDIT Changelog
 
-## v0.64.0 — Shell-to-DOS JemmEx Crash Fix (2026-04-01)
+## v0.64.0 — BSS/Stack Overflow Fix, Segment Migration (2026-04-01)
 
-### Shell-to-DOS BSS/Stack Overlap Fix
-- **Root cause**: BSS grew to 65,530 bytes (from ~63KB in v0.60) due to
-  20-document expansion and additional variables, leaving only 4 bytes between
-  BSS end (0xFFFA) and the stack top (SP=0xFFFE). The shell EXEC parameter
-  block (`shell_exec_pb` at 0xFFE8) sat directly in the stack's active region.
-  `INT 10h` and `INT 21h` calls between building the block and calling EXEC
-  pushed stack frames that overwrote it, causing JemmEx to read corrupted
-  pointers and GPF (exception 0Dh) during `REP MOVSW`
-- **Fix**: relocated all shell variables (`shell_comspec`, `shell_cmdtail`,
-  `shell_fcb`, `shell_exec_pb`, `shell_save_ss`, `shell_save_sp` — 185 bytes)
-  from the end of BSS to before `shadow_buf`, placing them at ~0xE2A4 — about
-  7,200 bytes below the stack, safe from interference
+### Shell-to-DOS JemmEx Crash Fix
+- **Root cause**: BSS grew to 65,530 bytes (0xFFFA), leaving only 4 bytes
+  before the stack (SP=0xFFFE). The EXEC parameter block at 0xFFE8 was
+  overwritten by stack frames from `INT 10h`/`INT 21h` calls, causing JemmEx
+  to GPF (exception 0Dh) on corrupted pointers during `REP MOVSW`
 - Reported on VOGONS forum: v0.63 shells to DOS caused JemmEx exception, v0.60
   did not
 
-### Changes
-- **TEDIT.ASM** — shell BSS variables moved from end of BSS to before TUI BSS
-  section; version bump to v0.64
+### BSS-to-Segment Migration
+- **`shadow_buf` (4,000 bytes)** moved to a separately-allocated DOS segment
+  (`shadow_seg`, 256 paragraphs / 4 KB via INT 21h/48h), matching the existing
+  pattern for `undo_seg` and `clip_seg`
+  - `tui_clear_shadow`: ES = `[shadow_seg]`, DI = 0
+  - `tui_blit`: DS temporarily set to `[shadow_seg]` for REP MOVSW source;
+    CGA snow path uses `CS:` prefix for `tui_cga_snow` BSS access
+  - `calc_vram_offset`: now sets ES = `[shadow_seg]` and returns offset from 0
+    (no `shadow_buf` base); clobbers ES
+  - All TUI drawing primitives (`tui_putchar`, `tui_putstr`, `tui_hline`,
+    `tui_fill_rect`, `tui_darken_cell`, `tui_darken_hline`): save/restore ES,
+    write via `ES:[DI]` instead of `[DI]`
+  - `tui_ctrl_draw_editor`: render setup sets `ES = [shadow_seg]` instead of
+    `ES = CS`; five `ADD DI, shadow_buf` removed; `ed_draw_cursor` uses
+    `ES:[DI+1]` for attribute write
+  - `ed_draw_panel`: sets `DS = CS:[doc_table_seg]` for slot iteration
+    (doc_table also migrated); all BSS access via `CS:` prefix
+- **`doc_table` (3,040 bytes)** moved to a separately-allocated DOS segment
+  (`doc_table_seg`, 192 paragraphs / 3 KB)
+  - `doc_get_slot`: now returns ES:DI (ES = `[doc_table_seg]`, DI = offset);
+    clobbers ES
+  - All doc_table field accesses (`[DI + DOC_FLAGS]`, `[DI + DOC_FILENAME]`,
+    etc.) converted to `ES:` prefix across ed_multidoc.inc, TEDIT.ASM,
+    ed_keys.inc, ed_mouse.inc, ed_draw.inc
+  - File I/O paths (swap file create/open/delete) temporarily set
+    `DS = doc_table_seg` via `PUSH DS / PUSH ES / POP DS` for INT 21h calls
+  - Filename copy loops between doc_table and BSS use DS/ES swaps with `CS:`
+    prefix for BSS writes
+  - `doc_table_init`, `doc_find_free_slot`, `doc_find_by_name`: iterate via
+    ES:DI with offset 0
+- **Early allocation**: `doc_table_seg` and `shadow_seg` allocated immediately
+  after `shrink_mem`, before `doc_table_init` — prevents writing to segment 0
+  (IVT) when BSS is uninitialized
+- **Allocation guards**: `.alloc_early` now skips `shadow_seg` and
+  `doc_table_seg` if already allocated (prevents leaking the early allocation
+  when the multi-file or PRJ startup paths call `.alloc_early`)
+- **ES restore after `doc_table_init`**: `doc_table_init` sets ES to
+  `doc_table_seg`; startup code now restores ES=DS immediately after, preventing
+  the subsequent `REP MOVSB` (CWD copy) from writing into the doc_table segment
+  instead of BSS
+- **BSS reclaimed**: 7,040 bytes (4,000 + 3,040) moved out of the 64 KB COM
+  segment
+- **Stack space**: 4 bytes → 6,668 bytes (6.5 KB); growth margin ~6.1 KB
 
-Binary: 40,585 bytes code, BSS ends at 65,530.
+### Changes
+- **ed_const.inc** — `SHADOW_SEG_PARA` (0x100), `DOC_TBL_SEG_PARA` (0xC0)
+- **TEDIT.ASM** — `shadow_buf` RESB 4000 → `shadow_seg` RESW 1; `doc_table`
+  RESB 3040 → `doc_table_seg` RESW 1; early segment allocation after
+  `shrink_mem` with ES restore; allocation guards in `.alloc_early` for
+  shadow_seg and doc_table_seg; deallocation at exit (`.free_shadow`,
+  `.free_doctbl`); all doc_table field accesses converted to `ES:` prefix;
+  version bump to v0.64
+- **TUI/tui_video.inc** — all 8 drawing functions rewritten for segment-based
+  shadow buffer (`calc_vram_offset` sets ES, primitives use `ES:[DI]`)
+- **ed_draw.inc** — render setup, cursor draw, status bar, and panel overlay
+  updated for `shadow_seg` and `doc_table_seg`
+- **ed_multidoc.inc** — all 10 doc_table functions converted to ES:DI access
+  pattern; file I/O paths use DS swaps for INT 21h
+- **ed_keys.inc** — panel up/down slot checks use `ES:[DI + DOC_FLAGS]`
+- **ed_mouse.inc** — panel click iteration uses `ES:[SI + DOC_FLAGS]`
+
+### 4DOS / Third-Party Shell Compatibility
+- **BSS zeroing at startup**: added `CLD / MOV DI, DOC_CTX / MOV CX,
+  BSS_END - DOC_CTX / XOR AL, AL / REP STOSB` as the first code in `main:`.
+  agent86 zeroes BSS automatically, but real DOS does not — under 4DOS the
+  BSS region overlaps 4DOS's freed transient code, filling it with non-zero
+  garbage. This broke conditional allocation guards (`CMP WORD [undo_seg], 0 /
+  JNE .skip`) causing `undo_seg` and `clip_seg` allocation to be skipped, and
+  left flag variables like `panel_visible` non-zero (intercepting all keyboard
+  input for panel navigation). `BSS_END` label added after last RESB.
+- **INT 23h handler installed** (`_int23_handler: IRET`): prevents 4DOS (or any
+  parent shell) from terminating TEDIT on Ctrl+C. TEDIT uses Ctrl+C for Copy,
+  not break. DOS restores the original vector automatically on INT 20h exit.
+- **INT 24h handler installed** (`_int24_handler: MOV AL, 3 / IRET`): returns
+  FAIL to caller, preventing 4DOS's critical-error handler from displaying its
+  own Abort/Retry/Fail dialog during TEDIT file I/O.
+- Handler code placed before `SECTION .bss`; installation via `INT 21h AH=25h`
+  after `shrink_mem`
+
+Binary: 40,988 bytes code, BSS ends at 58,897.
 
 ## v0.63.0 — Multi-File Command Line, Shell Fix, Shift+Tab (2026-03-31)
 

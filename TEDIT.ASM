@@ -2567,6 +2567,18 @@ menu_about_handler:
 ; ============================================================
 
 main:
+    ; ---- Zero BSS (real DOS does not zero memory beyond the COM file) ----
+    ; agent86 guarantees zero-filled BSS; real DOS / 4DOS does not.
+    ; Without this, BSS contains garbage from the previous occupant of
+    ; this memory (e.g. 4DOS transient code), breaking conditional
+    ; allocation guards (undo_seg, clip_seg) and flag variables
+    ; (panel_visible, find_flags, etc.).
+    CLD
+    MOV     DI, DOC_CTX
+    MOV     CX, BSS_END - DOC_CTX
+    XOR     AL, AL
+    REP     STOSB
+
     ; ---- Reject MDA display (we write directly to B800h) ----
     MOV     AH, 0Fh
     INT     10h                         ; AL = mode, AH = columns
@@ -2593,6 +2605,21 @@ main:
 .snow_done:
 
     CALL    shrink_mem
+
+    ; ---- Install INT 23h handler (ignore Ctrl+C at DOS level) ----
+    ; Prevents 4DOS (or any parent shell) from terminating TEDIT when
+    ; Ctrl+C is pressed.  TEDIT uses Ctrl+C for Copy, not break.
+    ; DOS automatically restores the original vector on INT 20h exit.
+    MOV     AX, 2523h
+    MOV     DX, _int23_handler
+    INT     21h
+
+    ; ---- Install INT 24h handler (return FAIL on critical errors) ----
+    ; Prevents 4DOS's critical-error handler from displaying its own
+    ; Abort/Retry/Fail dialog during TEDIT file I/O.
+    MOV     AX, 2524h
+    MOV     DX, _int24_handler
+    INT     21h
 
     ; ---- Allocate persistent segments needed before doc_table_init ----
     MOV     BX, DOC_TBL_SEG_PARA
@@ -3182,6 +3209,19 @@ main:
     INT     20h
 
 ; ============================================================
+; Interrupt handlers (must be in code section, before BSS)
+; ============================================================
+
+; INT 23h — Ctrl+C/Break handler: ignore (TEDIT uses Ctrl+C for Copy)
+_int23_handler:
+    IRET
+
+; INT 24h — Critical error handler: return FAIL to caller
+_int24_handler:
+    MOV     AL, 3
+    IRET
+
+; ============================================================
 ; BSS — All uninitialized data at end of file
 ; ============================================================
 
@@ -3439,3 +3479,4 @@ shell_fcb:          RESB 37         ; dummy FCB for EXEC
 shell_exec_pb:      RESB 14         ; EXEC parameter block
 shell_save_ss:      RESW 1          ; saved SS before EXEC
 shell_save_sp:      RESW 1          ; saved SP before EXEC
+BSS_END:
