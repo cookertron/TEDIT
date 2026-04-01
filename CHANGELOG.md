@@ -1,5 +1,28 @@
 # TEDIT Changelog
 
+## v0.64.0 — Shell-to-DOS JemmEx Crash Fix (2026-04-01)
+
+### Shell-to-DOS BSS/Stack Overlap Fix
+- **Root cause**: BSS grew to 65,530 bytes (from ~63KB in v0.60) due to
+  20-document expansion and additional variables, leaving only 4 bytes between
+  BSS end (0xFFFA) and the stack top (SP=0xFFFE). The shell EXEC parameter
+  block (`shell_exec_pb` at 0xFFE8) sat directly in the stack's active region.
+  `INT 10h` and `INT 21h` calls between building the block and calling EXEC
+  pushed stack frames that overwrote it, causing JemmEx to read corrupted
+  pointers and GPF (exception 0Dh) during `REP MOVSW`
+- **Fix**: relocated all shell variables (`shell_comspec`, `shell_cmdtail`,
+  `shell_fcb`, `shell_exec_pb`, `shell_save_ss`, `shell_save_sp` — 185 bytes)
+  from the end of BSS to before `shadow_buf`, placing them at ~0xE2A4 — about
+  7,200 bytes below the stack, safe from interference
+- Reported on VOGONS forum: v0.63 shells to DOS caused JemmEx exception, v0.60
+  did not
+
+### Changes
+- **TEDIT.ASM** — shell BSS variables moved from end of BSS to before TUI BSS
+  section; version bump to v0.64
+
+Binary: 40,585 bytes code, BSS ends at 65,530.
+
 ## v0.63.0 — Multi-File Command Line, Shell Fix, Shift+Tab (2026-03-31)
 
 ### Shell-to-DOS Bug Fix

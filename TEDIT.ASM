@@ -146,7 +146,7 @@ m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.63', 0
+m_str_about_1:   DB 'TEDIT v0.64', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -3285,6 +3285,14 @@ open_reuse_flag:  RESB 1          ; 1 = reuse current slot, 0 = new slot
 ; ---- Swap I/O buffer ----
 swap_hdr_buf:   RESB SWAP_HEADER_SIZE   ; 64-byte swap file header staging
 
+; ---- Shell-to-DOS scratch (must stay below stack zone) ----
+shell_comspec:      RESB 128        ; COMSPEC path from environment
+shell_cmdtail:      RESB 2          ; empty command tail (00h, 0Dh)
+shell_fcb:          RESB 37         ; dummy FCB for EXEC
+shell_exec_pb:      RESB 14         ; EXEC parameter block
+shell_save_ss:      RESW 1          ; saved SS before EXEC
+shell_save_sp:      RESW 1          ; saved SP before EXEC
+
 ; ---- TUI BSS ----
 tui_cga_snow:       RESB 1          ; 1 = CGA snow prevention in tui_blit
 shadow_buf:         RESB 4000
@@ -3331,9 +3339,3 @@ prj_pat_save:       RESB 14         ; saved dlg_file_pattern for project dialogs
 arg_file_count:     RESB 1          ; number of filename args from command line
 arg_has_prj:        RESB 1          ; 1 if a .PRJ file was in command-line args
 ; NOTE: arg offsets stored in rd_save_buf (reused — mutually exclusive with PRJ content)
-shell_comspec:      RESB 128        ; COMSPEC path from environment
-shell_cmdtail:      RESB 2          ; empty command tail (00h, 0Dh)
-shell_fcb:          RESB 37         ; dummy FCB for EXEC
-shell_exec_pb:      RESB 14         ; EXEC parameter block
-shell_save_ss:      RESW 1          ; saved SS before EXEC
-shell_save_sp:      RESW 1          ; saved SP before EXEC
