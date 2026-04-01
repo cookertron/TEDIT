@@ -51,6 +51,12 @@ MAX_CHKPT       EQU 2048
 ; ---- Memory shrink size ----
 SHRINK_PARA     EQU 1000h       ; keep 64 KB for COM segment
 
+; ---- Shadow buffer segment ----
+SHADOW_SEG_PARA EQU 0100h       ; 4 KB (256 paragraphs) for shadow buffer
+
+; ---- Document table segment ----
+DOC_TBL_SEG_PARA EQU 00C0h     ; 3 KB (192 paragraphs) for doc_table
+
 ; ---- Range delete ----
 RD_MAX_PIECES   EQU 102            ; max pieces saveable in one range delete
 

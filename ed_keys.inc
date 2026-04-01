@@ -65,7 +65,7 @@ tui_ed_handle_key PROC
     JE      .panel_eat                  ; wrapped all the way — only one slot
     PUSH    AX
     CALL    doc_get_slot
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     POP     AX
     JZ      .pu_loop
     MOV     [panel_sel], AL
@@ -85,7 +85,7 @@ tui_ed_handle_key PROC
     JE      .panel_eat                  ; wrapped all the way
     PUSH    AX
     CALL    doc_get_slot
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     POP     AX
     JZ      .pd_loop
     MOV     [panel_sel], AL

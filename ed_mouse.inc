@@ -54,7 +54,8 @@ tui_ed_mouse_press:
     JZ      .panel_click_outside    ; clicked tier 1 header
 
     PUSH    SI
-    MOV     SI, doc_table
+    MOV     ES, [doc_table_seg]
+    XOR     SI, SI
     XOR     CL, CL                 ; CL = slot counter (0-19)
     MOV     CH, 1                  ; CH = visible row (1 = first slot after hdr)
 
@@ -62,7 +63,7 @@ tui_ed_mouse_press:
 .pc_t1:
     CMP     CL, 10
     JAE     .pc_t1_end
-    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[SI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .pc_t1_next
     CMP     CH, AL
     JE      .pc_found
@@ -78,7 +79,7 @@ tui_ed_mouse_press:
 .pc_t2_scan:
     CMP     CL, MAX_DOCS
     JAE     .pc_no_t2_pop
-    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[SI + DOC_FLAGS], DOCF_OCCUPIED
     JNZ     .pc_has_t2_pop
     ADD     SI, DOC_SLOT_SIZE
     INC     CL
@@ -99,7 +100,7 @@ tui_ed_mouse_press:
 .pc_t2:
     CMP     CL, MAX_DOCS
     JAE     .pc_outside_pop
-    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[SI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .pc_t2_next
     CMP     CH, AL
     JE      .pc_found

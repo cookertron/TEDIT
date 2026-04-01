@@ -58,9 +58,9 @@ tui_clear_shadow: PROC
     PUSH DI
     PUSH ES
 
-    MOV AX, [shadow_seg]
-    MOV ES, AX
-    XOR DI, DI
+    MOV AX, DS
+    MOV ES, AX                        ; ES = DS (shadow_buf is in COM segment)
+    MOV DI, shadow_buf
     MOV AX, CLR_DESKTOP * 256 + 20h  ; AH=attr, AL=space
     MOV CX, SCR_CELLS
     CLD
@@ -90,20 +90,14 @@ tui_blit: PROC
     MOV AX, 0002h
     INT 33h
 
-    ; Source: DS:SI = shadow_seg:0
-    PUSH DS
-    MOV AX, [shadow_seg]            ; read while DS=CS
-    MOV DS, AX
-    XOR SI, SI
-
-    ; Dest: ES:DI = VRAM
     MOV AX, VRAM_SEG
     MOV ES, AX
+    MOV SI, shadow_buf
     XOR DI, DI
     MOV CX, SCR_CELLS
     CLD
 
-    CMP BYTE CS:[tui_cga_snow], 0   ; BSS access via CS: (DS != CS)
+    CMP BYTE [tui_cga_snow], 0
     JNZ .cga_blit
     REP MOVSW                        ; fast path: EGA/VGA
     JMP .blit_done
@@ -124,8 +118,6 @@ tui_blit: PROC
     POP DX
 
 .blit_done:
-    POP DS                           ; restore DS=CS
-
     ; Show hardware mouse cursor after VRAM update
     MOV AX, 0001h
     INT 33h
@@ -139,10 +131,10 @@ tui_blit: PROC
 ENDP
 
 ; ----------------------------------------------------------------------------
-; calc_vram_offset - Calculate offset in shadow buffer and set ES
+; calc_vram_offset - Calculate absolute address in shadow_buf
 ; Input:  DH = row, DL = col
-; Output: DI = offset within shadow_seg, ES = shadow_seg
-; Clobbers: ES (BX saved/restored)
+; Output: DI = absolute address in shadow_buf
+; Clobbers: none (BX saved/restored)
 ; ----------------------------------------------------------------------------
 calc_vram_offset: PROC
     PUSH BX
@@ -154,8 +146,7 @@ calc_vram_offset: PROC
     XOR BH, BH
     SHL BX, 1
     ADD DI, BX
-    MOV BX, [shadow_seg]
-    MOV ES, BX
+    ADD DI, shadow_buf
     POP BX
     RET
 ENDP
@@ -171,11 +162,9 @@ tui_putchar: PROC
     JAE .skip
     PUSH DI
     PUSH BX
-    PUSH ES
-    CALL calc_vram_offset            ; ES:DI = shadow position
-    MOV ES:[DI], AL
-    MOV ES:[DI + 1], AH
-    POP ES
+    CALL calc_vram_offset
+    MOV [DI], AL
+    MOV [DI + 1], AH
     POP BX
     POP DI
 .skip:
@@ -192,8 +181,7 @@ tui_putstr: PROC
     JAE .skip
     PUSH DI
     PUSH BX
-    PUSH ES
-    CALL calc_vram_offset            ; ES:DI = shadow position
+    CALL calc_vram_offset
     MOV BL, DL              ; BL tracks current column
 .next_char:
     CMP BL, SCR_W
@@ -201,14 +189,13 @@ tui_putstr: PROC
     MOV AL, [SI]
     OR AL, AL
     JZ .done
-    MOV ES:[DI], AL
-    MOV ES:[DI + 1], AH
+    MOV [DI], AL
+    MOV [DI + 1], AH
     INC SI
     ADD DI, 2
     INC BL
     JMP .next_char
 .done:
-    POP ES
     POP BX
     POP DI
 .skip:
@@ -227,7 +214,6 @@ tui_hline: PROC
     PUSH DI
     PUSH BX
     PUSH CX
-    PUSH ES
     ; Clip width to right screen edge
     MOV CH, SCR_W
     SUB CH, DL               ; CH = max chars that fit
@@ -235,18 +221,17 @@ tui_hline: PROC
     JBE .no_clip
     MOV CL, CH
 .no_clip:
-    CALL calc_vram_offset            ; ES:DI = shadow position
+    CALL calc_vram_offset
     XOR CH, CH
 .fill:
     OR CL, CL
     JZ .done
-    MOV ES:[DI], AL
-    MOV ES:[DI + 1], AH
+    MOV [DI], AL
+    MOV [DI + 1], AH
     ADD DI, 2
     DEC CL
     JMP .fill
 .done:
-    POP ES
     POP CX
     POP BX
     POP DI
@@ -295,10 +280,8 @@ tui_darken_cell: PROC
     JAE .skip
     PUSH DI
     PUSH BX
-    PUSH ES
-    CALL calc_vram_offset            ; ES:DI = shadow position
-    MOV BYTE ES:[DI + 1], CLR_SHADOW
-    POP ES
+    CALL calc_vram_offset
+    MOV BYTE [DI + 1], CLR_SHADOW
     POP BX
     POP DI
 .skip:
@@ -318,7 +301,6 @@ tui_darken_hline: PROC
     PUSH DI
     PUSH BX
     PUSH CX
-    PUSH ES
     ; Clip width to right screen edge
     MOV CH, SCR_W
     SUB CH, DL
@@ -326,17 +308,16 @@ tui_darken_hline: PROC
     JBE .no_clip
     MOV CL, CH
 .no_clip:
-    CALL calc_vram_offset            ; ES:DI = shadow position
+    CALL calc_vram_offset
     XOR CH, CH
 .fill:
     OR CL, CL
     JZ .done
-    MOV BYTE ES:[DI + 1], CLR_SHADOW
+    MOV BYTE [DI + 1], CLR_SHADOW
     ADD DI, 2
     DEC CL
     JMP .fill
 .done:
-    POP ES
     POP CX
     POP BX
     POP DI

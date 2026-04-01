@@ -200,14 +200,13 @@ tui_ctrl_draw_editor:
 .no_sel_setup:
 
 .render_restart:
-    ; ---- Set up ES:DI for shadow_buf writing ----
-    MOV     AX, CS
+    ; ---- Set up ES:DI for shadow_seg writing ----
+    MOV     AX, [shadow_seg]
     MOV     ES, AX
     MOV     BL, [ed_abs_row]
     XOR     BH, BH
     SHL     BX, 1
     MOV     DI, [BX + row_offsets]
-    ADD     DI, shadow_buf
 
     ; ---- Seek to top_line ----
     MOV     BP, [top_line]
@@ -556,8 +555,8 @@ tui_ctrl_draw_editor:
 .do_status:
     PUSH    CS
     POP     DS
-    ; DI already points to start of status bar row in shadow_buf
-    ; ES = CS (shadow_buf segment)
+    ; DI already points to start of status bar row in shadow_seg
+    ; ES = shadow_seg
     PUSH    DI                  ; save status bar start DI
     CALL    ed_draw_status_line
     POP     AX                  ; AX = status bar start DI
@@ -587,7 +586,7 @@ tui_ctrl_draw_editor:
 
 ; ============================================================
 ; ed_draw_status_line — write status bar text to ES:DI
-; Input: ES:DI = position in shadow_buf, DS = CS
+; Input: ES:DI = position in shadow_seg, DS = CS
 ; Output: DI advanced past written text
 ; ============================================================
 
@@ -735,7 +734,7 @@ ed_draw_status_line ENDP
 
 ; ============================================================
 ; ed_wstr — write null-terminated string to ES:DI with ED_ATTR_STAT
-; Input: DS:SI = string, ES:DI = shadow_buf position
+; Input: DS:SI = string, ES:DI = shadow_seg position
 ; Output: DI advanced, SI advanced past null
 ; ============================================================
 
@@ -755,7 +754,7 @@ ed_wstr ENDP
 
 ; ============================================================
 ; ed_wdec — write AX as decimal digits to ES:DI with ED_ATTR_STAT
-; Input: AX = value, ES:DI = shadow_buf position
+; Input: AX = value, ES:DI = shadow_seg position
 ; Output: DI advanced past written digits
 ; ============================================================
 
@@ -821,7 +820,6 @@ ed_draw_cursor PROC
     MOV     BX, AX
     SHL     BX, 1
     MOV     DI, [BX + row_offsets]
-    ADD     DI, shadow_buf
 
     MOV     AX, [cur_col]
     CALL    byte_to_visual_col     ; AX = visual column of cursor
@@ -834,7 +832,7 @@ ed_draw_cursor PROC
 
 .swap_attr:
     ; Fixed cursor attribute: bright white bg, blue fg (requires blink disable)
-    MOV     BYTE [DI + 1], 0F1h
+    MOV     BYTE ES:[DI + 1], 0F1h
 
 .no_cursor:
     POP     DI
@@ -853,13 +851,13 @@ ed_draw_cursor ENDP
 ; tier 2 (ALT+SHFT+n) shows slots 10-19 if any are occupied.
 ; Format per row: │»N FILENAME.EXT*│  (18 chars, cols 0-17)
 ;
-; Input:  ES = DS = CS (from tui_ctrl_draw_editor context)
+; Input:  ES = shadow_seg (from tui_ctrl_draw_editor context)
 ; Output: None
 ; Clobbers: AX, BX, CX, DX, SI, DI
 ; ============================================================
 ed_draw_panel PROC
     CMP     BYTE CS:[panel_visible], 0
-    JZ      .ep_done
+    JZ      .ep_done_early
 
     MOV     DH, 1                   ; DH = screen row (start at row 1)
 
@@ -870,12 +868,14 @@ ed_draw_panel PROC
     POP     SI
 
     ; ---- Tier 1 occupied slots (0-9) ----
-    MOV     SI, doc_table
+    PUSH    DS
+    MOV     DS, CS:[doc_table_seg]  ; DS = doc_table_seg for slot accesses
+    XOR     SI, SI                  ; SI = offset 0 within doc_table_seg
     XOR     DL, DL                  ; DL = slot counter
 .ep_t1_loop:
     CMP     DL, 10
     JAE     .ep_t1_done
-    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .ep_t1_next
     CALL    .ep_draw_slot
 .ep_t1_next:
@@ -892,7 +892,7 @@ ed_draw_panel PROC
 .ep_t2_check:
     CMP     CL, MAX_DOCS
     JAE     .ep_no_t2
-    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
     JNZ     .ep_has_t2
     ADD     SI, DOC_SLOT_SIZE
     INC     CL
@@ -916,7 +916,7 @@ ed_draw_panel PROC
 .ep_t2_loop:
     CMP     DL, MAX_DOCS
     JAE     .ep_fill
-    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .ep_t2_next
     CALL    .ep_draw_slot
 .ep_t2_next:
@@ -934,7 +934,7 @@ ed_draw_panel PROC
     XOR     BH, BH
     SHL     BX, 1
     MOV     DI, CS:[BX + row_offsets]
-    ADD     DI, shadow_buf
+    ; DI = offset within shadow_seg
 
     MOV     AH, PANEL_ATTR_NORM
 
@@ -975,6 +975,8 @@ ed_draw_panel PROC
     JMP     .ep_shadow_loop
 
 .ep_done:
+    POP     DS                      ; restore DS (pushed before doc_table_seg walk)
+.ep_done_early:
     RET
 
 ; ---- Local helper: draw header row ----
@@ -986,7 +988,7 @@ ed_draw_panel PROC
     XOR     BH, BH
     SHL     BX, 1
     MOV     DI, CS:[BX + row_offsets]
-    ADD     DI, shadow_buf
+    ; DI = offset within shadow_seg
     ; Left border (always NORM white)
     MOV     AL, 0B3h
     MOV     BYTE ES:[DI], AL
@@ -1021,7 +1023,7 @@ ed_draw_panel PROC
     XOR     BH, BH
     SHL     BX, 1
     MOV     DI, CS:[BX + row_offsets]
-    ADD     DI, shadow_buf
+    ; DI = offset within shadow_seg
 
     ; Determine attribute
     MOV     AH, PANEL_ATTR_NORM
@@ -1076,7 +1078,7 @@ ed_draw_panel PROC
     ADD     BX, DOC_FILENAME        ; BX = start of filename
     MOV     DI, BX                  ; DI = best basename start
 .eds_scan_bs:
-    MOV     AL, CS:[BX]
+    MOV     AL, [BX]                ; DS = doc_table_seg
     TEST    AL, AL
     JZ      .eds_found_base
     CMP     AL, '\'
@@ -1094,7 +1096,7 @@ ed_draw_panel PROC
     ; Write up to 12 chars of basename, pad with spaces
     MOV     CX, 12
 .eds_write_name:
-    MOV     AL, CS:[BX]
+    MOV     AL, [BX]                ; DS = doc_table_seg
     TEST    AL, AL
     JZ      .eds_pad_name
     MOV     ES:[DI], AL
@@ -1124,7 +1126,7 @@ ed_draw_panel PROC
     MOV     AL, '*'
     JMP     .eds_write_dirty
 .eds_check_cached:
-    TEST    BYTE CS:[SI + DOC_FLAGS], DOCF_DIRTY
+    TEST    BYTE [SI + DOC_FLAGS], DOCF_DIRTY
     JZ      .eds_write_dirty
     MOV     AL, '*'
 .eds_write_dirty:

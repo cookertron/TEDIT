@@ -1,0 +1,384 @@
+; ============================================================================
+; tui_event.inc - Input and Event Loop
+; ============================================================================
+
+_tui_alt_was_down: DB 0         ; nonzero if Alt was held on previous poll
+_key_modifiers:    DB 0         ; shift flags for most recent keypress
+
+; ----------------------------------------------------------------------------
+; tui_poll_key - Non-blocking keyboard poll using INT 16h
+; Output: If no key:        ZF=1
+;         If normal key:    ZF=0, AH=KTYPE_NORMAL (0), AL=char
+;         If extended key:  ZF=0, AH=KTYPE_EXTENDED (1), AL=scan code
+;
+; Uses INT 16h AH=01h (peek) + AH=00h (consume) to get the full
+; keystroke in one read, avoiding the INT 21h AH=06h two-byte protocol
+; which fails for E0h-prefixed keys (enhanced keyboard nav cluster)
+; on some DOS implementations including DOSBox-X.
+; ----------------------------------------------------------------------------
+tui_poll_key: PROC
+    MOV AH, 01h
+    INT 16h
+    JZ .no_key              ; ZF=1 means buffer empty
+
+    ; Key available — consume it (AH=scan code, AL=ASCII)
+    MOV AH, 00h
+    INT 16h
+
+    ; Check for extended key (ASCII = 00h or E0h)
+    OR AL, AL
+    JZ .extended
+    CMP AL, 0E0h
+    JZ .extended
+
+    ; Normal key: AL=ASCII char
+    MOV AH, KTYPE_NORMAL
+    OR AL, AL              ; clear ZF (AL is nonzero since we checked above)
+    RET
+
+.extended:
+    ; Scan code is in AH from INT 16h — move to AL
+    MOV AL, AH
+    MOV AH, KTYPE_EXTENDED
+    OR AH, AH              ; clear ZF (AH=1, nonzero)
+    RET
+
+.no_key:
+    RET
+ENDP
+
+; ----------------------------------------------------------------------------
+; tui_dispatch_key - Handle a keypress
+; Input:  AH = key type (KTYPE_NORMAL or KTYPE_EXTENDED), AL = char/scan code
+; Output: May set FW_RUNNING to 0, may call movement/cycling routines
+; ----------------------------------------------------------------------------
+tui_dispatch_key: PROC
+    ; Check for modal dialog - skip normal dispatch
+    CMP BYTE [fw_state + FW_MODAL_WIN], 0FFh
+    JZ .normal_dispatch
+    JMP tui_modal_dispatch
+.normal_dispatch:
+    ; Menu intercept first - when active, consumes ALL keys
+    CALL tui_menu_handle_key
+    JC .not_handled_by_menu
+    RET
+.not_handled_by_menu:
+    CALL tui_ctrl_handle_key
+    JC .not_handled_by_ctrl
+    RET
+.not_handled_by_ctrl:
+    CMP AH, KTYPE_EXTENDED
+    JNZ .normal_keys
+    JMP .extended
+.normal_keys:
+
+    ; --- Normal key ---
+    CMP AL, KEY_TAB
+    JZ .tab
+    CMP AL, KEY_ENTER
+    JZ .activate
+    CMP AL, KEY_SPACE
+    JZ .activate
+    RET
+
+.tab:
+    ; Try control focus cycling first; fall back to window cycling
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .tab_no_win
+
+    ; Get active window struct
+    MOV BL, WIN_SIZE
+    MUL BL                  ; AX = topwin * WIN_SIZE
+    MOV SI, AX
+    ADD SI, win_table
+
+    ; Check if window has controls
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .tab_cycle_win
+
+    CALL tui_ctrl_focus_next
+    JNC .tab_done           ; CF=0: focus changed, done
+
+    ; CF=1: no focusable or only one — cycle windows
+.tab_cycle_win:
+    CALL tui_zorder_cycle
+
+.tab_done:
+    POP SI
+    RET
+
+.tab_no_win:
+    POP SI
+    RET
+
+.activate:
+    ; Activate focused control in active window
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .activate_done
+
+    ; Get active window struct
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+    CALL tui_ctrl_activate
+
+.activate_done:
+    POP SI
+    RET
+
+.extended:
+    ; --- Extended key (AL = scan code) ---
+    CMP AL, KEY_SHIFT_TAB
+    JZ .shift_tab
+    CMP AL, KEY_CTRL_UP
+    JZ .ctrl_up
+    CMP AL, KEY_CTRL_DOWN
+    JZ .ctrl_down
+    CMP AL, KEY_CTRL_LEFT
+    JZ .ctrl_left
+    CMP AL, KEY_CTRL_RIGHT
+    JZ .ctrl_right
+    CMP AL, KEY_F6
+    JZ .f6
+    RET
+
+.shift_tab:
+    ; Focus previous control; fall back to reverse window cycling
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .stab_no_win
+
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .stab_cycle_win
+
+    CALL tui_ctrl_focus_prev
+    JNC .stab_done
+
+.stab_cycle_win:
+    CALL tui_zorder_cycle
+
+.stab_done:
+    POP SI
+    RET
+
+.stab_no_win:
+    POP SI
+    RET
+
+.ctrl_up:
+    MOV AL, KEY_UP
+    JMP tui_win_move
+
+.ctrl_down:
+    MOV AL, KEY_DOWN
+    JMP tui_win_move
+
+.ctrl_left:
+    MOV AL, KEY_LEFT
+    JMP tui_win_move
+
+.ctrl_right:
+    MOV AL, KEY_RIGHT
+    JMP tui_win_move
+
+.f6:
+    JMP tui_zorder_cycle
+ENDP
+
+; ----------------------------------------------------------------------------
+; tui_modal_dispatch - Key dispatch when a modal dialog is active
+; Restricts input to dialog only: no menu, no window cycling, no quit via q
+; Called via JMP from tui_dispatch_key; returns via RET to dispatch_key caller
+; ----------------------------------------------------------------------------
+tui_modal_dispatch: PROC
+    ; Try control key handling first (textbox in dialog handles own keys)
+    CALL tui_ctrl_handle_key
+    JNC .mdl_done               ; CF=0: handled by control
+
+    ; Not handled by control - check modal-specific keys
+    CMP AH, KTYPE_EXTENDED
+    JZ .mdl_ext
+
+    ; --- Normal keys ---
+    CMP AL, 1Bh                ; Escape = cancel/dismiss
+    JZ .mdl_cancel
+    CMP AL, KEY_TAB
+    JZ .mdl_tab
+    CMP AL, KEY_ENTER
+    JZ .mdl_activate
+    CMP AL, KEY_SPACE
+    JZ .mdl_activate
+.mdl_done:
+    RET                         ; ignore all other keys (q/Q etc.)
+
+.mdl_ext:
+    CMP AL, KEY_SHIFT_TAB
+    JZ .mdl_left                ; Shift+Tab = focus prev (same as Left)
+    CMP AL, KEY_RIGHT
+    JZ .mdl_tab                 ; Right arrow = focus next (same as Tab)
+    CMP AL, KEY_LEFT
+    JZ .mdl_left
+    RET                         ; ignore other extended keys in modal
+
+.mdl_left:
+    ; Focus cycle backward within top window
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .mdl_left_done
+    XOR AH, AH
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .mdl_left_done
+    CALL tui_ctrl_focus_prev
+.mdl_left_done:
+    POP SI
+    RET
+
+.mdl_cancel:
+    MOV BYTE [fw_state + FW_DLG_RESULT], DLG_CANCEL
+    MOV AL, [fw_state + FW_MODAL_WIN]
+    CALL tui_win_close
+    MOV BYTE [fw_state + FW_RUNNING], 0
+    RET
+
+.mdl_tab:
+    ; Focus cycle within top window only (no window cycling)
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .mdl_tab_done
+    XOR AH, AH
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+    CMP WORD [SI + WIN_FIRST], 0
+    JZ .mdl_tab_done
+    CALL tui_ctrl_focus_next
+.mdl_tab_done:
+    POP SI
+    RET
+
+.mdl_activate:
+    ; Activate focused control in top window
+    PUSH SI
+    MOV AL, [fw_state + FW_TOPWIN]
+    CMP AL, 0FFh
+    JZ .mdl_act_done
+    XOR AH, AH
+    MOV BL, WIN_SIZE
+    MUL BL
+    MOV SI, AX
+    ADD SI, win_table
+    CALL tui_ctrl_activate
+.mdl_act_done:
+    POP SI
+    RET
+ENDP
+
+; ----------------------------------------------------------------------------
+; tui_run - Main event loop
+; Polls for input, dispatches keys, redraws when dirty.
+; Loops until FW_RUNNING becomes 0.
+; ----------------------------------------------------------------------------
+tui_run: PROC
+    ; Initial draw
+    CALL tui_compose
+    CALL tui_blit
+
+.loop:
+    ; Check if still running
+    CMP BYTE [fw_state + FW_RUNNING], 0
+    JZ .exit
+
+    ; Poll for key
+    CALL tui_poll_key
+    JZ .no_key
+
+    ; Got a key — capture modifier state for this keypress
+    PUSH AX
+    MOV AH, 02h
+    INT 16h                     ; AL = shift flags
+    MOV [_key_modifiers], AL    ; store for ed_keys.inc disambiguation
+    TEST AL, 08h                ; bit 3 = Alt held?
+    POP AX
+    JZ .key_no_alt
+    ; Alt held during key press → this is an Alt+combo, suppress release
+    MOV BYTE [_tui_alt_was_down], 2
+.key_no_alt:
+    ; If Alt NOT held, leave _tui_alt_was_down as-is for idle detection
+    CALL tui_dispatch_key
+    JMP .poll_mouse
+
+.no_key:
+    MOV BYTE [_key_modifiers], 0    ; no key → no modifiers
+    ; --- Alt-release detection ---
+    ; Check if Alt is currently held via BIOS shift flags
+    PUSH AX
+    MOV AH, 02h
+    INT 16h                     ; AL = shift flags
+    TEST AL, 08h                ; bit 3 = Alt held
+    JZ .alt_not_held
+    ; Alt is currently held — remember it (but don't overwrite combo flag)
+    CMP BYTE [_tui_alt_was_down], 2
+    JZ .alt_done
+    MOV BYTE [_tui_alt_was_down], 1
+    JMP .alt_done
+.alt_not_held:
+    ; Alt not held — was it held before?
+    CMP BYTE [_tui_alt_was_down], 0
+    JZ .alt_done
+    CMP BYTE [_tui_alt_was_down], 2
+    JZ .alt_suppress
+    ; Alt was just released with no key pressed — toggle menu
+    MOV BYTE [_tui_alt_was_down], 0
+    POP AX
+    MOV AH, KTYPE_EXTENDED
+    MOV AL, KEY_F10             ; synthesize F10 keypress
+    CALL tui_dispatch_key
+    JMP .poll_mouse
+.alt_suppress:
+    ; Alt+combo opened a dropdown — suppress this release, allow next one
+    MOV BYTE [_tui_alt_was_down], 0
+    JMP .alt_done
+.alt_done:
+    POP AX
+
+.poll_mouse:
+    ; Poll mouse
+    CALL tui_mouse_poll
+    TEST AL, 3              ; any change?
+    JNZ .do_mouse
+    ; No change — still dispatch if a continuous action is active
+    TEST BYTE [mouse_state + MS_FLAGS], MSF_SB_DRAG + MSF_CTRL_DRAG + MSF_SB_ARROW
+    JZ .no_mouse
+.do_mouse:
+    CALL tui_mouse_dispatch
+.no_mouse:
+
+    ; If dirty, redraw
+    CMP BYTE [fw_state + FW_DIRTY], 0
+    JZ .loop
+
+    CALL tui_compose
+    CALL tui_blit
+    JMP .loop
+
+.exit:
+    RET
+ENDP

@@ -14,11 +14,12 @@
 ;
 ; Input:  None
 ; Output: None
-; Clobbers: AX, CX, DI
+; Clobbers: AX, CX, DI, ES
 ; ============================================================
 doc_table_init PROC
-    ; Zero the entire doc_table (1216 bytes)
-    MOV     DI, doc_table
+    ; Zero the entire doc_table (MAX_DOCS * DOC_SLOT_SIZE bytes)
+    MOV     ES, [doc_table_seg]
+    XOR     DI, DI
     MOV     CX, MAX_DOCS * DOC_SLOT_SIZE
     XOR     AL, AL
     REP     STOSB
@@ -28,10 +29,11 @@ doc_table_init PROC
     MOV     BYTE [doc_count], 0
 
     ; Write constant DOC_SLOT_ID for each slot (0 to MAX_DOCS-1)
-    MOV     DI, doc_table
+    MOV     ES, [doc_table_seg]
+    XOR     DI, DI
     XOR     AL, AL
 .init_ids:
-    MOV     [DI + DOC_SLOT_ID], AL
+    MOV     ES:[DI + DOC_SLOT_ID], AL
     ADD     DI, DOC_SLOT_SIZE
     INC     AL
     CMP     AL, MAX_DOCS
@@ -44,16 +46,16 @@ doc_table_init ENDP
 ; doc_get_slot — Return pointer to document table slot
 ;
 ; Input:  AL = slot index (0-7)
-; Output: DI = pointer to DOC_SLOT struct in doc_table
-; Clobbers: AX
+; Output: ES:DI = pointer to DOC_SLOT struct in doc_table_seg
+; Clobbers: AX, ES
 ; ============================================================
 doc_get_slot PROC
     PUSH    DX
+    MOV     ES, [doc_table_seg]
     XOR     AH, AH
     MOV     DI, DOC_SLOT_SIZE
     MUL     DI              ; AX = slot_index * 152 (DX clobbered)
-    MOV     DI, AX
-    ADD     DI, doc_table
+    MOV     DI, AX          ; DI = offset within doc_table_seg
     POP     DX
     RET
 doc_get_slot ENDP
@@ -64,13 +66,14 @@ doc_get_slot ENDP
 ; Input:  None
 ; Output: CF=0 found: AL = slot index (0 to MAX_DOCS-1)
 ;         CF=1 not found: all slots occupied
-; Clobbers: AX, DI
+; Clobbers: AX, DI, ES
 ; ============================================================
 doc_find_free_slot PROC
-    MOV     DI, doc_table
+    MOV     ES, [doc_table_seg]
+    XOR     DI, DI
     XOR     AL, AL
 .scan:
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .found
     ADD     DI, DOC_SLOT_SIZE
     INC     AL
@@ -92,8 +95,8 @@ doc_find_free_slot ENDP
 ;
 ; Input:  AL = slot index (0 to MAX_DOCS-1)
 ;         SI = pointer to filename (null-terminated, or SI=0 for untitled)
-; Output: DI = pointer to initialized slot
-; Clobbers: AX, BX, CX, DI
+; Output: ES:DI = pointer to initialized slot
+; Clobbers: AX, BX, CX, DI, ES
 ; ============================================================
 doc_slot_init PROC
     PUSH    SI
@@ -102,7 +105,7 @@ doc_slot_init PROC
     PUSH    AX
 
     ; Get slot pointer
-    CALL    doc_get_slot        ; DI = slot pointer
+    CALL    doc_get_slot        ; ES:DI = slot pointer
 
     ; Set flags
     POP     AX                  ; restore slot index in AL
@@ -110,55 +113,55 @@ doc_slot_init PROC
 
     TEST    SI, SI
     JZ      .untitled
-    MOV     BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    MOV     BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JMP     .copy_name
 
 .untitled:
-    MOV     BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
+    MOV     BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
     ; Generate "unsavedNN.txt" where NN = slot index + 1 (01-20)
     PUSH    DI
     PUSH    AX
     ADD     DI, DOC_FILENAME
-    MOV     BYTE [DI+0], 'u'
-    MOV     BYTE [DI+1], 'n'
-    MOV     BYTE [DI+2], 's'
-    MOV     BYTE [DI+3], 'a'
-    MOV     BYTE [DI+4], 'v'
-    MOV     BYTE [DI+5], 'e'
-    MOV     BYTE [DI+6], 'd'
+    MOV     BYTE ES:[DI+0], 'u'
+    MOV     BYTE ES:[DI+1], 'n'
+    MOV     BYTE ES:[DI+2], 's'
+    MOV     BYTE ES:[DI+3], 'a'
+    MOV     BYTE ES:[DI+4], 'v'
+    MOV     BYTE ES:[DI+5], 'e'
+    MOV     BYTE ES:[DI+6], 'd'
     INC     AL                      ; slot+1 → 1-20
     XOR     AH, AH
     MOV     CL, 10
     DIV     CL                      ; AL = tens, AH = ones
     ADD     AL, '0'
-    MOV     [DI+7], AL
+    MOV     ES:[DI+7], AL
     MOV     AL, AH
     ADD     AL, '0'
-    MOV     [DI+8], AL
-    MOV     BYTE [DI+9], '.'
-    MOV     BYTE [DI+10], 't'
-    MOV     BYTE [DI+11], 'x'
-    MOV     BYTE [DI+12], 't'
-    MOV     BYTE [DI+13], 0
+    MOV     ES:[DI+8], AL
+    MOV     BYTE ES:[DI+9], '.'
+    MOV     BYTE ES:[DI+10], 't'
+    MOV     BYTE ES:[DI+11], 'x'
+    MOV     BYTE ES:[DI+12], 't'
+    MOV     BYTE ES:[DI+13], 0
     POP     AX
     POP     DI
     JMP     .gen_swap
 
 .copy_name:
-    ; Copy filename from SI to [DI + DOC_FILENAME], max 127 + null
+    ; Copy filename from SI to ES:[DI + DOC_FILENAME], max 127 + null
     PUSH    DI
     ADD     DI, DOC_FILENAME
     MOV     CX, 127
 .copy_loop:
     MOV     AL, [SI]
-    MOV     [DI], AL
+    MOV     ES:[DI], AL
     TEST    AL, AL
     JZ      .copy_done
     INC     SI
     INC     DI
     DEC     CX
     JNZ     .copy_loop
-    MOV     BYTE [DI], 0       ; ensure null termination
+    MOV     BYTE ES:[DI], 0       ; ensure null termination
 .copy_done:
     POP     DI
 
@@ -167,32 +170,32 @@ doc_slot_init PROC
     POP     AX                  ; AL = slot index
     MOV     BX, DI
     ADD     BX, DOC_SWAP_PATH
-    MOV     BYTE [BX+0], 'T'
-    MOV     BYTE [BX+1], 'E'
-    MOV     BYTE [BX+2], 'D'
-    MOV     BYTE [BX+3], 'T'
-    MOV     BYTE [BX+4], '0'
-    MOV     BYTE [BX+5], '0'
+    MOV     BYTE ES:[BX+0], 'T'
+    MOV     BYTE ES:[BX+1], 'E'
+    MOV     BYTE ES:[BX+2], 'D'
+    MOV     BYTE ES:[BX+3], 'T'
+    MOV     BYTE ES:[BX+4], '0'
+    MOV     BYTE ES:[BX+5], '0'
     ; Two-digit slot index (00-19)
     XOR     AH, AH
     MOV     CL, 10
     DIV     CL                  ; AL = tens, AH = ones
     ADD     AL, '0'
-    MOV     [BX+6], AL
+    MOV     ES:[BX+6], AL
     MOV     AL, AH
     ADD     AL, '0'
-    MOV     [BX+7], AL
-    MOV     BYTE [BX+8], '.'
-    MOV     BYTE [BX+9], 'S'
-    MOV     BYTE [BX+10], 'W'
-    MOV     BYTE [BX+11], 'P'
-    MOV     BYTE [BX+12], 0
+    MOV     ES:[BX+7], AL
+    MOV     BYTE ES:[BX+8], '.'
+    MOV     BYTE ES:[BX+9], 'S'
+    MOV     BYTE ES:[BX+10], 'W'
+    MOV     BYTE ES:[BX+11], 'P'
+    MOV     BYTE ES:[BX+12], 0
 
     ; Zero cached fields
-    MOV     WORD [DI + DOC_CACHED_LINES], 0
-    MOV     WORD [DI + DOC_CACHED_LINE], 0
-    MOV     WORD [DI + DOC_CACHED_COL], 0
-    MOV     WORD [DI + DOC_RESERVED], 0
+    MOV     WORD ES:[DI + DOC_CACHED_LINES], 0
+    MOV     WORD ES:[DI + DOC_CACHED_LINE], 0
+    MOV     WORD ES:[DI + DOC_CACHED_COL], 0
+    MOV     WORD ES:[DI + DOC_RESERVED], 0
 
     POP     SI
     RET
@@ -206,11 +209,11 @@ doc_slot_init ENDP
 ;
 ; Input:  AL = slot index (0-7)
 ; Output: None
-; Clobbers: AX, DI
+; Clobbers: AX, DI, ES
 ; ============================================================
 doc_slot_clear PROC
-    CALL    doc_get_slot        ; DI = slot pointer
-    MOV     BYTE [DI + DOC_FLAGS], 0
+    CALL    doc_get_slot        ; ES:DI = slot pointer
+    MOV     BYTE ES:[DI + DOC_FLAGS], 0
     DEC     BYTE [doc_count]
     RET
 doc_slot_clear ENDP
@@ -240,31 +243,35 @@ doc_swap_out PROC
 
     ; Get active slot pointer
     MOV     AL, [active_doc]
-    CALL    doc_get_slot            ; DI = slot pointer
-    PUSH    DI                      ; save slot pointer on stack
+    CALL    doc_get_slot            ; ES:DI = slot pointer
+    PUSH    DI                      ; save slot offset on stack
 
     ; ---- Cache display info in slot before anything can fail ----
     MOV     AX, [total_lines]
-    MOV     [DI + DOC_CACHED_LINES], AX
+    MOV     ES:[DI + DOC_CACHED_LINES], AX
     MOV     AX, [cur_line]
-    MOV     [DI + DOC_CACHED_LINE], AX
+    MOV     ES:[DI + DOC_CACHED_LINE], AX
     MOV     AX, [cur_col]
-    MOV     [DI + DOC_CACHED_COL], AX
+    MOV     ES:[DI + DOC_CACHED_COL], AX
     ; Cache dirty flag
     TEST    BYTE [dirty], 0FFh
     JZ      .cache_not_dirty
-    OR      BYTE [DI + DOC_FLAGS], DOCF_DIRTY
+    OR      BYTE ES:[DI + DOC_FLAGS], DOCF_DIRTY
     JMP     .cache_done
 .cache_not_dirty:
-    AND     BYTE [DI + DOC_FLAGS], ~DOCF_DIRTY
+    AND     BYTE ES:[DI + DOC_FLAGS], ~DOCF_DIRTY
 .cache_done:
 
     ; ---- Zero the header buffer first ----
     PUSH    DI
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX              ; ES=DS for STOSB into BSS
     MOV     DI, swap_hdr_buf
     MOV     CX, SWAP_HEADER_SIZE
     XOR     AL, AL
     REP     STOSB
+    POP     ES
     POP     DI
 
     ; ---- Fill header fields ----
@@ -347,13 +354,17 @@ doc_swap_out PROC
     POP     SI
 
     ; ---- Create/truncate swap file ----
-    POP     DI                      ; restore slot pointer
+    POP     DI                      ; restore slot offset
     PUSH    DI                      ; keep on stack
     MOV     DX, DI
-    ADD     DX, DOC_SWAP_PATH       ; DS:DX = swap filename
+    ADD     DX, DOC_SWAP_PATH       ; DX = offset of swap filename in doc_table_seg
+    PUSH    DS
+    PUSH    ES
+    POP     DS                      ; DS = doc_table_seg (for DS:DX)
     XOR     CX, CX                  ; normal attributes
     MOV     AH, 3Ch
     INT     21h
+    POP     DS                      ; restore DS
     JC      .fail                   ; can't create file
     MOV     [file_hnd], AX
 
@@ -451,8 +462,9 @@ doc_swap_out PROC
     LOG "swap_segs_freed", WORD [orig_count]
 
     ; ---- Mark slot as swapped ----
-    POP     DI                      ; restore slot pointer
-    OR      BYTE [DI + DOC_FLAGS], DOCF_SWAPPED
+    POP     DI                      ; restore slot offset
+    MOV     ES, [doc_table_seg]     ; re-load ES (clobbered by .free_doc_segs)
+    OR      BYTE ES:[DI + DOC_FLAGS], DOCF_SWAPPED
 
     POP     BP
     CLC
@@ -465,12 +477,15 @@ doc_swap_out PROC
     INT     21h
 
     ; Delete the partial swap file
-    POP     DI                      ; restore slot pointer
+    POP     DI                      ; restore slot offset
     PUSH    DI
     MOV     DX, DI
     ADD     DX, DOC_SWAP_PATH
+    PUSH    DS
+    MOV     DS, CS:[doc_table_seg]  ; DS:DX = swap path in doc_table_seg
     MOV     AH, 41h                 ; delete file
     INT     21h                     ; ignore error
+    POP     DS
 
 .fail:
     ; Do NOT free segments — document remains active
@@ -557,8 +572,8 @@ doc_swap_in PROC
     XOR     AH, AH
     LOG "swap_in_start", AX
 
-    CALL    doc_get_slot            ; DI = slot pointer
-    PUSH    DI                      ; save slot pointer [BP-4]
+    CALL    doc_get_slot            ; ES:DI = slot pointer
+    PUSH    DI                      ; save slot offset [BP-4]
 
     ; ---- CHDIR to startup dir for swap file access ----
     PUSH    SI
@@ -568,10 +583,14 @@ doc_swap_in PROC
 
     ; ---- Open swap file (in startup dir) ----
     MOV     DX, DI
-    ADD     DX, DOC_SWAP_PATH
+    ADD     DX, DOC_SWAP_PATH       ; DX = offset in doc_table_seg
+    PUSH    DS
+    PUSH    ES
+    POP     DS                      ; DS = doc_table_seg (for DS:DX)
     MOV     AL, 0                   ; read-only
     MOV     AH, 3Dh
     INT     21h
+    POP     DS                      ; restore DS
     JC      .fail_noswap
     MOV     [swap_hnd], AX
 
@@ -615,30 +634,35 @@ doc_swap_in PROC
     POP     SI
 
     ; ---- Check if untitled ----
-    POP     DI                      ; restore slot pointer
+    POP     DI                      ; restore slot offset
     PUSH    DI                      ; keep on stack
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    MOV     ES, [doc_table_seg]     ; re-load ES (may have been clobbered)
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_UNTITLED
     JNZ     .untitled
 
     ; ---- Named document: copy filename from slot to BSS ----
+    ; Source = doc_table_seg:[SI+DOC_FILENAME], Dest = DS:[filename]
     PUSH    DI
+    MOV     SI, DI
+    ADD     SI, DOC_FILENAME        ; SI = offset of filename in doc_table_seg
+    PUSH    DS
     PUSH    ES
     MOV     AX, DS
-    MOV     ES, AX                  ; ES = DS (STOSB writes to ES:DI)
-    MOV     SI, DI
-    ADD     SI, DOC_FILENAME        ; SI = source (slot filename)
+    MOV     ES, AX                  ; ES = DS (STOSB writes to BSS)
+    MOV     DS, CS:[doc_table_seg]  ; DS = doc_table_seg (LODSB reads from slot)
     MOV     DI, filename            ; DI = dest (BSS filename)
     MOV     CX, 128
 .copy_fn:
-    LODSB
-    STOSB
+    LODSB                           ; read from DS:SI (doc_table_seg)
+    STOSB                           ; write to ES:DI (BSS)
     TEST    AL, AL
     JZ      .copy_fn_done
     DEC     CX
     JNZ     .copy_fn
-    MOV     BYTE [DI-1], 0         ; ensure null termination
+    MOV     BYTE ES:[DI-1], 0      ; ensure null termination
 .copy_fn_done:
     POP     ES
+    POP     DS
     POP     DI
 
     ; ---- Open and reload original file ----
@@ -761,12 +785,15 @@ doc_swap_in PROC
     MOV     SI, startup_cwd
     CALL    swap_chdir
     POP     SI
-    POP     DI                      ; restore slot pointer
+    POP     DI                      ; restore slot offset
     PUSH    DI
     MOV     DX, DI
     ADD     DX, DOC_SWAP_PATH
+    PUSH    DS
+    MOV     DS, CS:[doc_table_seg]  ; DS:DX = swap path in doc_table_seg
     MOV     AH, 41h
     INT     21h                     ; ignore delete error
+    POP     DS
     PUSH    SI
     MOV     SI, doc_cwd
     CALL    swap_chdir
@@ -838,8 +865,9 @@ doc_swap_in PROC
     CALL    scroll_to_cursor
 
     ; ---- Update document table slot ----
-    POP     DI                      ; restore slot pointer
-    AND     BYTE [DI + DOC_FLAGS], ~DOCF_SWAPPED
+    POP     DI                      ; restore slot offset
+    MOV     ES, [doc_table_seg]     ; re-load ES (clobbered by rebuild_meta etc.)
+    AND     BYTE ES:[DI + DOC_FLAGS], ~DOCF_SWAPPED
 
     ; ---- Set active document ----
     POP     AX                      ; restore slot index
@@ -910,12 +938,12 @@ doc_switch PROC
 
     ; ---- Guard: target slot occupied? ----
     PUSH    AX                      ; save target slot index
-    CALL    doc_get_slot            ; DI = target slot pointer
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    CALL    doc_get_slot            ; ES:DI = target slot pointer
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .not_occupied
 
     ; ---- Guard: target slot actually swapped? ----
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_SWAPPED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_SWAPPED
     JZ      .not_occupied
 
     ; ---- Clear selection in active document ----
@@ -1000,7 +1028,7 @@ doc_switch ENDP
 ; Input:  None
 ; Output: CF=0 found: AL = next occupied slot index
 ;         CF=1 not found: only one document open
-; Clobbers: AX, CX, DI
+; Clobbers: AX, CX, DI, ES
 ; ============================================================
 doc_next_occupied PROC
     MOV     AL, [active_doc]
@@ -1014,9 +1042,9 @@ doc_next_occupied PROC
     CMP     AL, [active_doc]
     JE      .none                    ; wrapped all the way around
     PUSH    AX
-    CALL    doc_get_slot             ; DI = slot pointer
+    CALL    doc_get_slot             ; ES:DI = slot pointer
     POP     AX
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JNZ     .found
     DEC     CX
     JNZ     .scan
@@ -1036,7 +1064,7 @@ doc_next_occupied ENDP
 ; Input:  None
 ; Output: CF=0 found: AL = previous occupied slot index
 ;         CF=1 not found: only one document open
-; Clobbers: AX, CX, DI
+; Clobbers: AX, CX, DI, ES
 ; ============================================================
 doc_prev_occupied PROC
     MOV     AL, [active_doc]
@@ -1050,9 +1078,9 @@ doc_prev_occupied PROC
     CMP     AL, [active_doc]
     JE      .none
     PUSH    AX
-    CALL    doc_get_slot
+    CALL    doc_get_slot             ; ES:DI = slot pointer
     POP     AX
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JNZ     .found
     DEC     CX
     JNZ     .scan
@@ -1157,29 +1185,30 @@ doc_cleanup_orphans ENDP
 ; Input:  SI = pointer to null-terminated filename to search
 ; Output: CF=0 found: AL = slot index
 ;         CF=1 not found
-; Clobbers: AX, BX, CX, DI
+; Clobbers: AX, BX, CX, DI, ES
 ; ============================================================
 doc_find_by_name PROC
     PUSH    SI
     PUSH    DX
-    MOV     DI, doc_table
+    MOV     ES, [doc_table_seg]
+    XOR     DI, DI
     XOR     DL, DL                      ; DL = slot counter
 
 .search:
     CMP     DL, MAX_DOCS
     JAE     .not_found
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_OCCUPIED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
     JZ      .search_next
-    TEST    BYTE [DI + DOC_FLAGS], DOCF_UNTITLED
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_UNTITLED
     JNZ     .search_next                ; untitled docs can't match
 
-    ; Compare SI against [DI + DOC_FILENAME]
+    ; Compare SI against ES:[DI + DOC_FILENAME]
     PUSH    SI
     PUSH    DI
     ADD     DI, DOC_FILENAME
 .cmp_loop:
     MOV     AL, [SI]
-    MOV     AH, [DI]
+    MOV     AH, ES:[DI]
     ; Case-insensitive: uppercase both
     CMP     AL, 'a'
     JB      .cmp_no_up1
