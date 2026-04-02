@@ -97,6 +97,10 @@ ed_load_file PROC
     POP     SI
 
 .init_empty:
+    ; Free partially loaded orig chunks before reinit (load_file may
+    ; have allocated some chunks before running out of memory; ed_new_doc
+    ; zeroes orig_count without freeing them, leaking the segments)
+    CALL    free_all
     ; Reinitialize as empty document so the editor isn't broken
     CALL    ed_new_doc
     MOV     BYTE [filename], 0         ; clear filename since load failed

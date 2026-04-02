@@ -816,6 +816,7 @@ menu_open_handler:
 
     ; ---- Load file into current slot ----
     CALL    ed_load_file
+    JC      .open_load_failed
 
     ; ---- Update document table slot with new filename ----
     MOV     AL, [active_doc]
@@ -836,6 +837,24 @@ menu_open_handler:
     POP     DI
     AND     BYTE ES:[DI + DOC_FLAGS], ~DOCF_UNTITLED
 
+    JMP     .open_done
+
+.open_load_failed:
+    ; ---- Load failed: undo slot allocation, restore previous doc ----
+    CMP     BYTE [open_reuse_flag], 1
+    JE      .open_done              ; reuse path: slot unchanged, empty doc OK
+
+    ; New slot path: clean up the failed slot
+    CALL    free_all                ; free any segments ed_new_doc allocated
+    MOV     AL, [active_doc]
+    CALL    doc_slot_clear          ; clear OCCUPIED flag, dec doc_count
+
+    ; Switch back to the previous document (still swapped to disk)
+    CALL    doc_next_occupied       ; AL = next occupied slot
+    JC      .open_done              ; shouldn't happen — guard
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+    CALL    doc_swap_in
     JMP     .open_done
 
 .open_swap_fail:

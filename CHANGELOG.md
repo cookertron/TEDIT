@@ -20,6 +20,22 @@
 - **No button** now aborts quit (previously both Yes and No would quit, making
   the dialog pointless). Only Yes discards and exits; No/Cancel return to the editor.
 
+### Open File OOM Crash Fix
+- **Memory leak in ed_load_file**: when `load_file` failed partway (out of memory),
+  partially allocated orig_seg chunks were not freed before `ed_new_doc` zeroed
+  `orig_count`. This leaked segments, preventing `ed_new_doc` from allocating
+  `pt_seg`/`add_seg`, leaving them at segment 0 (interrupt vector table). Typing
+  then corrupted the IVT → smiley faces on screen → DOSBox-X crash.
+  Fixed by adding `CALL free_all` before `ed_new_doc` in the `.init_empty` path.
+- **Ghost slot in menu_open_handler**: `ed_load_file` return code (CF) was not
+  checked after loading into a new slot. On failure, the slot remained occupied
+  with an empty filename, appearing as a blank entry in the side panel. Closing
+  it left the editor in a broken state with no valid document.
+  Fixed by adding `JC .open_load_failed` — on failure, the handler frees segments,
+  clears the slot (`doc_slot_clear`), finds the previous document
+  (`doc_next_occupied`), and swaps it back in. User is returned to their
+  original file with no ghost entries.
+
 ## v0.64.0 — BSS/Stack Overflow Fix, Segment Migration (2026-04-01)
 
 ### Shell-to-DOS JemmEx Crash Fix
