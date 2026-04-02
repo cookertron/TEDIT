@@ -1,5 +1,25 @@
 # TEDIT Changelog
 
+## v0.65.0 — Menu Shortcuts & Quit Dialog Fix (2026-04-02)
+
+### Menu Shortcuts
+- **Shell to DOS**: assigned F8 shortcut (scan code 42h via TUI accelerator dispatch)
+- **Exit (renamed from Quit)**: changed shortcut from Alt+Q to Alt+X (scan code 2Dh)
+- Verified all 21 menu shortcuts work correctly via agent86 emulation
+
+### DOSBox-X Ctrl+Alt Key Fix
+- **Ctrl+Alt+W (Close All)** and **Ctrl+Alt+S (Save All)**: added extended key
+  fallback handlers in ed_keys.inc. DOSBox-X sends Ctrl+Alt+letter as an extended
+  key (ASCII=0, scancode=letter) rather than as a control code with Alt in the
+  modifier flags. New handlers check for W (scan 11h) and S (scan 1Fh) with
+  Ctrl modifier bit, jumping to existing `.do_closeall` / `.do_saveall`.
+
+### Quit Dialog Fix
+- **"Other docs have unsaved changes."** replaced with **"Discard unsaved changes?"**
+  — the old message wasn't a question, making the Yes/No buttons meaningless
+- **No button** now aborts quit (previously both Yes and No would quit, making
+  the dialog pointless). Only Yes discards and exits; No/Cancel return to the editor.
+
 ## v0.64.0 — BSS/Stack Overflow Fix, Segment Migration (2026-04-01)
 
 ### Shell-to-DOS JemmEx Crash Fix

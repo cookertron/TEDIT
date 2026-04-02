@@ -132,7 +132,7 @@ s_shell_msg:    DB 'Type EXIT to return to TEDIT.', 0Dh, 0Ah, '$'
 s_comspec_key:  DB 'COMSPEC='
 S_COMSPEC_LEN   EQU 8
 s_err_no_comspec: DB 'COMSPEC not found.', 0
-m_str_quit:     DB 'Quit', 0
+m_str_quit:     DB 'Exit', 0
 m_str_acc_cn:   DB 'Ctrl+N', 0
 m_str_acc_co:   DB 'Ctrl+O', 0
 m_str_acc_cw:   DB 'Ctrl+W', 0
@@ -140,13 +140,14 @@ m_str_acc_cs:   DB 'Ctrl+S', 0
 m_str_acc_css:  DB 'Ctrl+Shift+S', 0
 m_str_acc_caw:  DB 'Ctrl+Alt+W', 0
 m_str_acc_cas:  DB 'Ctrl+Alt+S', 0
-m_str_acc_aq:   DB 'Alt+Q', 0
+m_str_acc_ax:   DB 'Alt+X', 0
+m_str_acc_f8:   DB 'F8', 0
 m_str_view:      DB 'View', 0
 m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.64', 0
+m_str_about_1:   DB 'TEDIT v0.65', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -178,7 +179,7 @@ s_err_redo_noop:   DB 'Redo not available for paste.', 0
 s_err_swap_out:    DB 'Cannot swap document to disk.', 0
 s_err_swap_in:     DB 'Cannot load target document.', 0
 s_err_max_docs:    DB 'Maximum 20 documents open.', 0
-s_quit_unsaved:    DB 'Other docs have unsaved changes.', 0
+s_quit_unsaved:    DB 'Discard unsaved changes?', 0
 
 ; ---- Find dialog strings ----
 s_find_title:        DB 'Find', 0
@@ -318,8 +319,8 @@ m_file_entries:
     ; Shell to DOS
     DW m_str_shell, menu_shell_handler
     DB 0, 'H'
-    DW 0
-    DB 0, 0
+    DW m_str_acc_f8
+    DB 42h, 0                       ; accelkey=42h (F8 global dispatch)
 
     ; ---- divider ----
     DW 0, 0
@@ -327,11 +328,11 @@ m_file_entries:
     DW 0
     DB 0, 0
 
-    ; Quit
+    ; Exit
     DW m_str_quit, menu_quit_handler
-    DB 0, 'Q'
-    DW m_str_acc_aq
-    DB 10h, 0                       ; accelkey=10h (Alt+Q global dispatch)
+    DB 1, 'X'
+    DW m_str_acc_ax
+    DB 2Dh, 0                       ; accelkey=2Dh (Alt+X global dispatch)
 
 m_edit_entries:
     ; Undo — hotidx=0, hotkey='U'
@@ -583,9 +584,7 @@ menu_quit_handler:
     CALL    tui_dlg_confirm
     CMP     AL, DLG_YES
     JE      .quit_now
-    CMP     AL, DLG_NO
-    JE      .quit_now
-    JMP     .quit_done              ; Cancel = abort quit
+    JMP     .quit_done              ; No or Cancel = abort quit
 
 .quit_now:
     ; ---- Delete all swap files ----

@@ -743,6 +743,22 @@ tui_ed_handle_key PROC
     RET
 .not_prev_doc:
 
+    ; ---- Ctrl+Alt+W: Close All (DOSBox-X sends as extended key) ----
+    CMP     AL, 11h                 ; W scan code
+    JNE     .not_ca_w
+    TEST    BYTE [_key_modifiers], 04h  ; Ctrl held?
+    JZ      .not_ca_w
+    JMP     .do_closeall
+.not_ca_w:
+
+    ; ---- Ctrl+Alt+S: Save All (DOSBox-X sends as extended key) ----
+    CMP     AL, 1Fh                 ; S scan code
+    JNE     .not_ca_s
+    TEST    BYTE [_key_modifiers], 04h  ; Ctrl held?
+    JZ      .not_ca_s
+    JMP     .do_saveall
+.not_ca_s:
+
     ; Unrecognized extended key
     STC
     RET
