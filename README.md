@@ -14,7 +14,7 @@ runs on IBM PC compatibles, DOSBox-X, and the agent86 emulator.
 Run in DOSBox-X or agent86 with CGA 80-column text mode:
 
 ```
- File  Edit  Info
+ File  Edit  View  Info
 The quick brown fox jumps over the lazy dog.
 This is line two of the document.
 
@@ -95,6 +95,8 @@ This is line two of the document.
 - Close (Ctrl+W) — single document resets to untitled; multiple documents
   switches to the next
 - Close All (Ctrl+Alt+W) — prompts for each dirty document, resets to untitled
+- Crash-safe save — writes to a temporary file (`TEDIT.$$$`), then renames
+  over the original. If power is lost during save, the original file is intact
 - Shell to DOS (File > Shell to DOS, F8) — spawns interactive COMMAND.COM via
   COMSPEC; mouse and cursor fully restored on return; compatible with SHROOM
   utility for memory-efficient shelling
@@ -105,15 +107,21 @@ This is line two of the document.
 - Word Wrap (Edit > Word Wrap) — permanent hard wrap at 80 columns
 - Go to Line (Ctrl+G)
 - Date/Time insertion (F5) — inserts `YYYY-MM-DD HH:MM:SS` at cursor
+- Exit (Alt+X)
 - Working directory restored on exit
 
 ### Menu System
 - File: New, Open, Close, Close All, Save, Save As, Save All, Load Project,
-  Save Project, Shell to DOS, Quit
+  Save Project, Shell to DOS, Exit
 - Edit: Undo, Redo, Cut, Copy, Paste, Find, Find Next, Find Prev,
   Replace, Goto, Date/Time, Word Wrap
 - View: Document List
 - Info: About
+
+### Compatibility
+- CGA snow prevention for original IBM CGA adapters
+- 4DOS and third-party shell compatibility (BSS zeroing, INT 23h/24h handlers)
+- Ctrl+C handled as Copy (not break) — INT 23h intercepted
 
 ## Building
 
@@ -184,10 +192,19 @@ TEDIT myfile.txt /t 4
 TEDIT myfile.txt /d
 ```
 
+### Command-Line Flags
+
+| Flag | Description |
+|------|-------------|
+| `/t N` | Set tab display width (2, 4, or 8; default 8) |
+| `/d` | Enable memory dump mode for Shell to DOS |
+
+Flags can use `/` or `-` prefix and appear in any order with filenames.
+
 ## Architecture
 
 TEDIT is a `.COM` flat-model program (ORG 100h, all segments equal).
-The binary is approximately 40 KB (code), with 24 KB of BSS.
+The binary is approximately 43 KB of code with 14 KB of BSS.
 
 ### Piece Table Document Model
 
@@ -196,10 +213,30 @@ original file data and new edits live in separate buffers. Insertions and
 deletions manipulate piece descriptors (source, offset, length) rather
 than moving text. This gives efficient editing regardless of file size.
 
-- Original buffer: file data loaded in 32 KB chunks (up to 1,024 chunks)
+- Original buffer: file data stays on disk, accessed through a 2-slot LRU
+  cache (2 x 32 KB). Only the data being viewed or edited is in memory.
 - Add buffer: 64 KB for new text
-- Piece table: up to 4,096 piece descriptors
+- Piece table: up to 4,096 piece descriptors (10 bytes each)
 - Checkpoint table: 2,048 line-to-piece mappings for fast seeking
+- Incremental metadata: typing, Enter, undo/redo, and paste update
+  checkpoints in O(1) without a full rebuild
+
+### Memory Layout
+
+| Segment | Size | Purpose |
+|---------|------|---------|
+| COM segment | 64 KB | Code + BSS (fixed, stays resident during Shell) |
+| Cache slot 0 | 32 KB | LRU file cache |
+| Cache slot 1 | 32 KB | LRU file cache |
+| Piece table | 40 KB | Piece descriptors |
+| Add buffer | 64 KB | New text storage |
+| Undo buffer | 32 KB | Undo/redo records |
+| Clipboard | 16 KB | Cut/copy buffer |
+| Shadow buffer | 4 KB | TUI screen compositing |
+| Doc table | 3 KB | Multi-document slot metadata |
+
+Total: ~287 KB. With `/d`, all segments except the COM segment are freed
+before shelling (~223 KB reclaimed).
 
 ### Source Structure
 
@@ -207,8 +244,8 @@ than moving text. This gives efficient editing regardless of file size.
 |------|---------|
 | `TEDIT.ASM` | Main file: includes, menu data, handlers, BSS |
 | `ed_const.inc` | All EQU constants |
-| `ed_core.inc` | Piece table engine, cursor, scroll, argument parsing |
-| `ed_edit.inc` | Insert, delete, save operations |
+| `ed_core.inc` | Piece table engine, LRU cache, cursor, scroll, argument parsing |
+| `ed_edit.inc` | Insert, delete, save (temp-file-rename) |
 | `ed_undo.inc` | Undo/redo buffer and execution |
 | `ed_file.inc` | File loading, compaction |
 | `ed_sel.inc` | Selection management |
@@ -225,7 +262,7 @@ than moving text. This gives efficient editing regardless of file size.
 
 The editor is built on a custom TUI library (`TUI\` directory) that provides:
 
-- Shadow buffer compositing with VRAM blit
+- Shadow buffer compositing with VRAM blit (segment-based, CGA snow safe)
 - Windowing with z-order, borders, titles, move, resize
 - Control types: label, button, textbox, checkbox, radio, dropdown,
   listbox, text viewer, editor
@@ -263,8 +300,6 @@ things it intentionally does not attempt.
   replace bypasses the undo system for performance. A warning is shown.
 - **80-column text mode required.** 40-column and MDA modes are rejected at
   startup. No graphics, no 132-column mode, no colour themes.
-- **16-bit real mode.** Maximum addressable file size is bounded by available
-  conventional memory (~576 KB for data segments).
 
 ### Not a bug, by design
 
@@ -273,14 +308,18 @@ things it intentionally does not attempt.
 - **Cursor is a colour block**, not a blinking underscore. This is the
   software cursor implemented via attribute manipulation.
 - **Mouse cursor is attribute-inverted**, not a hardware cursor.
+- **Undo history cleared on save.** The safe-save process replaces the
+  backing file, invalidating piece table references. This is a trade-off
+  for crash safety.
 
 ## Version History
 
 See `CHANGELOG.md` for the full version history with detailed per-version
 changes. The editor has been developed through 68 versions covering:
 
-- Core editing and file I/O
-- Piece table engine with checkpoint-accelerated seeking
+- Core editing and file I/O with crash-safe temp-file-rename save
+- Piece table engine with checkpoint-accelerated seeking and LRU disk cache
+- Incremental metadata updates (O(1) typing, Enter, undo/redo, paste)
 - Full undo/redo with grouping and smart dirty tracking
 - Keyboard and mouse selection
 - Range delete with piece table surgery
@@ -295,8 +334,9 @@ changes. The editor has been developed through 68 versions covering:
 - Document side panel with two-tier navigation and drop shadow
 - Project file load/save (menu and command line)
 - Multi-file command-line loading
-- Shell to DOS with SHROOM compatibility and `/d` memory dump mode
-- COM binary size optimization (BSS section, subroutine factoring)
+- Shell to DOS with `/d` memory dump mode and crash recovery
+- CGA snow prevention and 4DOS/third-party shell compatibility
+- COM binary size optimization (BSS section, segment migration)
 
 ## Credits
 
