@@ -1,6 +1,6 @@
 # TEDIT Changelog
 
-## v0.68.0 — Shell Swap & Menu Hotkey Fix (2026-04-03 20:45)
+## v0.68.0 — Shell Swap & Menu Hotkey Fix (2026-04-03)
 
 ### New Feature: Shell Memory Swap (`/d` flag)
 - **`/d` command-line flag** enables memory dump mode for Shell to DOS. When
@@ -15,7 +15,10 @@
 - **Segments freed**: cache_seg (2 × 32 KB), pt_seg (40 KB), add_seg (64 KB),
   undo_seg (32 KB), clip_seg (16 KB), shadow_seg (4 KB), doc_table_seg (3 KB).
 - **Error handling**: write failure aborts the shell and leaves editor state
-  intact. Restore failure after EXEC is fatal (swap file preserved for retry).
+  intact. On restore, if the swap file was deleted during the shell session,
+  TEDIT falls back to an empty untitled document and shows a warning dialog
+  ("Swap file missing. Unsaved changes lost.") instead of fatally exiting.
+  Only a genuine out-of-memory condition is fatal.
 
 ### New Feature: Orphan Swap Recovery
 - **Crash recovery**: on startup, TEDIT checks for an orphan `TEDTSHEL.SWP` in
@@ -30,7 +33,9 @@
 - **`shell_swap_in`**: reallocates all segments, reads swap file, reloads
   original file from disk, restores piece table, add buffer, undo history,
   cursor/scroll position, dirty flag, tab settings, and find flags. Deletes
-  swap file after successful restore.
+  swap file after successful restore. If the swap file is missing (deleted
+  during shell), falls back to an empty untitled document with all segments
+  allocated, sets `shell_recovering=1` for deferred warning, returns CF=0.
 - **`shell_check_orphan`**: startup orphan detection with R/D prompt via DOS
   console I/O (runs before TUI init).
 - **`write_seg_data` / `read_seg_data`**: helper procs for cross-segment file
@@ -48,12 +53,15 @@
 ### Modified: `menu_shell_handler` (`TEDIT.ASM`)
 - Calls `shell_swap_out` before EXEC and `shell_swap_in` after return when
   `shell_dump_mode=1`. Swap-out failure shows error dialog and aborts shell.
-  Swap-in failure prints fatal message and exits.
+  After TUI restore, checks `shell_recovering` flag — if set, shows
+  "Swap file missing. Unsaved changes lost." warning dialog. Only
+  out-of-memory failure is fatal.
 
 ### Modified: `main:` entry point (`TEDIT.ASM`)
 - Orphan swap check inserted after `startup_cwd` setup, before `cache_init`.
   Recovery path calls `shell_swap_in` and jumps to `.init_tui` (skipping
-  normal file loading and editor state reset).
+  normal file loading and editor state reset). Deferred warning check added
+  before `tui_run` — shows error dialog if `shell_recovering` is set.
 
 ### Fix: File Menu Hotkey Duplicates
 - **Close All**: changed hotkey from `A` to `E` (hotidx 6→4, highlights 'e'
@@ -74,11 +82,15 @@
 - Version bumped from v0.65 to v0.68.
 
 ### Test Harness
-- **`test_shell_swap.asm`**: standalone round-trip test — loads file, inserts
-  text, calls `shell_swap_out`, verifies segments freed and swap file created,
-  calls `shell_swap_in`, verifies all state restored (pt_count, add_used,
-  cur_col, undo_count, total_lines, dirty flag, add buffer content 'X','Y','Z'),
-  verifies swap file deleted. 4/4 tests pass.
+- **`test_shell_swap.asm`**: standalone round-trip test (5 tests):
+  1. `shell_swap_out` — verifies swap file created, all segments freed
+  2. `shell_swap_in` — verifies state restored (pt_count, add_used, cur_col,
+     undo_count, total_lines, dirty flag)
+  3. Swap file deleted after restore
+  4. Add buffer content ('X','Y','Z') survives round-trip
+  5. Missing swap file fallback — swap out, delete file, swap in: verifies
+     graceful recovery (CF=0, `shell_recovering=1`, all segments allocated,
+     empty untitled doc with `doc_count=1`, `dirty=0`)
 
 ## v0.67.0 — Incremental Metadata Optimization (2026-04-02)
 

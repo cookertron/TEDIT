@@ -424,7 +424,7 @@ shell_swap_in PROC
     MOV     AL, 0                   ; read-only
     MOV     AH, 3Dh
     INT     21h
-    JC      .fatal
+    JC      .swap_file_missing      ; deleted during shell — graceful fallback
     MOV     [swap_hnd], AX
 
     ; ==== READ GLOBAL HEADER ====
@@ -709,6 +709,67 @@ shell_swap_in PROC
     ; Restore ES = DS
     MOV     AX, DS
     MOV     ES, AX
+
+    CLC
+    RET
+
+.swap_file_missing:
+    ; ---- Swap file was deleted during shell session ----
+    ; Shared segments (doc_table, shadow, undo, clip, cache) are allocated.
+    ; Fall back to an empty untitled document so the editor is usable.
+
+    ; Create empty document (allocates pt_seg + add_seg)
+    MOV     BYTE [filename], 0
+    CALL    ed_new_doc
+    JC      .fatal                  ; truly out of memory
+
+    ; Initialize doc table slot 0
+    MOV     ES, [doc_table_seg]
+    XOR     DI, DI
+    MOV     CX, DOC_SLOT_SIZE
+    XOR     AL, AL
+    REP     STOSB                   ; zero entire slot
+    XOR     DI, DI
+    MOV     BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
+    MOV     BYTE ES:[DI + DOC_SLOT_ID], 0
+    MOV     AX, DS
+    MOV     ES, AX
+
+    MOV     BYTE [active_doc], 0
+    MOV     BYTE [doc_count], 1
+    MOV     BYTE [panel_sel], 0
+
+    ; Set doc_cwd = startup_cwd
+    MOV     SI, startup_cwd
+    MOV     DI, doc_cwd
+    MOV     CX, 68
+    REP     MOVSB
+
+    ; Initialize undo + clipboard
+    CALL    undo_init
+    MOV     WORD [clip_used], 0
+    MOV     WORD [clip_lines], 0
+    MOV     WORD [clip_last_col], 0
+
+    ; Reset editor state
+    MOV     WORD [cur_line], 0
+    MOV     WORD [cur_col], 0
+    MOV     WORD [top_line], 0
+    MOV     WORD [left_col], 0
+    MOV     BYTE [dirty], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     BYTE [sel_active], 0
+    MOV     BYTE [undo_group_active], 0
+    MOV     BYTE [undo_recording], 1
+    MOV     WORD [ed_text_cols], ED_COLS
+    MOV     BYTE [ed_sb_active], 0
+
+    CALL    cache_invalidate
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+
+    ; Signal caller to show warning after TUI is restored
+    MOV     BYTE [shell_recovering], 1
 
     CLC
     RET

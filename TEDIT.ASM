@@ -136,8 +136,8 @@ s_err_no_comspec: DB 'COMSPEC not found.', 0
 s_shell_swap_name: DB 'TEDTSHEL.SWP', 0
 s_swap_prompt:  DB 'Swap file detected. Restore[R] or Delete[D]? $'
 s_err_shl_swap:  DB 'Shell swap failed: disk error. Shell aborted.', 0
-s_err_shl_fatal: DB 0Dh, 0Ah, 'FATAL: Cannot restore from swap file.', 0Dh, 0Ah
-                DB 'Your data may be in TEDTSHEL.SWP.', 0Dh, 0Ah, '$'
+s_err_shl_lost:  DB 'Swap file missing. Unsaved changes lost.', 0
+s_err_shl_fatal: DB 0Dh, 0Ah, 'FATAL: Out of memory restoring editor.', 0Dh, 0Ah, '$'
 m_str_quit:     DB 'Exit', 0
 m_str_acc_cn:   DB 'Ctrl+N', 0
 m_str_acc_co:   DB 'Ctrl+O', 0
@@ -1764,6 +1764,13 @@ menu_shell_handler:
 
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
+    ; ---- Show deferred warning if swap file was missing ----
+    CMP     BYTE [shell_recovering], 0
+    JE      .sh_done
+    MOV     BYTE [shell_recovering], 0
+    MOV     SI, s_err_shl_lost
+    CALL    show_error_msg
+
 .sh_done:
     PopAll
     RET
@@ -3195,6 +3202,14 @@ main:
 
     ; Multi-document: slots are populated via File > New / File > Open.
     ; Switching via Alt+1-8, F6, Ctrl+PgDn/PgUp.
+
+    ; ---- Show deferred warning if startup recovery lost data ----
+    CMP     BYTE [shell_recovering], 0
+    JE      .no_deferred_warn
+    MOV     BYTE [shell_recovering], 0
+    MOV     SI, s_err_shl_lost
+    CALL    show_error_msg
+.no_deferred_warn:
 
     ; ---- Run event loop ----
     CALL    tui_run
