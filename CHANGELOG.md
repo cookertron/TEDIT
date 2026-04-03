@@ -78,6 +78,25 @@
 - `shell_dump_mode` (RESB 1) — `/d` flag state
 - `shell_recovering` (RESB 1) — orphan recovery in progress
 
+### New Feature: Instance Detection (INT 2Fh Multiplex)
+- **Prevents running a second TEDIT from a shelled DOS session.** On startup,
+  TEDIT calls `INT 2Fh` with AH=C0h (application-range multiplex ID), AL=00h.
+  If another TEDIT instance has installed its handler, AL returns FFh and ES:BX
+  points to a `"TEDIT"` signature string. The second instance verifies the
+  5-byte signature (guards against multiplex ID collisions), prints
+  `"TEDIT is already running."`, and exits immediately.
+- **Handler installation**: after the instance check passes, TEDIT saves the
+  previous INT 2Fh vector via `INT 21h AH=35h` and installs `_int2f_handler`
+  via `INT 21h AH=25h`. The handler chains to the previous handler for
+  non-matching multiplex IDs via a manually-encoded `JMP FAR CS:[_int2f_prev]`
+  (agent86 does not support the `JMP FAR CS:[mem]` syntax natively).
+- **Clean exit**: the original INT 2Fh vector is restored at program exit,
+  removing the handler from the interrupt chain.
+- **New constant**: `TEDIT_MUX_ID EQU 0C0h` in ed_const.inc.
+- **Note**: INT 2Fh is not emulated by agent86 (vector get/set are stubs), so
+  this feature only works in DOSBox-X and real DOS. It compiles and is
+  harmless under agent86.
+
 ### About Dialog
 - Version bumped from v0.65 to v0.68.
 

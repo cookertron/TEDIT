@@ -104,6 +104,9 @@ UR_INS_RANGE    EQU 5              ; range insertion (paste)
 ; ---- Selection grace period ----
 SEL_GRACE_TICKS EQU 9              ; ~500ms at 18.2 ticks/sec
 
+; ---- INT 2Fh Multiplex (instance detection) ----
+TEDIT_MUX_ID    EQU 0C0h           ; multiplex ID (C0h-FFh = application range)
+
 ; ---- Tab ----
 ED_TAB_DEFAULT  EQU 8               ; default tab width (2, 4, or 8)
 

@@ -29,6 +29,7 @@ INCLUDE TUI\tui.inc
 s_nofile:    DB 'Cannot open file', 0Dh, 0Ah, '$'
 s_nomem:     DB 'Out of memory', 0Dh, 0Ah, '$'
 s_err_mda:   DB 'Requires 80-column text mode', 0Dh, 0Ah, '$'
+s_already:   DB 'TEDIT is already running.', 0Dh, 0Ah, '$'
 s_err_mixed: DB 'Cannot mix .PRJ and documents', 0Dh, 0Ah, '$'
 
 ; ---- Status bar strings (null-terminated, for shadow_buf writing) ----
@@ -2665,7 +2666,50 @@ main:
     MOV     BYTE [tui_cga_snow], 1      ; CGA — enable snow prevention
 .snow_done:
 
+    ; ---- Check if TEDIT is already running (INT 2Fh multiplex) ----
+    MOV     AH, TEDIT_MUX_ID
+    XOR     AL, AL              ; AL=00h = installation check
+    INT     2Fh
+    CMP     AL, 0FFh            ; AL=FFh means "installed"
+    JNE     .not_running
+
+    ; Verify signature at ES:BX to rule out false positive
+    CMP     BYTE ES:[BX], 'T'
+    JNE     .not_running
+    CMP     BYTE ES:[BX+1], 'E'
+    JNE     .not_running
+    CMP     BYTE ES:[BX+2], 'D'
+    JNE     .not_running
+    CMP     BYTE ES:[BX+3], 'I'
+    JNE     .not_running
+    CMP     BYTE ES:[BX+4], 'T'
+    JNE     .not_running
+
+    ; Confirmed — another TEDIT instance is resident
+    MOV     DX, s_already
+    MOV     AH, 09h
+    INT     21h
+    INT     20h
+
+.not_running:
+    ; Restore ES = DS (INT 2Fh handler may have set ES to another segment)
+    MOV     AX, DS
+    MOV     ES, AX
+
     CALL    shrink_mem
+
+    ; ---- Install INT 2Fh handler (instance detection for Shell to DOS) ----
+    ; Save previous vector, then install our handler.
+    MOV     AX, 352Fh               ; AH=35h, AL=2Fh — get INT 2Fh vector
+    INT     21h                      ; returns ES:BX = current handler
+    MOV     [_int2f_prev], BX        ; save offset
+    MOV     [_int2f_prev + 2], ES    ; save segment
+    MOV     AX, DS
+    MOV     ES, AX                   ; restore ES = DS
+
+    MOV     AX, 252Fh               ; AH=25h, AL=2Fh — set INT 2Fh vector
+    MOV     DX, _int2f_handler       ; DS:DX = our handler
+    INT     21h
 
     ; ---- Install INT 23h handler (ignore Ctrl+C at DOS level) ----
     ; Prevents 4DOS (or any parent shell) from terminating TEDIT when
@@ -3293,6 +3337,15 @@ main:
     MOV     AH, 49h
     INT     21h
 .exit:
+    ; ---- Restore INT 2Fh vector (remove our multiplex handler) ----
+    PUSH    DS
+    MOV     DX, [_int2f_prev]       ; offset of previous handler
+    MOV     AX, [_int2f_prev + 2]   ; segment of previous handler
+    MOV     DS, AX                  ; DS:DX = previous handler
+    MOV     AX, 252Fh               ; set INT 2Fh
+    INT     21h
+    POP     DS
+
     ; ---- Restore startup working directory ----
     MOV     SI, startup_cwd
     CALL    swap_chdir
@@ -3332,6 +3385,36 @@ _int23_handler:
 _int24_handler:
     MOV     AL, 3
     IRET
+
+; INT 2Fh — Multiplex handler: instance detection
+; Called by DOS (and other programs) with AH=multiplex_id.
+; If AH matches TEDIT_MUX_ID and AL=00h, returns AL=FFh
+; with ES:BX pointing to signature string for verification.
+; Otherwise chains to the previous handler.
+_int2f_handler:
+    CMP     AH, TEDIT_MUX_ID
+    JE      .mux_ours
+    ; Not ours — chain to previous handler (far jump via CS:)
+    DB      2Eh                 ; CS: prefix
+    DB      0FFh, 2Eh           ; JMP FAR [mem16]
+    DW      _int2f_prev         ; address of saved vector
+.mux_ours:
+    CMP     AL, 0               ; installation check?
+    JNE     .mux_done
+    MOV     AL, 0FFh            ; "yes, installed"
+    PUSH    CS
+    POP     ES
+    MOV     BX, _mux_signature  ; ES:BX = signature for caller to verify
+.mux_done:
+    IRET
+
+; Signature string for multiplex verification (prevents false positives
+; if another program uses the same multiplex ID)
+_mux_signature: DB 'TEDIT', 0
+
+; Saved previous INT 2Fh vector (far pointer, in code section so the
+; handler can read it with CS: prefix)
+_int2f_prev:    DW 0, 0
 
 ; ============================================================
 ; BSS — All uninitialized data at end of file
