@@ -1,5 +1,218 @@
 # TEDIT Changelog
 
+## v0.68.0 — Shell Swap & Menu Hotkey Fix (2026-04-03 20:45)
+
+### New Feature: Shell Memory Swap (`/d` flag)
+- **`/d` command-line flag** enables memory dump mode for Shell to DOS. When
+  active, all dynamically allocated segments (~200 KB) are serialized to a
+  single swap file (`TEDTSHEL.SWP`) before EXEC, then restored after the user
+  types EXIT. This frees memory for compilers, linkers, and other tools.
+- **Swap file format**: 128-byte global header (magic `SH`, doc_count,
+  active_doc, clipboard state) + doc table + clipboard data + 128-byte per-doc
+  header (reuses existing `SWH_*` format) + piece table + add buffer + undo
+  records + rd_save_buf. Original file content is NOT saved — it is reloaded
+  from disk on restore.
+- **Segments freed**: cache_seg (2 × 32 KB), pt_seg (40 KB), add_seg (64 KB),
+  undo_seg (32 KB), clip_seg (16 KB), shadow_seg (4 KB), doc_table_seg (3 KB).
+- **Error handling**: write failure aborts the shell and leaves editor state
+  intact. Restore failure after EXEC is fatal (swap file preserved for retry).
+
+### New Feature: Orphan Swap Recovery
+- **Crash recovery**: on startup, TEDIT checks for an orphan `TEDTSHEL.SWP` in
+  the startup directory. If found, prompts: `Swap file detected. Restore[R] or
+  Delete[D]?` Recovery reallocates all segments and restores full editor state.
+  Delete also cleans up any orphan per-doc swap files (`TEDT????.SWP`).
+
+### New File: `ed_shell.inc`
+- **`shell_swap_out`**: serializes global header, doc table, clipboard, and
+  active document state to `TEDTSHEL.SWP`, then frees all 8 segment types.
+  Returns CF=0 on success, CF=1 on failure (memory intact).
+- **`shell_swap_in`**: reallocates all segments, reads swap file, reloads
+  original file from disk, restores piece table, add buffer, undo history,
+  cursor/scroll position, dirty flag, tab settings, and find flags. Deletes
+  swap file after successful restore.
+- **`shell_check_orphan`**: startup orphan detection with R/D prompt via DOS
+  console I/O (runs before TUI init).
+- **`write_seg_data` / `read_seg_data`**: helper procs for cross-segment file
+  I/O (DS swap with CS: prefix for handle access).
+
+### New Constants (`ed_const.inc`)
+- `SHELL_SWAP_MAGIC EQU 4853h`, `SHELL_SWAP_VERSION EQU 1`,
+  `SHELL_HDR_SIZE EQU 128`
+- `SHL_MAGIC`, `SHL_VERSION`, `SHL_DOC_COUNT`, `SHL_ACTIVE_DOC`,
+  `SHL_CLIP_USED`, `SHL_CLIP_LINES`, `SHL_CLIP_LAST_COL`, `SHL_RESERVED`
+
+### Modified: `parse_args` (`ed_core.inc`)
+- Added `/d` and `-d` flag recognition. Sets `shell_dump_mode` BSS byte to 1.
+
+### Modified: `menu_shell_handler` (`TEDIT.ASM`)
+- Calls `shell_swap_out` before EXEC and `shell_swap_in` after return when
+  `shell_dump_mode=1`. Swap-out failure shows error dialog and aborts shell.
+  Swap-in failure prints fatal message and exits.
+
+### Modified: `main:` entry point (`TEDIT.ASM`)
+- Orphan swap check inserted after `startup_cwd` setup, before `cache_init`.
+  Recovery path calls `shell_swap_in` and jumps to `.init_tui` (skipping
+  normal file loading and editor state reset).
+
+### Fix: File Menu Hotkey Duplicates
+- **Close All**: changed hotkey from `A` to `E` (hotidx 6→4, highlights 'e'
+  in "Clos**e** All"). Eliminates duplicate with Save As.
+- **Save All**: fixed hotidx from 5→6 (now highlights 'l' in "Save A**l**l"
+  to match hotkey `L`; previously highlighted 'A' misleadingly).
+- **Shell to DOS**: fixed hotidx from 0→1 (now highlights 'h' in "S**h**ell
+  to DOS" to match hotkey `H`; previously highlighted 'S' misleadingly).
+- All 11 File menu items now have unique hotkeys:
+  **N**ew, **O**pen, **C**lose, Clos**e** All, **S**ave, Save **A**s,
+  Save A**l**l, Loa**d** Project, Save **P**roject, S**h**ell to DOS, E**x**it
+
+### BSS Additions (`TEDIT.ASM`)
+- `shell_dump_mode` (RESB 1) — `/d` flag state
+- `shell_recovering` (RESB 1) — orphan recovery in progress
+
+### About Dialog
+- Version bumped from v0.65 to v0.68.
+
+### Test Harness
+- **`test_shell_swap.asm`**: standalone round-trip test — loads file, inserts
+  text, calls `shell_swap_out`, verifies segments freed and swap file created,
+  calls `shell_swap_in`, verifies all state restored (pt_count, add_used,
+  cur_col, undo_count, total_lines, dirty flag, add buffer content 'X','Y','Z'),
+  verifies swap file deleted. 4/4 tests pass.
+
+## v0.67.0 — Incremental Metadata Optimization (2026-04-02)
+
+### Architecture: Cache-Based File Access
+- **Replaced in-memory `orig_seg[]` chunks with a 2-slot LRU disk cache**. Original
+  file data is no longer loaded into memory — it stays on disk and is read on demand
+  through two 32 KB cache buffers. Memory usage for original data drops from N × 32 KB
+  to a fixed 64 KB regardless of file size.
+- **Maximum file size now limited by piece table capacity, not memory**. Previously
+  ~416 KB (limited by agent86's ~576 KB allocation budget). Now supports files up to
+  32 MB (piece table limit of 4096 pieces × 32 KB chunks).
+- **File loads instantly** regardless of size — `load_file` queries file size via
+  seek and keeps the handle open. No data is read until rendering or editing needs it.
+
+### New Subsystems (ed_core.inc)
+- **`cache_init`**: allocates 2 × 32 KB cache segments at startup (persistent, shared
+  across documents). Called once from `main:` before any file loading.
+- **`cache_invalidate`**: marks all cache slots empty. Called after save, document
+  switch, and compaction.
+- **`cache_lookup`**: resolves a 32-bit file offset to a cached segment:offset. Checks
+  both slots for a hit (O(1)), falls back to `cache_load_chunk` on miss. Preserves
+  BX, DI, BP, DX.
+- **`cache_load_chunk`**: evicts the LRU cache slot, seeks to the requested chunk in
+  `orig_file_hnd`, reads up to 32 KB. Updates cache metadata.
+
+### Piece Table Changes
+- **Start field simplified**: piece descriptors for original-buffer pieces now store a
+  plain 32-bit byte offset into the file, replacing the packed chunk_index/chunk_offset
+  bit encoding. Cache lookup does `offset >> 15` for chunk index, `offset & 7FFFh` for
+  chunk offset.
+- **`pt_init` rewritten**: creates chunk-aligned pieces (one per 32 KB of file) with
+  simple 32-bit byte offsets. No more multi-chunk loop with packed encoding.
+- **`resolve_piece` simplified**: source=0 path replaced 12-instruction chunk decode +
+  `orig_seg[]` lookup with a single `CALL cache_lookup`.
+- **Inline `resolve_piece` in ed_draw.inc updated**: same cache_lookup call. Fixed CX
+  clobber bug where `cache_lookup` destroyed the screen column counter at chunk
+  boundaries, causing garbled rendering on files >32 KB. Fix: save/restore CX around
+  the call using BX as temp for start_hi.
+
+### Safe Save (Temp-File-Rename)
+- **`save_file` rewritten** with 13-step process: write all pieces to `TEDIT.$$$`,
+  close old `orig_file_hnd`, delete original, rename temp → original, reopen as new
+  backing file, query file size, invalidate cache, reset piece table (chunk-aligned
+  pieces over new file), reset add buffer, rebuild metadata, clear undo, mark clean.
+- **Crash-safe**: original file is untouched until rename succeeds. If power is lost
+  during save, the original is intact and `TEDIT.$$$` is incomplete but harmless.
+- **Undo history cleared on save**: necessary because the backing file changes and
+  piece table references to old file offsets become invalid.
+- **Error recovery**: on write failure, temp file is deleted; on rename failure, editor
+  state is cleared gracefully with error dialog.
+
+### File Loading Changes
+- **`load_file` rewritten**: no longer allocates memory segments. Queries file size via
+  `INT 21h AH=42h` (seek to end), stores in `orig_file_size_lo/hi`, transfers
+  `file_hnd` → `orig_file_hnd`, calls `cache_invalidate`.
+- **`ed_load_file`**: removed file handle close after `load_file` — handle is now owned
+  by `orig_file_hnd` for the document's lifetime.
+- **`ed_new_doc`**: zeroes `orig_file_hnd`/`orig_file_size_lo/hi` instead of `orig_count`.
+- **All startup load paths fixed**: main single-file path, multi-file `.lsf_open` path,
+  and `doc_swap_in` path all updated to not close the file handle after `load_file`.
+- **`cache_init` moved before file loading** in `main:` — critical fix. Previously
+  called in `.start_tui` (after loading), causing `cache_load_chunk` to read file data
+  into uninitialized segment 0 (the COM code segment), corrupting the program.
+
+### Resource Management
+- **`free_all` rewritten**: closes `orig_file_hnd` + `cache_invalidate` instead of
+  freeing `orig_seg[]` chunks. Zeroes `pt_seg`/`add_seg` after freeing.
+- **`ed_compact` simplified**: reduced from 120+ lines to 5. `save_file` now handles
+  the full reset cycle; `ed_compact` just clamps cursor and refreshes display.
+- **Program exit**: added `.free_cache` loop to free both cache segments alongside
+  undo/clip/shadow/doc_table cleanup.
+
+### Multi-Document Support
+- **`doc_swap_out` `.free_doc_segs`**: closes `orig_file_hnd` + `cache_invalidate`
+  instead of freeing `orig_seg[]` chunks. `SWH_ORIG_COUNT` header field now writes 0
+  (no longer used).
+- **`doc_swap_in`**: updated error path to close `orig_file_hnd` instead of `file_hnd`
+  on `load_file` failure. Main flow unchanged — `pt_init` creates throwaway pieces,
+  then swap restore overwrites descriptors from swap file.
+
+### BSS Cleanup
+- **Removed `orig_count`, `orig_seg`, `orig_len`** from DOC_CTX (4098 bytes freed).
+- **Removed `MAX_ORIG` constant** from ed_const.inc.
+- **Added to DOC_CTX**: `orig_file_hnd` (WORD), `orig_file_size_lo` (WORD),
+  `orig_file_size_hi` (WORD) — 6 bytes total.
+- **DOC_CTX_SIZE**: 12446 → 8348 (net savings: 4098 bytes).
+- **Added to transient section**: `cache_seg` (2 WORDs), `cache_chunk_id` (2 WORDs),
+  `cache_lru` (2 WORDs), `cache_lru_clock` (WORD) — 14 bytes.
+
+### New Constants (ed_const.inc)
+- `CACHE_SLOTS EQU 2`, `CACHE_CHUNK_PARA EQU CHUNK_PARA`,
+  `CACHE_CHUNK_BYTES EQU CHUNK_BYTES`, `CACHE_EMPTY EQU 0FFFFh`
+
+### Test Harness
+- **`test_cache.asm`**: 9-test standalone harness — creates a 3-chunk (96 KB) test file,
+  exercises cache hits, misses, LRU eviction, invalidation, and post-invalidation reload.
+
+## v0.66.0 — File-Backed Original Buffer (2026-04-02)
+
+### Performance: Lazy Checkpoint Invalidation
+- **Eliminated `rebuild_meta` from character typing**: removed `meta_dirty = 1` from
+  7 call sites in `insert_char` (split/before paths), `delete_byte` (remove/split
+  paths), and `delete_at` (bare CR, companion CR paths). Piece index adjustments
+  via `chkpt_adjust_insert/remove` are sufficient — no full rebuild needed.
+- **Eliminated `rebuild_meta` from Enter/line-delete**: new `meta_inc_line` and
+  `meta_dec_line` procs incrementally update `total_lines` and truncate `chkpt_num`
+  to discard stale checkpoints past the edit point. Replaces the blanket
+  `meta_dirty = 1` that previously forced an O(file_size) rebuild.
+- **Eliminated `rebuild_meta` from undo/redo of typed characters**: removed
+  unconditional `meta_dirty = 1` from `undo_execute` `.u_finish` and
+  `redo_execute` `.r_finish`. Individual handlers now manage metadata:
+  char insert/delete needs no rebuild; CRLF undo/redo calls `meta_inc/dec_line`;
+  range operations still set `meta_dirty = 1`.
+- **Eliminated `rebuild_meta` from paste**: new `meta_inc_n_lines` proc handles
+  multi-line paste. Single-line paste needs no metadata update at all.
+
+### Lazy Rebuild in `seek_to_line`
+- When `seek_to_line` needs a checkpoint that was truncated away (e.g., user edits
+  near the top then scrolls far down), it calls `rebuild_meta` on the spot before
+  proceeding. This ensures: local edits are O(1), first distant seek pays one
+  rebuild, all subsequent seeks are fast.
+
+### Checkpoint 0 Invariant
+- `seek_to_line` now always resets `chkpt_pi[0]` and `chkpt_po[0]` to (0, 0).
+  Line 0 always starts at the document beginning; `chkpt_adjust_insert/remove`
+  can corrupt this during incremental updates. The 2-instruction reset enforces
+  correctness without a full rebuild.
+
+### What Still Triggers Full Rebuild
+- `range_delete_pieces` (bulk selection delete)
+- Undo/redo of range operations (`UR_DEL_RANGE`, `UR_INS_RANGE`)
+- `save_file` (reloads from disk)
+- Document swap (`ed_multidoc` restore)
+
 ## v0.65.0 — Menu Shortcuts & Quit Dialog Fix (2026-04-02)
 
 ### Menu Shortcuts

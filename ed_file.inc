@@ -23,14 +23,11 @@ ed_load_file PROC
     CALL    open_file
     JC      .err_open
 
-    ; ---- Load chunks ----
+    ; ---- Query file size, keep handle open for cache ----
     CALL    load_file
     JC      .err_load
 
-    ; ---- Close file handle ----
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
+    ; (file handle now owned by orig_file_hnd — do NOT close)
 
     ; ---- Initialize piece table ----
     CALL    pt_init
@@ -97,9 +94,7 @@ ed_load_file PROC
     POP     SI
 
 .init_empty:
-    ; Free partially loaded orig chunks before reinit (load_file may
-    ; have allocated some chunks before running out of memory; ed_new_doc
-    ; zeroes orig_count without freeing them, leaking the segments)
+    ; Close any open file handle and free allocated segments
     CALL    free_all
     ; Reinitialize as empty document so the editor isn't broken
     CALL    ed_new_doc
@@ -126,7 +121,9 @@ ed_new_doc PROC
     PUSH    AX
     PUSH    BX
 
-    MOV     WORD [orig_count], 0
+    MOV     WORD [orig_file_hnd], 0
+    MOV     WORD [orig_file_size_lo], 0
+    MOV     WORD [orig_file_size_hi], 0
 
     ; Allocate piece table segment
     MOV     BX, PT_SEG_PARA
@@ -186,125 +183,13 @@ ed_new_doc ENDP
 ; ============================================================
 
 ed_compact PROC
-    PUSH    AX
-    PUSH    BX
-    PUSH    CX
-    PUSH    DX
-    PUSH    SI
-    PUSH    DI
-
-    ; ---- Save cursor state on stack (survives free_all) ----
-    MOV     AX, [cur_line]
-    PUSH    AX
-    MOV     AX, [cur_col]
-    PUSH    AX
-    MOV     AX, [top_line]
-    PUSH    AX
-    MOV     AX, [left_col]
-    PUSH    AX
-
-    ; ---- Free all document memory ----
-    CALL    free_all
-
-    ; ---- Reopen the saved file ----
-    CALL    open_file
-    JC      .cpt_fail_restore
-
-    ; ---- Reload file chunks ----
-    CALL    load_file
-    JC      .cpt_fail_close
-
-    ; ---- Close file handle ----
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
-
-    ; ---- Initialize piece table ----
-    CALL    pt_init
-    JC      .cpt_fail_recover
-
-    ; ---- Allocate fresh add buffer ----
-    MOV     BX, ADD_BUF_PARA
-    MOV     AH, 48h
-    INT     21h
-    JC      .cpt_fail_recover
-    MOV     [add_seg], AX
-    MOV     WORD [add_used], 0
-
-    ; ---- Rebuild metadata ----
-    CALL    rebuild_meta
-    MOV     BYTE [meta_dirty], 0
-
-    ; ---- Clear undo (compaction invalidates all undo records) ----
-    CALL    undo_clear
-
-    ; ---- Restore cursor state ----
-    POP     AX
-    MOV     [left_col], AX
-    POP     AX
-    MOV     [top_line], AX
-    POP     AX
-    MOV     [cur_col], AX
-    POP     AX
-    MOV     [cur_line], AX
+    ; save_file now handles the full cycle: write temp, rename,
+    ; reopen, reset PT, rebuild meta, clear undo, reset add_used.
+    ; ed_compact just needs to clamp cursor and update display state.
     CALL    clamp_cursor
     CALL    scroll_to_cursor
-
-    ; ---- Reset tracking state ----
-    MOV     BYTE [dirty], 0
-    MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [fw_state + FW_DIRTY], 1
-
-    POP     DI
-    POP     SI
-    POP     DX
-    POP     CX
-    POP     BX
-    POP     AX
     CLC
-    RET
-
-.cpt_fail_close:
-    ; load_file failed — close the file handle
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
-    JMP     .cpt_fail_recover
-
-.cpt_fail_restore:
-    ; open_file failed — nothing loaded, fall through to recover
-
-.cpt_fail_recover:
-    ; Reload failed. File is safe on disk.
-    ; Create empty document so editor doesn't crash.
-    CALL    ed_new_doc
-
-    ; Restore cursor (just to pop the stack cleanly; clamp will fix)
-    POP     AX
-    MOV     [left_col], AX
-    POP     AX
-    MOV     [top_line], AX
-    POP     AX
-    MOV     [cur_col], AX
-    POP     AX
-    MOV     [cur_line], AX
-    CALL    clamp_cursor
-
-    ; Show error dialog
-    PUSH    SI
-    PUSH    DI
-    MOV     SI, m_str_buf_err
-    CALL    show_error_msg
-    POP     DI
-    POP     SI
-
-    POP     DI
-    POP     SI
-    POP     DX
-    POP     CX
-    POP     BX
-    POP     AX
-    STC
     RET
 ed_compact ENDP
 

@@ -398,7 +398,10 @@ undo_execute PROC
     MOV     [cur_col], AX
     POP     AX                          ; doc_line
     MOV     [cur_line], AX
+    PUSH    WORD [cur_line]             ; save insertion line for meta_inc_line
     CALL    insert_crlf
+    POP     AX
+    CALL    meta_inc_line
     JMP     .u_restore
 
     ; ---- UR_DEL_RANGE: undo range delete -> re-insert saved pieces ----
@@ -557,16 +560,15 @@ undo_execute PROC
     JZ      .u_finish
     CMP     WORD [undo_pos], 0
     JE      .u_finish
-    ; Suppress rebuild_meta during group loop — stale checkpoints are
-    ; close enough for seek_to_line to find the correct line by LF scan.
-    ; A single rebuild happens in .u_finish after all records are undone.
-    MOV     BYTE [meta_dirty], 0
     JMP     .u_loop
 
 .u_finish:
     ; ---- Reset state ----
     MOV     WORD [last_ins_pi], 0FFFFh
-    MOV     BYTE [meta_dirty], 1
+    ; meta_dirty is set by individual handlers only when needed:
+    ;   char insert/delete: no rebuild (chkpt_adjust handles piece indices)
+    ;   CRLF insert/delete: meta_inc/dec_line (truncates stale checkpoints)
+    ;   range operations: meta_dirty = 1 (set in their own handlers)
     CALL    scroll_to_cursor
 
     ; ---- Smart dirty: check if we've returned to saved state ----
@@ -666,7 +668,10 @@ redo_execute PROC
     MOV     [cur_col], AX
     POP     AX                          ; doc_line
     MOV     [cur_line], AX
+    PUSH    WORD [cur_line]             ; save insertion line for meta_inc_line
     CALL    insert_crlf
+    POP     AX
+    CALL    meta_inc_line
     INC     WORD [cur_line]
     MOV     WORD [cur_col], 0
     JMP     .r_advance
@@ -815,13 +820,10 @@ redo_execute PROC
     MOV     ES, AX
     TEST    BYTE ES:[BX + UR_TYPE], URF_GROUP_CONT
     JZ      .r_finish
-    ; Suppress rebuild_meta during group loop (same rationale as undo_execute)
-    MOV     BYTE [meta_dirty], 0
     JMP     .r_loop
 
 .r_finish:
     MOV     WORD [last_ins_pi], 0FFFFh
-    MOV     BYTE [meta_dirty], 1
     CALL    scroll_to_cursor
 
     ; ---- Smart dirty: check if we've returned to saved state ----

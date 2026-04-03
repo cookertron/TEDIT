@@ -354,8 +354,9 @@ tui_ed_handle_key PROC
 
     INC     WORD [cur_line]
     MOV     WORD [cur_col], 0
+    MOV     AX, [undo_pre_line]
+    CALL    meta_inc_line
     CALL    scroll_to_cursor
-    MOV     BYTE [meta_dirty], 1
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
     ; ---- Record undo entry ----

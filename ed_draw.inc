@@ -402,19 +402,16 @@ tui_ctrl_draw_editor:
     CMP     BYTE ES:[SI + PT_F_SOURCE], 0
     JNE     .adv_add_src
 
-    ; ---- Source 0: Original buffer ----
-    MOV     BX, ES:[SI + PT_F_START + 2]
-    POP     ES
-
-    MOV     SI, AX
-    AND     SI, 7FFFh
-    SHL     BX, 1
-    TEST    AX, 8000h
-    JZ      .adv_no_hi
-    INC     BX
-.adv_no_hi:
-    SHL     BX, 1
-    MOV     AX, [BX + orig_seg]
+    ; ---- Source 0: Original buffer (file-backed via cache) ----
+    ; Read start_hi while ES still points at pt_seg
+    MOV     BX, ES:[SI + PT_F_START + 2]   ; BX = start_hi (temp)
+    POP     ES                              ; restore original ES
+    ; Save screen column (CX) — cache_lookup clobbers CX
+    PUSH    CX
+    MOV     CX, BX                          ; CX = start_hi for cache_lookup
+    ; AX = start_lo (already loaded at line 400)
+    CALL    cache_lookup                     ; AX = segment, SI = chunk offset
+    POP     CX                              ; restore screen column
     JMP     .adv_resolved
 
 .adv_add_src:

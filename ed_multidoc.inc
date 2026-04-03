@@ -328,8 +328,8 @@ doc_swap_out PROC
     MOV     AX, [total_lines]
     MOV     [swap_hdr_buf + SWH_TOTAL_LINES], AX
 
-    MOV     AX, [orig_count]
-    MOV     [swap_hdr_buf + SWH_ORIG_COUNT], AX
+    ; SWH_ORIG_COUNT — no longer used (file-backed), write 0
+    MOV     WORD [swap_hdr_buf + SWH_ORIG_COUNT], 0
 
     ; ---- Copy doc_cwd into header ----
     PUSH    DI
@@ -459,7 +459,6 @@ doc_swap_out PROC
     CALL    .free_doc_segs
 
     LOG "swap_out_success", BYTE [active_doc]
-    LOG "swap_segs_freed", WORD [orig_count]
 
     ; ---- Mark slot as swapped ----
     POP     DI                      ; restore slot offset
@@ -494,28 +493,21 @@ doc_swap_out PROC
     STC
     RET
 
-; ---- .free_doc_segs — Free orig_seg[], pt_seg, add_seg ----
+; ---- .free_doc_segs — Close file handle, free pt_seg, add_seg ----
 ; undo_seg and clip_seg are NOT freed (persistent/shared).
+; cache_seg[] are NOT freed (persistent/shared, just invalidated).
 .free_doc_segs:
-    ; Free all orig_seg[] chunks
-    XOR     CX, CX
-.free_orig_loop:
-    CMP     CX, [orig_count]
-    JAE     .free_pt
-    MOV     BX, CX
-    SHL     BX, 1                   ; BX = CX * 2 (word index)
-    MOV     AX, [BX + orig_seg]
-    TEST    AX, AX
-    JZ      .free_orig_next
-    MOV     ES, AX
-    MOV     AH, 49h
+    ; Close file-backed original handle
+    MOV     BX, [orig_file_hnd]
+    TEST    BX, BX
+    JZ      .free_pt
+    MOV     AH, 3Eh
     INT     21h
-    MOV     WORD [BX + orig_seg], 0
-.free_orig_next:
-    INC     CX
-    JMP     .free_orig_loop
+    MOV     WORD [orig_file_hnd], 0
 
 .free_pt:
+    ; Invalidate cache (segments persist, just mark empty)
+    CALL    cache_invalidate
     ; Free pt_seg
     MOV     AX, [pt_seg]
     TEST    AX, AX
@@ -537,7 +529,6 @@ doc_swap_out PROC
 
 .free_done:
     ; Zero counts to prevent stale references
-    MOV     WORD [orig_count], 0
     MOV     WORD [pt_count], 0
     MOV     WORD [add_used], 0
     RET
@@ -672,10 +663,7 @@ doc_swap_in PROC
     CALL    load_file
     JC      .fail_nomem_closefile
 
-    ; Close the file handle (data is in orig_seg[] now)
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
+    ; (file handle now owned by orig_file_hnd — do NOT close)
 
     ; ---- Allocate piece table + add buffer ----
     CALL    pt_init                 ; allocs pt_seg, creates initial pieces
@@ -888,9 +876,13 @@ doc_swap_in PROC
     JMP     .fail_common
 
 .fail_nomem_closefile:
-    MOV     BX, [file_hnd]
+    ; load_file transferred handle to orig_file_hnd — close that
+    MOV     BX, [orig_file_hnd]
+    TEST    BX, BX
+    JZ      .fail_nomem
     MOV     AH, 3Eh
     INT     21h
+    MOV     WORD [orig_file_hnd], 0
     JMP     .fail_nomem
 
 .fail_noswap:

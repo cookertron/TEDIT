@@ -194,7 +194,6 @@ insert_char PROC
     JE      .ic_done
     INC     WORD [cur_col]
     CALL    scroll_to_cursor
-    MOV     BYTE [meta_dirty], 1
     MOV     BYTE [fw_state + FW_DIRTY], 1
     JMP     .ic_done
 
@@ -211,7 +210,6 @@ insert_char PROC
     JMP     .ic_done
 .ic_ib_ok:
     ; Insert new piece at index BX (before current piece)
-    MOV     BYTE [meta_dirty], 1
     CALL    pt_insert
     JC      .ic_done
 
@@ -510,7 +508,6 @@ delete_byte PROC
     JMP     .db_split
 
 .db_remove:
-    MOV     BYTE [meta_dirty], 1
     CALL    pt_remove
     CLC
     RET
@@ -580,7 +577,6 @@ delete_byte PROC
     POP     DS
     CALL    pt_insert
     JC      .db_split_fail
-    MOV     BYTE CS:[meta_dirty], 1
 
     ; Write right piece descriptor
     MOV     AX, [pt_seg]
@@ -663,7 +659,6 @@ delete_at PROC
     JMP     .da_done
 
 .da_deleted_cr:
-    MOV     BYTE [meta_dirty], 1
     ; Deleted CR — check if byte now at cursor position is LF
     CALL    cursor_to_offset
     MOV     BX, [rnd_pi]
@@ -684,12 +679,14 @@ delete_at PROC
     JNE     .da_done
     ; Delete the LF (rnd_pi/rnd_off already correct)
     CALL    delete_byte
-    MOV     BYTE [meta_dirty], 1
+    MOV     AX, [cur_line]
+    CALL    meta_dec_line
     MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
 .da_deleted_lf:
-    MOV     BYTE [meta_dirty], 1
+    MOV     AX, [cur_line]
+    CALL    meta_dec_line
     ; Deleted LF — check if preceding byte is CR
     CALL    cursor_to_offset
     MOV     BX, [rnd_pi]
@@ -715,7 +712,6 @@ delete_at PROC
     DEC     DX
     MOV     [rnd_off], DX
     CALL    delete_byte
-    MOV     BYTE [meta_dirty], 1
     MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
@@ -733,7 +729,6 @@ delete_at PROC
     JNE     .da_done
     DEC     WORD [rnd_off]
     CALL    delete_byte
-    MOV     BYTE [meta_dirty], 1
     MOV     BYTE [undo_del_crlf], 1
     JMP     .da_done
 
@@ -765,29 +760,29 @@ save_file PROC
     PUSH    DS
     PUSH    ES
 
-    ; Create/truncate output file
-    MOV     DX, filename
+    ; ---- Step 1: Create temp file TEDIT.$$$ ----
+    MOV     DX, s_temp_file
     XOR     CX, CX            ; normal attributes
     MOV     AH, 3Ch
     INT     21h
     JNC     .sf_created
-    ; ---- Creation failed — show dialog ----
     MOV     SI, s_err_save_fail
     CALL    show_error_msg
     JMP     .sf_done           ; dirty flag remains set
 .sf_created:
 
-    MOV     BP, AX             ; BP = file handle
+    MOV     BP, AX             ; BP = temp file handle
 
+    ; ---- Step 2: Write all pieces to temp file ----
     ; Walk pieces, coalescing contiguous same-segment runs.
     XOR     DI, DI             ; DI = piece index
 
     ; Resolve first piece to seed the pending write
     CMP     DI, [pt_count]
-    JAE     .sf_close_ok
+    JAE     .sf_write_ok
     MOV     BX, DI
     CALL    resolve_piece      ; AX=seg, SI=base, DX=piece_len
-    JC      .sf_close_ok
+    JC      .sf_write_ok
 
     ; Seed pending write: segment AX, offset SI, length DX
     PUSH    AX                 ; [stk] = pending segment
@@ -869,20 +864,150 @@ save_file PROC
     POP     DS
     JC      .sf_write_failed_flush
     CMP     AX, CX
-    JE      .sf_close_ok
+    JE      .sf_write_ok
 .sf_write_failed_flush:
     MOV     SI, s_err_save_write
     CALL    show_error_msg
     JMP     .sf_err
 
-.sf_close_ok:
+.sf_write_ok:
+    ; ---- Step 3: Close temp file ----
     PUSH    CS
     POP     DS
     MOV     BX, BP
     MOV     AH, 3Eh
     INT     21h
+
+    ; ---- Step 4: Close orig_file_hnd (release old backing file) ----
+    MOV     BX, [orig_file_hnd]
+    TEST    BX, BX
+    JZ      .sf_no_old_hnd         ; untitled doc — no old handle
+    MOV     AH, 3Eh
+    INT     21h
+    MOV     WORD [orig_file_hnd], 0
+.sf_no_old_hnd:
+
+    ; ---- Step 5: Delete original file (if it existed) ----
+    ; For untitled docs the filename may not exist on disk yet — ignore error
+    MOV     DX, filename
+    MOV     AH, 41h
+    INT     21h                    ; ignore CF (file may not exist)
+
+    ; ---- Step 6: Rename TEDIT.$$$ → filename ----
+    MOV     DX, s_temp_file        ; DS:DX = old name
+    PUSH    DS
+    POP     ES
+    MOV     DI, filename           ; ES:DI = new name
+    MOV     AH, 56h
+    INT     21h
+    JNC     .sf_renamed
+    ; Rename failed — try to recover
+    MOV     SI, s_err_save_rename
+    CALL    show_error_msg
+    JMP     .sf_reopen_failed
+
+.sf_renamed:
+    ; ---- Step 7: Reopen file as new backing file ----
+    MOV     DX, filename
+    XOR     AL, AL                 ; read-only
+    MOV     AH, 3Dh
+    INT     21h
+    JC      .sf_reopen_failed
+    MOV     [orig_file_hnd], AX
+
+    ; ---- Query new file size ----
+    MOV     BX, AX
+    XOR     CX, CX
+    XOR     DX, DX
+    MOV     AX, 4202h              ; SEEK_END
+    INT     21h
+    MOV     [orig_file_size_lo], AX
+    MOV     [orig_file_size_hi], DX
+
+    ; Seek back to start
+    MOV     BX, [orig_file_hnd]
+    XOR     CX, CX
+    XOR     DX, DX
+    MOV     AX, 4200h              ; SEEK_SET
+    INT     21h
+
+    ; ---- Step 8: Invalidate cache ----
+    CALL    cache_invalidate
+
+    ; ---- Step 9: Reset piece table over new file ----
+    ; Reuse existing pt_seg — just rewrite the descriptors
+    PUSH    ES
+    MOV     ES, [pt_seg]
+    XOR     DI, DI                 ; descriptor write offset
+    XOR     SI, SI                 ; file offset low = 0
+    MOV     WORD [rnd_base], 0     ; file offset high = 0 (reuse scratch)
+    MOV     BX, [orig_file_size_lo]
+    MOV     CX, [orig_file_size_hi]
+    XOR     DX, DX                 ; piece count
+
+.sf_pt_loop:
+    MOV     AX, BX
+    OR      AX, CX
+    JZ      .sf_pt_done
+
+    MOV     BYTE ES:[DI + PT_F_SOURCE], 0
+    MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
+    MOV     ES:[DI + PT_F_START], SI
+    MOV     AX, [rnd_base]
+    MOV     ES:[DI + PT_F_START + 2], AX
+
+    TEST    CX, CX
+    JNZ     .sf_pt_full
+    CMP     BX, CHUNK_BYTES
+    JAE     .sf_pt_full
+    ; Last partial chunk
+    MOV     ES:[DI + PT_F_LENGTH], BX
+    MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+    XOR     BX, BX
+    JMP     .sf_pt_next
+
+.sf_pt_full:
+    MOV     WORD ES:[DI + PT_F_LENGTH], CHUNK_BYTES
+    MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+    SUB     BX, CHUNK_BYTES
+    SBB     CX, 0
+    ADD     SI, CHUNK_BYTES
+    ADC     WORD [rnd_base], 0
+
+.sf_pt_next:
+    INC     DX
+    ADD     DI, PT_DESC_SIZE
+    JMP     .sf_pt_loop
+
+.sf_pt_done:
+    MOV     [pt_count], DX
+    POP     ES
+
+    ; ---- Step 10: Reset add buffer ----
+    MOV     WORD [add_used], 0
+
+    ; ---- Step 11: Rebuild metadata ----
+    MOV     BYTE [meta_dirty], 1
+    CALL    rebuild_meta
+    MOV     BYTE [meta_dirty], 0
+
+    ; ---- Step 12: Clear undo ----
+    CALL    undo_clear
+
+    ; ---- Step 13: Mark clean ----
     MOV     BYTE [dirty], 0
+    MOV     WORD [last_ins_pi], 0FFFFh
+    MOV     WORD [rd_save_used], 0
+
     JMP     .sf_done
+
+.sf_reopen_failed:
+    ; Backing file lost — clear state so editor doesn't crash
+    MOV     WORD [orig_file_hnd], 0
+    MOV     WORD [orig_file_size_lo], 0
+    MOV     WORD [orig_file_size_hi], 0
+    CALL    cache_invalidate
+    ; dirty stays set — user knows save failed
 
 .sf_break_err:
     ADD     SP, 6              ; discard 3 saved words
@@ -894,6 +1019,10 @@ save_file PROC
     MOV     BX, BP
     MOV     AH, 3Eh
     INT     21h
+    ; Delete partial temp file
+    MOV     DX, s_temp_file
+    MOV     AH, 41h
+    INT     21h                ; ignore errors
     ; dirty stays set
 
 .sf_done:

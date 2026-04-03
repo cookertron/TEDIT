@@ -154,11 +154,21 @@ parse_args:
     DEC     CX
     TEST    CX, CX
     JZ      .scan_done
+    CMP     BYTE [SI], 'd'
+    JE      .flag_d
+    CMP     BYTE [SI], 'D'
+    JE      .flag_d
     CMP     BYTE [SI], 't'
     JE      .flag_t
     CMP     BYTE [SI], 'T'
     JE      .flag_t
     JMP     .skip_token
+
+.flag_d:
+    MOV     BYTE [shell_dump_mode], 1
+    INC     SI
+    DEC     CX
+    JMP     .scan_loop
 
 .flag_t:
     INC     SI
@@ -246,77 +256,41 @@ load_file PROC
     PUSH    BX
     PUSH    CX
     PUSH    DX
-    PUSH    SI
-    PUSH    DI
-    PUSH    BP
-    XOR     BP, BP
-.next_chunk:
-    CMP     BP, MAX_ORIG
-    JAE     .done
-    MOV     BX, CHUNK_PARA
-    MOV     AH, 48h
-    INT     21h
-    JC      .alloc_fail
-    MOV     DI, BP
-    SHL     DI, 1
-    MOV     [DI + orig_seg], AX
-    PUSH    DS
-    MOV     DS, AX
+
+    ; ---- Query file size by seeking to end ----
+    MOV     BX, [file_hnd]
+    XOR     CX, CX
     XOR     DX, DX
-    MOV     BX, CS:[file_hnd]
-    MOV     CX, CHUNK_BYTES
-    MOV     AH, 3Fh
+    MOV     AX, 4202h               ; AH=42h, AL=2 (SEEK_END)
     INT     21h
-    POP     DS
-    JC      .read_err
-    TEST    AX, AX
-    JZ      .last_empty
-    MOV     [DI + orig_len], AX
-    INC     BP
-    CMP     AX, CHUNK_BYTES
-    JB      .done
-    JMP     .next_chunk
-.last_empty:
-    MOV     AX, [DI + orig_seg]
-    PUSH    ES
-    MOV     ES, AX
-    MOV     AH, 49h
+    JC      .lf_err
+    ; DX:AX = file size
+    MOV     [orig_file_size_lo], AX
+    MOV     [orig_file_size_hi], DX
+
+    ; ---- Seek back to beginning ----
+    MOV     BX, [file_hnd]
+    XOR     CX, CX
+    XOR     DX, DX
+    MOV     AX, 4200h               ; SEEK_SET
     INT     21h
-    POP     ES
-.done:
-    MOV     [orig_count], BP
+    JC      .lf_err
 
-    ; ---- H3: Check if file was truncated at capacity limit ----
-    CMP     BP, MAX_ORIG
-    JB      .lf_no_trunc
-    PUSH    SI
-    PUSH    DI
-    MOV     SI, s_err_file_trunc
-    CALL    show_error_msg
-    POP     DI
-    POP     SI
-.lf_no_trunc:
+    ; ---- Transfer handle ownership ----
+    MOV     AX, [file_hnd]
+    MOV     [orig_file_hnd], AX
+    MOV     WORD [file_hnd], 0       ; no longer transient
 
-    POP     BP
-    POP     DI
-    POP     SI
+    ; ---- Invalidate cache ----
+    CALL    cache_invalidate
+
     POP     DX
     POP     CX
     POP     BX
     CLC
     RET
-.read_err:
-    MOV     AX, [DI + orig_seg]
-    PUSH    ES
-    MOV     ES, AX
-    MOV     AH, 49h
-    INT     21h
-    POP     ES
-.alloc_fail:
-    MOV     [orig_count], BP
-    POP     BP
-    POP     DI
-    POP     SI
+
+.lf_err:
     POP     DX
     POP     CX
     POP     BX
@@ -335,38 +309,81 @@ pt_init PROC
     PUSH    SI
     PUSH    DI
     PUSH    ES
+    PUSH    BP
+
+    ; ---- Allocate piece table segment ----
     MOV     BX, PT_SEG_PARA
     MOV     AH, 48h
     INT     21h
     JC      .fail
     MOV     [pt_seg], AX
     MOV     ES, AX
-    MOV     CX, [orig_count]
-    MOV     [pt_count], CX
-    XOR     DI, DI
-    XOR     BX, BX
+
+    ; ---- Check for empty file ----
+    MOV     AX, [orig_file_size_lo]
+    OR      AX, [orig_file_size_hi]
+    JZ      .empty
+
+    ; ---- Create chunk-aligned pieces ----
+    ; Each piece spans up to CHUNK_BYTES (32 KB) of the file.
+    ; Start field = plain 32-bit byte offset into file.
+    ;
+    ; BP:SI = running 32-bit file offset (BP=high, SI=low)
+    ; BX    = remaining file size low word
+    ; CX    = remaining file size high word
+    XOR     DI, DI                   ; DI = descriptor write offset
+    XOR     SI, SI                   ; file offset low = 0
+    XOR     BP, BP                   ; file offset high = 0
+    MOV     BX, [orig_file_size_lo]
+    MOV     CX, [orig_file_size_hi]
+    XOR     DX, DX                   ; DX = piece count
+
 .loop:
-    CMP     BX, [orig_count]
-    JAE     .done
+    ; Any bytes remaining?
+    MOV     AX, BX
+    OR      AX, CX
+    JZ      .done
+
+    ; Source = 0 (original buffer)
     MOV     BYTE ES:[DI + PT_F_SOURCE], 0
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
-    MOV     AX, BX
-    AND     AX, 1
-    MOV     CL, 15
-    SHL     AX, CL
-    MOV     ES:[DI + PT_F_START], AX
-    MOV     AX, BX
-    SHR     AX, 1
-    MOV     ES:[DI + PT_F_START + 2], AX
-    MOV     SI, BX
-    SHL     SI, 1
-    MOV     AX, [SI + orig_len]
-    MOV     ES:[DI + PT_F_LENGTH], AX
+
+    ; Start = current file offset (SI:BP → lo:hi)
+    MOV     ES:[DI + PT_F_START], SI
+    MOV     ES:[DI + PT_F_START + 2], BP
+
+    ; Length = min(remaining, CHUNK_BYTES)
+    ; If CX > 0, remaining > 64 KB > CHUNK_BYTES, so length = CHUNK_BYTES
+    ; If CX == 0, length = min(BX, CHUNK_BYTES)
+    TEST    CX, CX
+    JNZ     .full_chunk
+    CMP     BX, CHUNK_BYTES
+    JAE     .full_chunk
+    ; Last partial chunk
+    MOV     ES:[DI + PT_F_LENGTH], BX
     MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+    ; remaining = 0 after this
+    XOR     BX, BX
+    JMP     .next
+
+.full_chunk:
+    MOV     WORD ES:[DI + PT_F_LENGTH], CHUNK_BYTES
+    MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
+    ; remaining -= CHUNK_BYTES
+    SUB     BX, CHUNK_BYTES
+    SBB     CX, 0
+    ; file_offset += CHUNK_BYTES
+    ADD     SI, CHUNK_BYTES
+    ADC     BP, 0
+
+.next:
+    INC     DX
     ADD     DI, PT_DESC_SIZE
-    INC     BX
     JMP     .loop
+
 .done:
+    MOV     [pt_count], DX
+    POP     BP
     POP     ES
     POP     DI
     POP     SI
@@ -375,8 +392,22 @@ pt_init PROC
     POP     BX
     CLC
     RET
+
+.empty:
+    MOV     WORD [pt_count], 0
+    POP     BP
+    POP     ES
+    POP     DI
+    POP     SI
+    POP     DX
+    POP     CX
+    POP     BX
+    CLC
+    RET
+
 .fail:
     MOV     WORD [pt_seg], 0
+    POP     BP
     POP     ES
     POP     DI
     POP     SI
@@ -415,21 +446,12 @@ resolve_piece PROC
     CMP     BYTE ES:[SI + PT_F_SOURCE], 0
     JNE     .add_source
 
-    ; ---- Source 0: Original buffer ----
-    MOV     SI, AX
-    AND     SI, 7FFFh          ; SI = chunk offset
-    SHL     CX, 1
-    TEST    AX, 8000h
-    JZ      .no_hi
-    INC     CX
-.no_hi:
-    PUSH    BX
-    MOV     BX, CX
-    SHL     BX, 1
-    MOV     AX, [BX + orig_seg]
-    POP     BX
+    ; ---- Source 0: Original buffer (file-backed via cache) ----
+    ; AX = start_lo (file offset low word)
+    ; CX = start_hi (file offset high word)
     POP     ES
-    CLC
+    CALL    cache_lookup       ; AX = cache segment, SI = chunk offset
+    ; CF propagated from cache_lookup (0 = OK, 1 = disk error)
     RET
 
 .add_source:
@@ -445,6 +467,223 @@ resolve_piece PROC
     STC
     RET
 resolve_piece ENDP
+
+; ============================================================
+; CACHE_INIT — Allocate cache segments at startup
+; Call once from main.  CF=0 success, CF=1 alloc failure.
+; Clobbers: AX, BX, SI
+; ============================================================
+
+cache_init PROC
+    XOR     SI, SI                  ; SI = slot index * 2
+.ci_loop:
+    CMP     SI, CACHE_SLOTS * 2
+    JAE     .ci_done
+    MOV     BX, CACHE_CHUNK_PARA
+    MOV     AH, 48h
+    INT     21h
+    JC      .ci_fail
+    MOV     [SI + cache_seg], AX
+    MOV     WORD [SI + cache_chunk_id], CACHE_EMPTY
+    MOV     WORD [SI + cache_lru], 0
+    ADD     SI, 2
+    JMP     .ci_loop
+.ci_done:
+    MOV     WORD [cache_lru_clock], 0
+    CLC
+    RET
+.ci_fail:
+    STC
+    RET
+cache_init ENDP
+
+; ============================================================
+; CACHE_INVALIDATE — Mark all cache slots empty
+; Call after save, document switch, compact.
+; Clobbers: SI
+; ============================================================
+
+cache_invalidate PROC
+    XOR     SI, SI
+.cv_loop:
+    CMP     SI, CACHE_SLOTS * 2
+    JAE     .cv_done
+    MOV     WORD [SI + cache_chunk_id], CACHE_EMPTY
+    ADD     SI, 2
+    JMP     .cv_loop
+.cv_done:
+    RET
+cache_invalidate ENDP
+
+; ============================================================
+; CACHE_LOOKUP — Resolve a file offset to cached segment:offset
+;
+; Input:  AX = file offset low word
+;         CX = file offset high word
+; Output: AX = segment of cache buffer
+;         SI = offset within cache buffer (0..7FFFh)
+;         CF = 0 success, CF = 1 failure (disk error)
+; Preserved: BX, DI, BP, DX
+; ============================================================
+
+cache_lookup PROC
+    PUSH    DX
+    PUSH    BX
+
+    ; ---- Compute chunk_index and chunk_offset ----
+    ; chunk_offset = file_offset & 7FFFh = low 15 bits of AX
+    ; chunk_index  = file_offset >> 15
+    ;              = (CX << 1) | (AX >> 15)
+    PUSH    AX                      ; save low word (need bits 0-14 later)
+    MOV     DX, CX                  ; DX = high word
+    SHL     DX, 1                   ; DX = high << 1
+    TEST    AX, 8000h               ; check bit 15 of low word
+    JZ      .cl_no_hi
+    INC     DX                      ; DX = chunk_index
+.cl_no_hi:
+    ; DX = chunk_index
+    POP     AX
+    AND     AX, 7FFFh               ; AX = chunk_offset (saved for output)
+    PUSH    AX                      ; save chunk_offset on stack
+
+    ; ---- Check each cache slot ----
+    XOR     SI, SI                  ; SI = slot * 2
+.cl_check:
+    CMP     SI, CACHE_SLOTS * 2
+    JAE     .cl_miss
+    CMP     [SI + cache_chunk_id], DX
+    JE      .cl_hit
+    ADD     SI, 2
+    JMP     .cl_check
+
+.cl_hit:
+    ; ---- Cache HIT — update LRU ----
+    INC     WORD [cache_lru_clock]
+    MOV     AX, [cache_lru_clock]
+    MOV     [SI + cache_lru], AX
+    MOV     AX, [SI + cache_seg]    ; AX = segment
+    POP     SI                      ; SI = chunk_offset
+    POP     BX
+    POP     DX
+    CLC
+    RET
+
+.cl_miss:
+    ; ---- Cache MISS — find LRU slot to evict ----
+    ; DX = chunk_index (still valid)
+    ; Find slot with lowest cache_lru value
+    XOR     SI, SI                  ; start with slot 0
+    MOV     BX, [cache_lru]         ; BX = best LRU value (slot 0)
+    MOV     AX, 2                   ; AX = candidate slot * 2
+.cl_find_lru:
+    CMP     AX, CACHE_SLOTS * 2
+    JAE     .cl_evict
+    PUSH    DI
+    MOV     DI, AX
+    CMP     [DI + cache_lru], BX
+    POP     DI
+    JAE     .cl_next_slot
+    ; This slot has lower LRU — adopt it
+    MOV     SI, AX
+    PUSH    DI
+    MOV     DI, AX
+    MOV     BX, [DI + cache_lru]
+    POP     DI
+.cl_next_slot:
+    ADD     AX, 2
+    JMP     .cl_find_lru
+
+.cl_evict:
+    ; SI = slot * 2 to evict, DX = chunk_index to load
+    CALL    cache_load_chunk        ; AX = segment on return
+    JC      .cl_err
+    POP     SI                      ; SI = chunk_offset
+    POP     BX
+    POP     DX
+    CLC
+    RET
+
+.cl_err:
+    POP     SI                      ; balance stack (chunk_offset)
+    POP     BX
+    POP     DX
+    STC
+    RET
+cache_lookup ENDP
+
+; ============================================================
+; CACHE_LOAD_CHUNK — Read a file chunk into a cache slot
+;
+; Input:  SI = slot index * 2
+;         DX = chunk_index to load
+;         [orig_file_hnd] = open file handle
+; Output: AX = segment of loaded slot
+;         Cache metadata updated
+;         CF = 0 success, CF = 1 disk I/O error
+; Preserved: BX, DI, BP
+; Clobbers: AX, CX, DX (but caller saves them)
+; ============================================================
+
+cache_load_chunk PROC
+    PUSH    BX
+    PUSH    DI
+    PUSH    BP
+
+    MOV     BP, DX                  ; BP = chunk_index (save across INT calls)
+    MOV     DI, SI                  ; DI = slot * 2
+
+    ; ---- Seek to chunk_index * 32768 in orig_file_hnd ----
+    ; 32-bit offset = chunk_index << 15
+    ;   high word = chunk_index >> 1
+    ;   low word  = (chunk_index & 1) << 15
+    MOV     CX, BP
+    SHR     CX, 1                   ; CX = high word of offset
+    MOV     DX, BP
+    AND     DX, 1
+    MOV     CL, 15
+    SHL     DX, CL                  ; DX = low word of offset
+    ; Restore CX high word (SHR clobbered CL)
+    MOV     CX, BP
+    SHR     CX, 1                   ; CX = high word of file offset
+
+    MOV     BX, [orig_file_hnd]
+    MOV     AX, 4200h               ; AH=42h, AL=0 (SEEK_SET)
+    INT     21h
+    JC      .clc_err
+
+    ; ---- Read up to CACHE_CHUNK_BYTES into cache slot ----
+    PUSH    DS
+    MOV     AX, [DI + cache_seg]
+    MOV     DS, AX
+    XOR     DX, DX                  ; DS:DX = buffer at offset 0
+    MOV     CX, CACHE_CHUNK_BYTES
+    MOV     BX, CS:[orig_file_hnd]
+    MOV     AH, 3Fh
+    INT     21h
+    POP     DS
+    JC      .clc_err
+
+    ; ---- Update cache metadata ----
+    MOV     [DI + cache_chunk_id], BP
+    INC     WORD [cache_lru_clock]
+    MOV     AX, [cache_lru_clock]
+    MOV     [DI + cache_lru], AX
+
+    MOV     AX, [DI + cache_seg]    ; AX = segment (return value)
+
+    POP     BP
+    POP     DI
+    POP     BX
+    CLC
+    RET
+
+.clc_err:
+    POP     BP
+    POP     DI
+    POP     BX
+    STC
+    RET
+cache_load_chunk ENDP
 
 ; ============================================================
 ; REBUILD_META
@@ -562,6 +801,10 @@ seek_to_line:
     PUSH    AX
     CALL    ensure_meta
     POP     AX
+    ; Enforce invariant: checkpoint 0 = document start (piece 0, offset 0).
+    ; chkpt_adjust_insert/remove may corrupt this during incremental updates.
+    MOV     WORD [chkpt_pi], 0
+    MOV     WORD [chkpt_po], 0
     PUSH    AX
     PUSH    BX
     PUSH    CX
@@ -579,6 +822,24 @@ seek_to_line:
     DEC     CX
     CMP     AX, CX
     JBE     .stl_c_ok
+    ; Checkpoint was truncated by meta_inc/dec_line — lazy rebuild
+    PUSH    DI
+    CALL    rebuild_meta
+    MOV     WORD [chkpt_pi], 0
+    MOV     WORD [chkpt_po], 0
+    POP     DI
+    ; Recalculate with rebuilt checkpoints
+    MOV     AX, DI
+    MOV     BX, AX
+    MOV     CL, 8
+    SHR     AX, CL
+    MOV     DX, BX
+    AND     DX, 0FFh
+    MOV     CX, [chkpt_num]
+    DEC     CX
+    CMP     AX, CX
+    JBE     .stl_c_ok
+    ; Still beyond (target near end of doc) — use last checkpoint
     MOV     AX, CX
     MOV     DX, AX
     MOV     CL, 8
@@ -690,6 +951,87 @@ ensure_meta PROC
 .ok:
     RET
 ensure_meta ENDP
+
+; ============================================================
+; META_INC_LINE — Incrementally note one line was inserted.
+;
+; Increments total_lines and truncates the checkpoint table to
+; discard stale entries past the insertion point. Checkpoints
+; before the insertion are still valid; seek_to_line's existing
+; fallback handles seeks past the truncated range.
+;
+; Input:  AX = line number where insertion occurred
+; Preserves: all registers
+; ============================================================
+
+meta_inc_line PROC
+    PUSH    AX
+    PUSH    CX
+    INC     WORD [total_lines]
+    MOV     CL, 8
+    SHR     AX, CL              ; AX = insertion's checkpoint interval
+    INC     AX                  ; AX = number of valid checkpoints
+    CMP     AX, [chkpt_num]
+    JAE     .ok                 ; all checkpoints still valid
+    MOV     [chkpt_num], AX     ; truncate stale entries
+.ok:
+    POP     CX
+    POP     AX
+    RET
+meta_inc_line ENDP
+
+; ============================================================
+; META_DEC_LINE — Incrementally note one line was deleted.
+;
+; Decrements total_lines and truncates stale checkpoints past
+; the deletion point, same strategy as meta_inc_line.
+;
+; Input:  AX = line number where deletion occurred
+; Preserves: all registers
+; ============================================================
+
+meta_dec_line PROC
+    PUSH    AX
+    PUSH    CX
+    DEC     WORD [total_lines]
+    MOV     CL, 8
+    SHR     AX, CL              ; AX = deletion's checkpoint interval
+    INC     AX                  ; AX = number of valid checkpoints
+    CMP     AX, [chkpt_num]
+    JAE     .ok                 ; all checkpoints still valid
+    MOV     [chkpt_num], AX     ; truncate stale entries
+.ok:
+    POP     CX
+    POP     AX
+    RET
+meta_dec_line ENDP
+
+; ============================================================
+; META_INC_N_LINES — Incrementally note N lines were inserted.
+;
+; Used by paste (which inserts a block that may span N lines).
+; Same truncation strategy as meta_inc_line.
+;
+; Input:  AX = line number where insertion occurred
+;         CX = number of lines inserted
+; Preserves: all registers
+; ============================================================
+
+meta_inc_n_lines PROC
+    PUSH    AX
+    PUSH    CX
+    ADD     [total_lines], CX
+    MOV     CL, 8
+    SHR     AX, CL              ; AX = insertion's checkpoint interval
+    INC     AX                  ; AX = number of valid checkpoints
+    CMP     AX, [chkpt_num]
+    JAE     .ok
+    MOV     [chkpt_num], AX
+.ok:
+    POP     CX
+    POP     AX
+    RET
+meta_inc_n_lines ENDP
 
 ; ============================================================
 ; CLAMP_CURSOR — clamp cur_line to [0, total_lines - 1]
@@ -1592,36 +1934,36 @@ range_delete_pieces ENDP
 
 free_all:
     PUSH    ES
-    PUSH    CX
-    PUSH    SI
-    MOV     CX, [orig_count]
-    JCXZ    .no_orig
-    XOR     SI, SI
-.free_orig:
-    MOV     AX, [SI + orig_seg]
-    MOV     ES, AX
-    MOV     AH, 49h
+    PUSH    BX
+    ; ---- Close file-backed original handle if open ----
+    MOV     BX, [orig_file_hnd]
+    TEST    BX, BX
+    JZ      .no_orig
+    MOV     AH, 3Eh
     INT     21h
-    ADD     SI, 2
-    LOOP    .free_orig
+    MOV     WORD [orig_file_hnd], 0
 .no_orig:
+    ; ---- Invalidate cache (segments persist, just mark empty) ----
+    CALL    cache_invalidate
+    ; ---- Free piece table ----
     MOV     AX, [pt_seg]
     TEST    AX, AX
     JZ      .no_pt
     MOV     ES, AX
     MOV     AH, 49h
     INT     21h
+    MOV     WORD [pt_seg], 0
 .no_pt:
+    ; ---- Free add buffer ----
     MOV     AX, [add_seg]
     TEST    AX, AX
     JZ      .no_add
     MOV     ES, AX
     MOV     AH, 49h
     INT     21h
+    MOV     WORD [add_seg], 0
 .no_add:
-.done:
-    POP     SI
-    POP     CX
+    POP     BX
     POP     ES
     RET
 

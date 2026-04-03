@@ -490,7 +490,6 @@ ed_paste PROC
     ; ================================================================
 
 .ep_insert_before:
-    MOV     BYTE [meta_dirty], 1    ; checkpoint correction needed
     CALL    pt_insert               ; insert empty slot at BX
     JC      .ep_fail
 
@@ -666,9 +665,15 @@ ed_paste PROC
 
     ; ---- Set dirty flags ----
     MOV     BYTE [dirty], 1
-    MOV     BYTE [meta_dirty], 1
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [fw_state + FW_DIRTY], 1
+
+    ; ---- Incremental metadata: update total_lines + truncate checkpoints ----
+    MOV     AX, [ec_save_line]          ; line where paste began
+    MOV     CX, [clip_lines]            ; number of lines in clipboard
+    JCXZ    .ep_no_line_change
+    CALL    meta_inc_n_lines
+.ep_no_line_change:
 
     ; ---- Scroll to new cursor position ----
     CALL    scroll_to_cursor

@@ -35,10 +35,13 @@ PT_F_LENGTH     EQU 6
 MAX_PT_PIECES   EQU 4096
 PT_SEG_PARA     EQU 0A00h       ; 40 KB for piece table segment
 
-; ---- Original buffer / demand paging ----
-MAX_ORIG        EQU 1024        ; max 1024 chunks
+; ---- Original buffer / file-backed cache ----
 CHUNK_PARA      EQU 0800h       ; 32 KB per chunk (in paragraphs)
 CHUNK_BYTES     EQU 8000h       ; 32 KB per chunk (in bytes)
+CACHE_SLOTS      EQU 2           ; number of LRU cache slots
+CACHE_CHUNK_PARA EQU CHUNK_PARA  ; cache slot = one chunk
+CACHE_CHUNK_BYTES EQU CHUNK_BYTES
+CACHE_EMPTY      EQU 0FFFFh      ; sentinel: cache slot is empty
 
 ; ---- Add buffer ----
 ADD_BUF_PARA    EQU 1000h       ; 64 KB add buffer (in paragraphs)
@@ -160,7 +163,7 @@ SWH_FIND_FLAGS   EQU 27             ; BYTE  - find flags
 SWH_TAB_WIDTH    EQU 28             ; WORD  - tab width
 SWH_TAB_MASK     EQU 30             ; WORD  - tab mask
 SWH_TOTAL_LINES  EQU 32             ; WORD  - total lines (informational)
-SWH_ORIG_COUNT   EQU 34             ; WORD  - orig_count (for swap-in alloc)
+SWH_ORIG_COUNT   EQU 34             ; WORD  - reserved (was orig_count, now unused)
 SWH_DOC_CWD      EQU 36             ; 68 bytes - document's CWD "D:\path\0"
 SWH_DOC_CWD_SIZE EQU 68
 SWH_RESERVED     EQU 104            ; 24 bytes reserved (zero-filled)
@@ -180,4 +183,23 @@ ASSERT SWH_ORIG_COUNT, 34
 PRINT "DOC_SLOT_SIZE = ", DOC_SLOT_SIZE
 PRINT "DOC_TABLE_TOTAL = ", MAX_DOCS * DOC_SLOT_SIZE
 PRINT "SWAP_HEADER_SIZE = ", SWAP_HEADER_SIZE
+
+; ---- Shell swap (memory dump to disk for Shell to DOS) ----
+SHELL_SWAP_MAGIC   EQU 4853h       ; 'SH' (little-endian: 53h='S', 48h='H')
+SHELL_SWAP_VERSION EQU 1
+
+; Shell swap global header (128 bytes)
+SHELL_HDR_SIZE     EQU 128
+SHL_MAGIC          EQU 0            ; WORD  - magic (4853h)
+SHL_VERSION        EQU 2            ; WORD  - version (1)
+SHL_DOC_COUNT      EQU 4            ; BYTE  - number of occupied doc slots
+SHL_ACTIVE_DOC     EQU 5            ; BYTE  - active document index
+SHL_CLIP_USED      EQU 6            ; WORD  - clipboard bytes used
+SHL_CLIP_LINES     EQU 8            ; WORD  - clipboard line count
+SHL_CLIP_LAST_COL  EQU 10           ; WORD  - clipboard last line column width
+SHL_RESERVED       EQU 12           ; 116 bytes reserved (zero-filled)
+
+; Shell swap verification
+ASSERT SHELL_HDR_SIZE, 128
+ASSERT SHL_RESERVED + 116, SHELL_HDR_SIZE
 

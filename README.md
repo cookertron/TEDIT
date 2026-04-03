@@ -95,9 +95,13 @@ This is line two of the document.
 - Close (Ctrl+W) — single document resets to untitled; multiple documents
   switches to the next
 - Close All (Ctrl+Alt+W) — prompts for each dirty document, resets to untitled
-- Shell to DOS (File > Shell to DOS) — spawns interactive COMMAND.COM via
+- Shell to DOS (File > Shell to DOS, F8) — spawns interactive COMMAND.COM via
   COMSPEC; mouse and cursor fully restored on return; compatible with SHROOM
   utility for memory-efficient shelling
+- `/d` flag — dumps all allocated memory (~200 KB) to a swap file before
+  shelling, freeing it for the child process. Memory is restored on return.
+  Orphan swap files from crashes are detected on startup with a
+  Restore/Delete prompt. Usage: `TEDIT myfile.txt /d`
 - Word Wrap (Edit > Word Wrap) — permanent hard wrap at 80 columns
 - Go to Line (Ctrl+G)
 - Date/Time insertion (F5) — inserts `YYYY-MM-DD HH:MM:SS` at cursor
@@ -159,6 +163,15 @@ agent86 TEDIT.ASM --build_run --screen CGA80 --args "myproject.prj"
 agent86 TEDIT.ASM --build_run --screen CGA80 --args "myfile.txt /t 4"
 ```
 
+### Run with memory-saving shell mode
+
+```
+agent86 TEDIT.ASM --build_run --screen CGA80 --args "myfile.txt /d"
+```
+
+The `/d` flag dumps all editor memory to disk before Shell to DOS, freeing
+~200 KB for compilers and other tools. Memory is restored when you type `EXIT`.
+
 ### Run in DOSBox-X
 
 Copy `TEDIT.COM` to your DOSBox-X drive and run:
@@ -168,6 +181,7 @@ TEDIT myfile.txt
 TEDIT main.c header.h notes.txt
 TEDIT myproject.prj
 TEDIT myfile.txt /t 4
+TEDIT myfile.txt /d
 ```
 
 ## Architecture
@@ -204,6 +218,7 @@ than moving text. This gives efficient editing regardless of file size.
 | `ed_keys.inc` | Keyboard dispatch, side panel navigation |
 | `ed_mouse.inc` | Mouse click and drag, side panel click |
 | `ed_multidoc.inc` | Document table, swap out/in, switching, slot management |
+| `ed_shell.inc` | Shell swap: memory dump/restore for Shell to DOS (`/d` flag) |
 | `TUI\tui.inc` | TUI framework (master include) |
 
 ### TUI Framework
@@ -254,7 +269,7 @@ things it intentionally does not attempt.
 ### Not a bug, by design
 
 - **No auto-save.** Save explicitly with Ctrl+S or File > Save.
-- **No configuration file.** Tab width is set via command-line flag only.
+- **No configuration file.** Settings are command-line flags only (`/t`, `/d`).
 - **Cursor is a colour block**, not a blinking underscore. This is the
   software cursor implemented via attribute manipulation.
 - **Mouse cursor is attribute-inverted**, not a hardware cursor.
@@ -262,7 +277,7 @@ things it intentionally does not attempt.
 ## Version History
 
 See `CHANGELOG.md` for the full version history with detailed per-version
-changes. The editor has been developed through 63 versions covering:
+changes. The editor has been developed through 68 versions covering:
 
 - Core editing and file I/O
 - Piece table engine with checkpoint-accelerated seeking
@@ -280,7 +295,7 @@ changes. The editor has been developed through 63 versions covering:
 - Document side panel with two-tier navigation and drop shadow
 - Project file load/save (menu and command line)
 - Multi-file command-line loading
-- Shell to DOS with SHROOM compatibility
+- Shell to DOS with SHROOM compatibility and `/d` memory dump mode
 - COM binary size optimization (BSS section, subroutine factoring)
 
 ## Credits

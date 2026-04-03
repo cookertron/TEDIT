@@ -88,6 +88,7 @@ INCLUDE ed_find.inc
 ; ============================================================
 
 INCLUDE ed_multidoc.inc
+INCLUDE ed_shell.inc
 
 ; ============================================================
 ; Editor Rendering
@@ -132,6 +133,11 @@ s_shell_msg:    DB 'Type EXIT to return to TEDIT.', 0Dh, 0Ah, '$'
 s_comspec_key:  DB 'COMSPEC='
 S_COMSPEC_LEN   EQU 8
 s_err_no_comspec: DB 'COMSPEC not found.', 0
+s_shell_swap_name: DB 'TEDTSHEL.SWP', 0
+s_swap_prompt:  DB 'Swap file detected. Restore[R] or Delete[D]? $'
+s_err_shl_swap:  DB 'Shell swap failed: disk error. Shell aborted.', 0
+s_err_shl_fatal: DB 0Dh, 0Ah, 'FATAL: Cannot restore from swap file.', 0Dh, 0Ah
+                DB 'Your data may be in TEDTSHEL.SWP.', 0Dh, 0Ah, '$'
 m_str_quit:     DB 'Exit', 0
 m_str_acc_cn:   DB 'Ctrl+N', 0
 m_str_acc_co:   DB 'Ctrl+O', 0
@@ -147,7 +153,7 @@ m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.65', 0
+m_str_about_1:   DB 'TEDIT v0.68', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -170,6 +176,8 @@ m_str_clip_full: DB 'Selection too large.', 0
 ; ---- Error/warning strings for preventive fixes ----
 s_err_save_fail:   DB 'Could not save file.', 0
 s_err_save_write:  DB 'Write failed (disk full?).', 0
+s_err_save_rename: DB 'Rename failed after save.', 0
+s_temp_file:       DB 'TEDIT.$$$', 0
 s_err_pt_full:     DB 'Table full. Save and reload.', 0
 s_err_undo_lost:   DB 'Cannot undo: history too old.', 0
 s_err_file_trunc:  DB 'File exceeds 32MB limit.', 0
@@ -264,7 +272,7 @@ m_file_entries:
 
     ; Close All
     DW m_str_closeall, menu_closeall_handler
-    DB 6, 'A'
+    DB 4, 'E'
     DW m_str_acc_caw
     DB 0, 0
 
@@ -288,7 +296,7 @@ m_file_entries:
 
     ; Save All
     DW m_str_saveall, menu_saveall_handler
-    DB 5, 'L'
+    DB 6, 'L'
     DW m_str_acc_cas
     DB 0, 0
 
@@ -318,7 +326,7 @@ m_file_entries:
 
     ; Shell to DOS
     DW m_str_shell, menu_shell_handler
-    DB 0, 'H'
+    DB 1, 'H'
     DW m_str_acc_f8
     DB 42h, 0                       ; accelkey=42h (F8 global dispatch)
 
@@ -1701,6 +1709,13 @@ menu_shell_handler:
     MOV     AX, DS
     STOSW                           ; FCB2 segment
 
+    ; ---- Shell swap: dump memory if /d active ----
+    CMP     BYTE [shell_dump_mode], 0
+    JE      .sh_no_dump
+    CALL    shell_swap_out
+    JC      .sh_dump_failed
+.sh_no_dump:
+
     ; ---- Clear screen and print shell message ----
     MOV     AX, 0003h               ; INT 10h: set mode 3 (80x25 text, clears screen)
     INT     10h
@@ -1728,6 +1743,13 @@ menu_shell_handler:
     MOV     DS, AX
     MOV     ES, AX
 
+    ; ---- Shell swap: restore memory if /d was active ----
+    CMP     BYTE [shell_dump_mode], 0
+    JE      .sh_no_restore
+    CALL    shell_swap_in
+    JC      .sh_restore_failed
+.sh_no_restore:
+
     ; ---- Restore video mode and TUI screen ----
     MOV     AX, 0003h               ; reset mode 3
     INT     10h
@@ -1745,6 +1767,20 @@ menu_shell_handler:
 .sh_done:
     PopAll
     RET
+
+.sh_dump_failed:
+    ; Swap-out failed — show error, abort shell (memory still intact)
+    MOV     SI, s_err_shl_swap
+    CALL    show_error_msg
+    JMP     .sh_done
+
+.sh_restore_failed:
+    ; Fatal — cannot restore. Print message and exit.
+    MOV     AH, 09h
+    MOV     DX, s_err_shl_fatal
+    INT     21h
+    MOV     AX, 4C01h
+    INT     21h
 
 menu_undo_handler:
     MOV     BYTE [undo_group_active], 0
@@ -2685,6 +2721,14 @@ main:
     MOV     WORD [ed_text_cols], ED_COLS
     MOV     BYTE [filename], 0          ; ensure clean for parse_args flag check
 
+    ; ---- Check for orphan shell swap file (crash recovery) ----
+    CALL    shell_check_orphan
+    JC      .do_recovery
+
+    ; ---- Allocate cache buffers (needed before any file loading) ----
+    CALL    cache_init
+    JC      .err_nomem
+
     ; ---- Parse command line ----
     CALL    parse_args
     JC      .no_file
@@ -2706,10 +2750,7 @@ main:
     CALL    load_file
     JC      .err_nomem
 
-    ; Close file handle
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
+    ; (file handle now owned by orig_file_hnd — do NOT close)
 
     ; ---- Initialize piece table ----
     CALL    pt_init
@@ -2835,9 +2876,7 @@ main:
     JC      .lsf_fail
     CALL    load_file
     JC      .lsf_fail
-    MOV     BX, [file_hnd]
-    MOV     AH, 3Eh
-    INT     21h
+    ; (file handle now owned by orig_file_hnd — do NOT close)
     CALL    pt_init
     JC      .lsf_fail
     MOV     BX, ADD_BUF_PARA
@@ -3057,6 +3096,22 @@ main:
     ; doc_table moved to separate segment — snapshot commented out
     ;MEM_SNAPSHOT doc_tbl_snap, DS, doc_table, MAX_DOCS * DOC_SLOT_SIZE
 
+    JMP     .start_tui
+
+.do_recovery:
+    ; ---- Orphan swap file: user chose Restore ----
+    ; shell_swap_in allocates ALL segments and restores full state
+    CALL    shell_swap_in
+    JC      .recovery_failed
+    JMP     .init_tui               ; skip state reset, go straight to TUI
+
+.recovery_failed:
+    MOV     AH, 09h
+    MOV     DX, s_err_shl_fatal
+    INT     21h
+    MOV     AX, 4C01h
+    INT     21h
+
 .start_tui:
     ; ---- Allocate undo buffer (if not already allocated) ----
     CMP     WORD [undo_seg], 0
@@ -3079,6 +3134,13 @@ main:
     MOV     [clip_seg], AX
 .clip_ready:
     MOV     WORD [clip_used], 0
+
+    ; ---- Allocate cache buffers (if not already allocated) ----
+    CMP     WORD [cache_seg], 0
+    JNE     .cache_ready
+    CALL    cache_init
+    JC      .err_nomem
+.cache_ready:
 
     ; ---- Allocate shadow buffer segment (if not already allocated) ----
     CMP     WORD [shadow_seg], 0
@@ -3110,6 +3172,7 @@ main:
     MOV     BYTE [sel_active], 0
     MOV     BYTE [overwrite_mode], 0
 
+.init_tui:
     ; ---- Initialize TUI ----
     CALL    tui_init
 
@@ -3190,6 +3253,22 @@ main:
     MOV     ES, AX
     MOV     AH, 49h
     INT     21h
+.free_cache:
+    ; Free cache segments (persistent — not freed by free_all)
+    XOR     SI, SI
+.free_cache_loop:
+    CMP     SI, CACHE_SLOTS * 2
+    JAE     .free_doctbl
+    MOV     AX, [SI + cache_seg]
+    TEST    AX, AX
+    JZ      .free_cache_next
+    MOV     ES, AX
+    MOV     AH, 49h
+    INT     21h
+.free_cache_next:
+    ADD     SI, 2
+    JMP     .free_cache_loop
+
 .free_doctbl:
     ; Free document table segment (persistent — not freed by free_all)
     MOV     AX, [doc_table_seg]
@@ -3260,22 +3339,22 @@ DOC_CTX:
 top_line:       RESW 1          ; +0   ED_SCROLLY
 total_lines:    RESW 1          ; +2   ED_LINECOUNT
 filename:       RESB 128        ; +4   current file path
-orig_count:     RESW 1          ; +132
-orig_seg:       RESW MAX_ORIG   ; +134  (2048 bytes)
-orig_len:       RESW MAX_ORIG   ; +2182 (2048 bytes)
-add_seg:        RESW 1          ; +4230
-add_used:       RESW 1          ; +4232
-pt_seg:         RESW 1          ; +4234
-pt_count:       RESW 1          ; +4236
-chkpt_num:      RESW 1          ; +4238
-chkpt_pi:       RESW MAX_CHKPT  ; +4240 (4096 bytes)
-chkpt_po:       RESW MAX_CHKPT  ; +8336 (4096 bytes)
-cur_line:       RESW 1          ; +12432
-cur_col:        RESW 1          ; +12434
-dirty:          RESB 1          ; +12436
-meta_dirty:     RESB 1          ; +12437
-last_ins_pi:    RESW 1          ; +12438
-DOC_CTX_END:                    ; +12440
+orig_file_hnd:  RESW 1          ; +132  DOS file handle (0 = no backing file)
+orig_file_size_lo: RESW 1       ; +134  file size low word
+orig_file_size_hi: RESW 1       ; +136  file size high word
+add_seg:        RESW 1          ; +138
+add_used:       RESW 1          ; +140
+pt_seg:         RESW 1          ; +142
+pt_count:       RESW 1          ; +144
+chkpt_num:      RESW 1          ; +146
+chkpt_pi:       RESW MAX_CHKPT  ; +148  (4096 bytes)
+chkpt_po:       RESW MAX_CHKPT  ; +4244 (4096 bytes)
+cur_line:       RESW 1          ; +8340
+cur_col:        RESW 1          ; +8342
+dirty:          RESB 1          ; +8344
+meta_dirty:     RESB 1          ; +8345
+last_ins_pi:    RESW 1          ; +8346
+DOC_CTX_END:                    ; +8348
 
 ; ---- Compile-time verification ----
 PRINT "DOC_CTX_SIZE = ", DOC_CTX_END - DOC_CTX
@@ -3287,7 +3366,14 @@ PRINT "DOC_CTX_SIZE = ", DOC_CTX_END - DOC_CTX
 ; ============================================================
 
 open_file_buf:  RESB 14         ; temp buffer for file dialog
-file_hnd:       RESW 1          ; file handle during load (closed after)
+file_hnd:       RESW 1          ; file handle during load (transient)
+
+; ---- LRU chunk cache (file-backed original buffer) ----
+cache_seg:      RESW CACHE_SLOTS    ; segment address of each cache buffer
+cache_chunk_id: RESW CACHE_SLOTS    ; file chunk loaded (CACHE_EMPTY = empty)
+cache_lru:      RESW CACHE_SLOTS    ; access counter for LRU eviction
+cache_lru_clock: RESW 1             ; monotonically increasing counter
+
 rnd_pi:         RESW 1          ; render/seek scratch
 rnd_off:        RESW 1          ; render/seek scratch
 rnd_base:       RESW 1          ; render/seek/save scratch
@@ -3497,4 +3583,6 @@ shell_fcb:          RESB 37         ; dummy FCB for EXEC
 shell_exec_pb:      RESB 14         ; EXEC parameter block
 shell_save_ss:      RESW 1          ; saved SS before EXEC
 shell_save_sp:      RESW 1          ; saved SP before EXEC
+shell_dump_mode:    RESB 1          ; 1 = /d flag: dump memory to disk on shell
+shell_recovering:   RESB 1          ; 1 = orphan swap recovery in progress
 BSS_END:
