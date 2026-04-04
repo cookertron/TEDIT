@@ -303,7 +303,7 @@ insert_crlf PROC
     PUSH    DI
     PUSH    ES
 
-    ; Append CR+LF to add buffer
+    ; Append line break to add buffer (CRLF or LF based on line_ending)
     MOV     AX, [add_seg]
     MOV     ES, AX
     MOV     DI, [add_used]
@@ -319,9 +319,18 @@ insert_crlf PROC
     MOV     DI, [add_used]
 
 .icr_have_space:
+    CMP     BYTE [line_ending], LE_LF
+    JE      .icr_lf_only
+    ; CRLF mode: write CR+LF (2 bytes)
     MOV     BYTE ES:[DI], 0Dh
     MOV     BYTE ES:[DI+1], 0Ah
     ADD     WORD [add_used], 2
+    JMP     .icr_appended
+.icr_lf_only:
+    ; LF mode: write LF only (1 byte)
+    MOV     BYTE ES:[DI], 0Ah
+    ADD     WORD [add_used], 1
+.icr_appended:
 
     ; Find cursor position
     CALL    cursor_to_offset
@@ -431,7 +440,13 @@ insert_crlf PROC
     JMP     .icr_write_piece
 
 .icr_write_piece:
-    ; Write CRLF piece at index BX: source=1, start=add_used-2, length=2
+    ; Write line break piece at index BX
+    ; source=1, length=1(LF) or 2(CRLF), start=add_used-length
+    MOV     CX, 2                       ; CX = byte count (CRLF default)
+    CMP     BYTE [line_ending], LE_LF
+    JNE     .icr_wp_size
+    MOV     CX, 1                       ; LF mode: 1 byte
+.icr_wp_size:
     PUSH    ES
     MOV     AX, [pt_seg]
     MOV     ES, AX
@@ -439,10 +454,10 @@ insert_crlf PROC
     MOV     BYTE ES:[DI + PT_F_SOURCE], 1
     MOV     BYTE ES:[DI + PT_F_SOURCE + 1], 0
     MOV     AX, [add_used]
-    SUB     AX, 2
+    SUB     AX, CX
     MOV     ES:[DI + PT_F_START], AX
     MOV     WORD ES:[DI + PT_F_START + 2], 0
-    MOV     WORD ES:[DI + PT_F_LENGTH], 2
+    MOV     ES:[DI + PT_F_LENGTH], CX
     MOV     WORD ES:[DI + PT_F_LENGTH + 2], 0
     POP     ES
 
@@ -687,7 +702,8 @@ delete_at PROC
 .da_deleted_lf:
     MOV     AX, [cur_line]
     CALL    meta_dec_line
-    ; Deleted LF — check if preceding byte is CR
+    MOV     BYTE [undo_del_crlf], 1     ; any LF deletion is a line break
+    ; Deleted LF — check if preceding byte is CR (companion delete)
     CALL    cursor_to_offset
     MOV     BX, [rnd_pi]
     MOV     SI, [rnd_off]
@@ -774,101 +790,140 @@ save_file PROC
     MOV     BP, AX             ; BP = temp file handle
 
     ; ---- Step 2: Write all pieces to temp file ----
-    ; Walk pieces, coalescing contiguous same-segment runs.
+    ; Filtered write: byte-by-byte through save_conv_buf (512 bytes).
+    ; LF mode: skip 0Dh bytes.  CRLF mode: insert 0Dh before bare 0Ah.
+    MOV     WORD [save_conv_pos], 0
+    MOV     BYTE [save_prev_byte], 0
+
     XOR     DI, DI             ; DI = piece index
 
-    ; Resolve first piece to seed the pending write
+.sf_piece_loop:
     CMP     DI, [pt_count]
-    JAE     .sf_write_ok
-    MOV     BX, DI
-    CALL    resolve_piece      ; AX=seg, SI=base, DX=piece_len
-    JC      .sf_write_ok
-
-    ; Seed pending write: segment AX, offset SI, length DX
-    PUSH    AX                 ; [stk] = pending segment
-    MOV     [rnd_base], SI     ; pending start offset
-    MOV     [rnd_len], DX      ; pending length
-    INC     DI
-
-.sf_coalesce:
-    CMP     DI, [pt_count]
-    JAE     .sf_flush           ; no more pieces — flush pending
+    JAE     .sf_flush_conv
 
     MOV     BX, DI
     CALL    resolve_piece      ; AX=seg, SI=base, DX=piece_len
-    JC      .sf_flush
+    JC      .sf_flush_conv
 
-    ; Check if this piece is contiguous with pending write
-    POP     BX                 ; BX = pending segment
-    PUSH    BX
-    CMP     AX, BX
-    JNE     .sf_break          ; different segment
+    ; DS = piece segment for LODSB, save original DS
+    PUSH    DS
+    MOV     DS, AX             ; DS:SI = piece data
+    MOV     CX, DX             ; CX = bytes in this piece
 
-    MOV     BX, [rnd_base]
-    ADD     BX, [rnd_len]      ; BX = pending end offset
-    CMP     SI, BX
-    JNE     .sf_break          ; not contiguous
+    CMP     BYTE CS:[line_ending], LE_LF
+    JE      .sf_lf_filter
 
-    ; Contiguous — extend pending write
-    ADD     [rnd_len], DX
+    ; ---- CRLF filter: insert 0Dh before bare 0Ah ----
+.sf_crlf_byte:
+    JCXZ    .sf_piece_done
+    LODSB
+    DEC     CX
+    CMP     AL, 0Ah
+    JE      .sf_crlf_check_lf
+    MOV     CS:[save_prev_byte], AL
+    CALL    .sf_emit_byte
+    JC      .sf_piece_write_err
+    JMP     .sf_crlf_byte
+
+.sf_crlf_check_lf:
+    ; 0Ah found — insert 0Dh if previous byte wasn't 0Dh
+    CMP     BYTE CS:[save_prev_byte], 0Dh
+    JE      .sf_crlf_emit_lf
+    ; Insert CR
+    PUSH    AX
+    MOV     AL, 0Dh
+    CALL    .sf_emit_byte
+    POP     AX
+    JC      .sf_piece_write_err
+.sf_crlf_emit_lf:
+    MOV     BYTE CS:[save_prev_byte], 0Ah
+    CALL    .sf_emit_byte
+    JC      .sf_piece_write_err
+    JMP     .sf_crlf_byte
+
+    ; ---- LF filter: skip 0Dh bytes ----
+.sf_lf_filter:
+.sf_lf_byte:
+    JCXZ    .sf_piece_done
+    LODSB
+    DEC     CX
+    CMP     AL, 0Dh
+    JE      .sf_lf_byte        ; skip CR
+    CALL    .sf_emit_byte
+    JC      .sf_piece_write_err
+    JMP     .sf_lf_byte
+
+.sf_piece_done:
+    POP     DS                 ; restore DS = CS
     INC     DI
-    JMP     .sf_coalesce
+    JMP     .sf_piece_loop
 
-.sf_break:
-    ; Flush pending write, then seed new one from current piece
-    POP     BX                 ; BX = pending segment (consumed)
-
-    PUSH    AX                 ; save current piece segment
-    PUSH    SI                 ; save current piece base
-    PUSH    DX                 ; save current piece length
-
-    MOV     DS, BX
-    MOV     DX, CS:[rnd_base]
-    MOV     CX, CS:[rnd_len]
-    MOV     BX, BP
-    MOV     AH, 40h
-    INT     21h
-
-    PUSH    CS
+.sf_piece_write_err:
     POP     DS
-    JC      .sf_write_failed_break
-    CMP     AX, CX
-    JE      .sf_write_ok_break
-.sf_write_failed_break:
-    MOV     SI, s_err_save_write
-    CALL    show_error_msg
-    JMP     .sf_break_err
-
-.sf_write_ok_break:
-    POP     DX                 ; current piece length
-    POP     SI                 ; current piece base
-    POP     AX                 ; current piece segment
-
-    PUSH    AX                 ; push new pending segment
-    MOV     [rnd_base], SI
-    MOV     [rnd_len], DX
-    INC     DI
-    JMP     .sf_coalesce
-
-.sf_flush:
-    ; Write final pending block
-    POP     BX                 ; BX = pending segment
-    MOV     DS, BX
-    MOV     DX, CS:[rnd_base]
-    MOV     CX, CS:[rnd_len]
-    MOV     BX, BP
-    MOV     AH, 40h
-    INT     21h
-
-    PUSH    CS
-    POP     DS
-    JC      .sf_write_failed_flush
-    CMP     AX, CX
-    JE      .sf_write_ok
-.sf_write_failed_flush:
     MOV     SI, s_err_save_write
     CALL    show_error_msg
     JMP     .sf_err
+
+.sf_flush_conv:
+    ; Flush remaining bytes in staging buffer
+    MOV     CX, [save_conv_pos]
+    JCXZ    .sf_write_ok
+    MOV     DX, save_conv_buf
+    MOV     BX, BP
+    MOV     AH, 40h
+    INT     21h
+    JC      .sf_flush_failed
+    CMP     AX, CX
+    JE      .sf_write_ok
+.sf_flush_failed:
+    MOV     SI, s_err_save_write
+    CALL    show_error_msg
+    JMP     .sf_err
+
+    ; ---- Emit one byte (AL) to staging buffer, flush when full ----
+    ; Input:  AL = byte, BP = file handle
+    ; Output: CF=0 success, CF=1 write error
+    ; Note:   DS may not be CS — use CS: prefix for BSS access
+.sf_emit_byte:
+    PUSH    BX
+    MOV     BX, CS:[save_conv_pos]
+    MOV     CS:[BX + save_conv_buf], AL
+    INC     BX
+    MOV     CS:[save_conv_pos], BX
+    CMP     BX, 512
+    JB      .sf_emit_ok
+
+    ; Buffer full — flush
+    PUSH    AX
+    PUSH    CX
+    PUSH    DX
+    PUSH    DS
+    PUSH    CS
+    POP     DS                 ; DS = CS for INT 21h buffer address
+    MOV     DX, save_conv_buf
+    MOV     CX, 512
+    MOV     BX, BP
+    MOV     AH, 40h
+    INT     21h
+    POP     DS
+    JC      .sf_emit_fail
+    CMP     AX, 512
+    JNE     .sf_emit_fail
+    POP     DX
+    POP     CX
+    POP     AX
+    MOV     WORD CS:[save_conv_pos], 0
+.sf_emit_ok:
+    POP     BX
+    CLC
+    RET
+.sf_emit_fail:
+    POP     DX
+    POP     CX
+    POP     AX
+    POP     BX
+    STC
+    RET
 
 .sf_write_ok:
     ; ---- Step 3: Close temp file ----
@@ -1008,10 +1063,6 @@ save_file PROC
     MOV     WORD [orig_file_size_hi], 0
     CALL    cache_invalidate
     ; dirty stays set — user knows save failed
-
-.sf_break_err:
-    ADD     SP, 6              ; discard 3 saved words
-    ; fall through to sf_err
 
 .sf_err:
     PUSH    CS

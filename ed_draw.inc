@@ -681,6 +681,14 @@ ed_draw_status_line PROC
     CALL    ed_wstr
 .no_ovr:
 
+    ; ---- Line ending indicator ----
+    MOV     SI, s_stat_crlf
+    CMP     BYTE [line_ending], LE_LF
+    JNE     .show_le
+    MOV     SI, s_stat_lf
+.show_le:
+    CALL    ed_wstr
+
     ; ---- Document counter [N/M] (only if multiple docs open) ----
     CMP     BYTE [doc_count], 1
     JBE     .skip_doc_counter

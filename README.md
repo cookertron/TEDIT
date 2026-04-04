@@ -14,11 +14,11 @@ runs on IBM PC compatibles, DOSBox-X, and the agent86 emulator.
 Run in DOSBox-X or agent86 with CGA 80-column text mode:
 
 ```
- File  Edit  View  Info
+ File  Edit  View  Options  Info
 The quick brown fox jumps over the lazy dog.
 This is line two of the document.
 
- myfile.txt Line 1 of 3  Col 1
+ myfile.txt Line 1 of 3  Col 1  CRLF
 ```
 
 ## Features
@@ -30,6 +30,13 @@ This is line two of the document.
   (`/t 2`, `/t 4`, `/t 8` command-line flag; default 8)
 - Horizontal scrolling for lines longer than 80 columns
 - Tab-aware rendering with correct tab stop alignment
+
+### Line Endings
+- Auto-detects CRLF (DOS/Windows) or LF (Unix/Linux) on file load
+- Status bar shows current mode (`CRLF` or `LF`)
+- Enter key inserts the correct line break for the current mode
+- Convert between formats via Options > Convert to LF / Convert to CRLF
+- Save normalizes all line endings to the selected mode
 
 ### Selection
 - Shift+Arrow/Home/End/PgUp/PgDn for keyboard selection
@@ -116,6 +123,7 @@ This is line two of the document.
 - Edit: Undo, Redo, Cut, Copy, Paste, Find, Find Next, Find Prev,
   Replace, Goto, Date/Time, Word Wrap
 - View: Document List
+- Options: Convert to LF / Convert to CRLF
 - Info: About
 
 ### Compatibility

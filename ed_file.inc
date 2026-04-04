@@ -46,6 +46,10 @@ ed_load_file PROC
     CALL    clamp_cursor
     MOV     BYTE [meta_dirty], 0
 
+    ; ---- Detect line ending mode ----
+    CALL    detect_line_ending
+    CALL    update_le_label
+
     ; ---- Reset editor state ----
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
@@ -156,6 +160,8 @@ ed_new_doc PROC
     MOV     BYTE [meta_dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [sel_active], 0
+    MOV     BYTE [line_ending], LE_CRLF
+    CALL    update_le_label
     CALL    undo_clear
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
@@ -245,3 +251,56 @@ ed_buffer_full PROC
     STC
     RET
 ed_buffer_full ENDP
+
+; ============================================================
+; detect_line_ending — Detect CRLF vs LF from file content
+;
+; Scans the first piece for the first LF (0Ah). If preceded by
+; CR (0Dh), sets line_ending = LE_CRLF. If bare LF, sets
+; line_ending = LE_LF. No LF found → defaults to LE_CRLF.
+;
+; Must be called after pt_init / rebuild_meta (piece table ready).
+; Output: [line_ending] set
+; Clobbers: AX, BX, CX, DX, SI, DI, ES
+; ============================================================
+detect_line_ending PROC
+    MOV     BYTE [line_ending], LE_CRLF  ; default
+
+    CMP     WORD [pt_count], 0
+    JE      .dle_done                    ; empty file → default
+
+    ; Resolve first piece
+    XOR     BX, BX                       ; piece index 0
+    CALL    resolve_piece                ; AX=seg, SI=base, DX=length
+    JC      .dle_done
+
+    MOV     ES, AX
+    MOV     DI, SI                       ; ES:DI = start of piece data
+    MOV     CX, DX                       ; CX = piece length
+    CMP     CX, 4096
+    JBE     .dle_scan
+    MOV     CX, 4096                     ; cap scan at 4 KB
+
+.dle_scan:
+    CLD
+    MOV     AL, 0Ah
+    REPNE   SCASB
+    JNZ     .dle_done                    ; no LF found → default CRLF
+
+    ; Found LF at ES:[DI-1]. SCASB incremented DI past it.
+    ; Check if LF was the first byte of the piece (no preceding byte).
+    MOV     AX, DI
+    SUB     AX, SI                       ; AX = bytes consumed (1 if LF was first)
+    CMP     AX, 1
+    JE      .dle_bare_lf                 ; LF at position 0 → bare LF
+
+    ; Check byte before the LF
+    CMP     BYTE ES:[DI-2], 0Dh
+    JE      .dle_done                    ; preceded by CR → CRLF (default)
+
+.dle_bare_lf:
+    MOV     BYTE [line_ending], LE_LF
+
+.dle_done:
+    RET
+detect_line_ending ENDP

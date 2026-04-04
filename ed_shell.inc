@@ -188,6 +188,8 @@ shell_swap_out PROC
     MOV     AX, [total_lines]
     MOV     [swap_hdr_buf + SWH_TOTAL_LINES], AX
     MOV     WORD [swap_hdr_buf + SWH_ORIG_COUNT], 0
+    MOV     AL, [line_ending]
+    MOV     [swap_hdr_buf + SWH_LINE_ENDING], AL
 
     ; Copy doc_cwd into header
     MOV     SI, doc_cwd
@@ -675,6 +677,9 @@ shell_swap_in PROC
     MOV     [tab_width], AX
     MOV     AX, [swap_hdr_buf + SWH_TAB_MASK]
     MOV     [tab_mask], AX
+    MOV     AL, [swap_hdr_buf + SWH_LINE_ENDING]
+    MOV     [line_ending], AL
+    CALL    update_le_label
 
     ; Restore undo state
     MOV     AX, [swap_hdr_buf + SWH_UNDO_POS]
@@ -769,6 +774,8 @@ shell_swap_in PROC
     MOV     BYTE [dirty], 0
     MOV     WORD [last_ins_pi], 0FFFFh
     MOV     BYTE [sel_active], 0
+    MOV     BYTE [line_ending], LE_CRLF
+    CALL    update_le_label
     MOV     BYTE [undo_group_active], 0
     MOV     BYTE [undo_recording], 1
     MOV     WORD [ed_text_cols], ED_COLS

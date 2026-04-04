@@ -330,6 +330,9 @@ doc_swap_out PROC
     ; SWH_ORIG_COUNT — no longer used (file-backed), write 0
     MOV     WORD [swap_hdr_buf + SWH_ORIG_COUNT], 0
 
+    MOV     AL, [line_ending]
+    MOV     [swap_hdr_buf + SWH_LINE_ENDING], AL
+
     ; ---- Copy doc_cwd into header ----
     PUSH    DI
     PUSH    ES
@@ -813,6 +816,10 @@ doc_swap_in PROC
 
     MOV     AX, [swap_hdr_buf + SWH_TAB_MASK]
     MOV     [tab_mask], AX
+
+    MOV     AL, [swap_hdr_buf + SWH_LINE_ENDING]
+    MOV     [line_ending], AL
+    CALL    update_le_label
 
     ; ---- Restore undo state ----
     MOV     AX, [swap_hdr_buf + SWH_UNDO_POS]

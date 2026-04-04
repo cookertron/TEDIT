@@ -107,6 +107,10 @@ SEL_GRACE_TICKS EQU 9              ; ~500ms at 18.2 ticks/sec
 ; ---- INT 2Fh Multiplex (instance detection) ----
 TEDIT_MUX_ID    EQU 0C0h           ; multiplex ID (C0h-FFh = application range)
 
+; ---- Line ending mode ----
+LE_CRLF         EQU 0               ; CR+LF (DOS/Windows)
+LE_LF           EQU 1               ; LF only (Unix/Linux)
+
 ; ---- Tab ----
 ED_TAB_DEFAULT  EQU 8               ; default tab width (2, 4, or 8)
 
@@ -169,7 +173,8 @@ SWH_TOTAL_LINES  EQU 32             ; WORD  - total lines (informational)
 SWH_ORIG_COUNT   EQU 34             ; WORD  - reserved (was orig_count, now unused)
 SWH_DOC_CWD      EQU 36             ; 68 bytes - document's CWD "D:\path\0"
 SWH_DOC_CWD_SIZE EQU 68
-SWH_RESERVED     EQU 104            ; 24 bytes reserved (zero-filled)
+SWH_LINE_ENDING  EQU 104            ; BYTE  - line ending mode (LE_CRLF/LE_LF)
+SWH_RESERVED     EQU 105            ; 23 bytes reserved (zero-filled)
 
 ; ---- Multi-doc constant verification ----
 ASSERT DOC_SLOT_SIZE                         ; must be nonzero
@@ -179,7 +184,7 @@ ASSERT DOC_SWAP_PATH, 130                    ; offset sanity
 ASSERT DOC_CACHED_LINES, 144                 ; offset sanity
 ASSERT SWAP_HEADER_SIZE, 128
 ASSERT SWH_DOC_CWD + SWH_DOC_CWD_SIZE, 104  ; CWD ends at reserved
-ASSERT SWH_RESERVED + 24, SWAP_HEADER_SIZE   ; reserved fills to 128
+ASSERT SWH_RESERVED + 23, SWAP_HEADER_SIZE   ; reserved fills to 128
 ASSERT SWH_MAGIC, 0
 ASSERT SWH_PT_COUNT, 4
 ASSERT SWH_ORIG_COUNT, 34

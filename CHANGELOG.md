@@ -1,5 +1,77 @@
 # TEDIT Changelog
 
+## v0.69.0 — Line Ending Support (2026-04-04)
+
+### New Feature: CRLF / LF Line Ending Detection & Conversion
+- **Auto-detection on load**: scans first piece for the first LF byte. If
+  preceded by CR → CRLF mode, bare LF → LF mode, no LF found → defaults to
+  CRLF. Works for all load paths (single file, multi-file, ed_load_file).
+- **Status bar indicator**: shows "CRLF" or "LF" after the `[OVR]` indicator,
+  before the document counter. Updates on file load, document switch, and mode
+  toggle.
+- **Mode-aware Enter key**: `insert_crlf` checks `[line_ending]` — inserts
+  `0Dh+0Ah` (2 bytes) in CRLF mode, `0Ah` only (1 byte) in LF mode. Piece
+  descriptor length computed dynamically.
+- **Correct undo/redo for bare LF**: `delete_at` now sets `undo_del_crlf=1`
+  for any LF deletion (not just CRLF pairs), ensuring undo records use
+  `UR_DEL_CRLF` which calls `insert_crlf` (mode-aware) with proper line count
+  update. Prevents line count drift on undo of bare LF deletion.
+- **Save-time conversion**: `save_file` writes through a 512-byte staging
+  buffer with line ending filter. LF mode strips all `0Dh` bytes. CRLF mode
+  inserts `0Dh` before any `0Ah` not preceded by `0Dh`. Tracks state across
+  piece boundaries via `save_prev_byte`.
+- **User conversion toggle**: Options menu → "Convert to LF" / "Convert to
+  CRLF" (dynamic label). Toggles mode, marks file dirty, clears undo history
+  (existing records have wrong semantics after conversion).
+- **Per-document persistence**: `line_ending` saved/restored in doc swap
+  (`SWH_LINE_ENDING` at offset 104 in swap header) and shell swap.
+
+### New Menu: Options
+- Top-level "Options" menu added between View and Info (Alt+O).
+- Currently contains one entry: "Convert to LF" / "Convert to CRLF" (hotkey C).
+- Menu bar now has 5 items: File, Edit, View, Options, Info.
+
+### New Constants (`ed_const.inc`)
+- `LE_CRLF EQU 0`, `LE_LF EQU 1` — line ending mode values
+- `SWH_LINE_ENDING EQU 104` — swap header field (1 byte, was first byte of
+  reserved block; reserved shrunk from 24 to 23 bytes)
+
+### New Procedure: `detect_line_ending` (`ed_file.inc`)
+- Scans first piece (up to 4 KB) for first `0Ah`. Checks preceding byte for
+  `0Dh`. Handles edge case of LF at file position 0.
+- Called from `ed_load_file`, main startup single-file path, and multi-file
+  load path. `ed_new_doc` sets `LE_CRLF` default.
+
+### New Procedure: `update_le_label` (`TEDIT.ASM`)
+- Sets the Options menu label pointer (`m_le_label`) based on `[line_ending]`.
+- Called from all paths that change `line_ending`: detection, toggle, doc swap
+  restore, shell swap restore.
+
+### Modified: `insert_crlf` (`ed_edit.inc`)
+- Branches on `[line_ending]`: CRLF path writes 2 bytes, LF path writes 1
+  byte. `.icr_write_piece` uses CX for dynamic byte count.
+
+### Modified: `delete_at` (`ed_edit.inc`)
+- `.da_deleted_lf` path now sets `undo_del_crlf=1` immediately after
+  `meta_dec_line`, before companion CR check. Ensures bare LF deletion uses
+  `UR_DEL_CRLF` record type.
+
+### Modified: `save_file` (`ed_edit.inc`)
+- Replaced coalesced bulk-write loop with filtered byte-by-byte write through
+  `save_conv_buf` (512 bytes). Removed dead `.sf_break_err` label.
+
+### BSS Additions (`TEDIT.ASM`)
+- `line_ending` (RESB 1) — current line ending mode
+- `save_conv_buf` (RESB 512) — save conversion staging buffer
+- `save_conv_pos` (RESW 1) — staging buffer write position
+- `save_prev_byte` (RESB 1) — previous byte for CRLF insertion tracking
+
+### Fix: Document Panel Garbage After Shell Swap Restore
+- **`shell_swap_in`** (`ed_shell.inc`): freshly allocated `doc_table_seg` was
+  not zeroed before reading back saved slots. Uninitialized memory with
+  `DOCF_OCCUPIED` bit set caused `ed_draw_panel` to render garbage filenames.
+  Fixed by zeroing entire 3 KB segment after allocation.
+
 ## v0.68.0 — Shell Swap & Menu Hotkey Fix (2026-04-03)
 
 ### New Feature: Shell Memory Swap (`/d` flag)

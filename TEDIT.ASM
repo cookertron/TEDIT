@@ -40,6 +40,8 @@ s_stat_mod:  DB '  [Modified]', 0
 s_stat_sel:  DB '  [SEL]', 0
 s_stat_ci:   DB '  [Aa]', 0
 s_stat_ovr:  DB '  [OVR]', 0
+s_stat_crlf: DB '  CRLF', 0
+s_stat_lf:   DB '  LF', 0
 s_stat_untitled: DB 'Untitled', 0
 
 ; ============================================================
@@ -150,11 +152,14 @@ m_str_acc_cas:  DB 'Ctrl+Alt+S', 0
 m_str_acc_ax:   DB 'Alt+X', 0
 m_str_acc_f8:   DB 'F8', 0
 m_str_view:      DB 'View', 0
+m_str_options:   DB 'Options', 0
 m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
+m_str_to_lf:     DB 'Convert to LF', 0
+m_str_to_crlf:   DB 'Convert to CRLF', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.68', 0
+m_str_about_1:   DB 'TEDIT v0.69', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -441,6 +446,15 @@ m_view_entries:
     DW m_str_acc_f1
     DB 0, 0
 
+m_options_entries:
+    ; Convert to LF / Convert to CRLF (dynamic label)
+m_le_label:
+    DW m_str_to_lf
+    DW menu_line_ending_handler
+    DB 0, 'C'
+    DW 0
+    DB 0, 0
+
 m_info_entries:
     DW m_str_about, menu_about_handler
     DB 0, 'A'
@@ -468,14 +482,21 @@ m_menu_items:
     DB 1, 20                        ; MI_ECOUNT=1, MI_DDW=20
     DB 0, 2Fh                       ; MI_HOTIDX=0 ('V'), MI_ALTKEY=2Fh (Alt+V)
 
+    ; Options menu
+    DW m_str_options
+    DB 18, 9                        ; MI_X=18, MI_W=9
+    DW m_options_entries
+    DB 1, 22                        ; MI_ECOUNT=1, MI_DDW=22
+    DB 0, 18h                       ; MI_HOTIDX=0 ('O'), MI_ALTKEY=18h (Alt+O)
+
     DW m_str_info
-    DB 18, 6                        ; MI_X=18, MI_W=6
+    DB 27, 6                        ; MI_X=27, MI_W=6
     DW m_info_entries
     DB 1, 12
     DB 0, 17h
 
 m_menubar:
-    DB 4, 0FFh, 0, 0FFh
+    DB 5, 0FFh, 0, 0FFh
     DB CLR_MENUBAR, CLR_MENU_SEL
     DW m_menu_items
 
@@ -2510,13 +2531,39 @@ menu_doclist_handler:
     MOV     BYTE [fw_state + FW_DIRTY], 1
     RET
 
+; ============================================================
+; menu_line_ending_handler — Toggle line ending mode (CRLF/LF)
+; ============================================================
+menu_line_ending_handler:
+    XOR     BYTE [line_ending], 1       ; toggle 0↔1
+    MOV     BYTE [dirty], 1
+    MOV     BYTE [undo_group_active], 0
+    CALL    undo_clear                  ; existing records have wrong semantics
+    CALL    update_le_label
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    RET
+
+; ============================================================
+; update_le_label — Set View menu label based on [line_ending]
+; Clobbers: AX
+; ============================================================
+update_le_label PROC
+    MOV     AX, m_str_to_lf             ; default: "Convert to LF"
+    CMP     BYTE [line_ending], LE_LF
+    JNE     .ul_set
+    MOV     AX, m_str_to_crlf           ; if LF mode: "Convert to CRLF"
+.ul_set:
+    MOV     [m_le_label], AX
+    RET
+update_le_label ENDP
+
 menu_about_handler:
     PushAll
 
     ; Interior: 34 wide, 9 rows (5 lines + 1 blank + 1 blank + 1 button + 1 pad)
     ; WIN_W = 36, WIN_H = 11
 
-    ; ---- Line 1: "TEDIT v0.56" (centered label) ----
+    ; ---- Line 1: "TEDIT v0.69" (centered label) ----
     MOV     DI, dlg_label
     MOV     BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
@@ -2820,6 +2867,10 @@ main:
     CALL    clamp_cursor
     MOV     BYTE [meta_dirty], 0
 
+    ; ---- Detect line ending mode ----
+    CALL    detect_line_ending
+    CALL    update_le_label
+
     ; ---- Register in document table slot 0 ----
     MOV     AL, 0
     MOV     SI, filename
@@ -2939,6 +2990,8 @@ main:
     CALL    rebuild_meta
     CALL    clamp_cursor
     MOV     BYTE [meta_dirty], 0
+    CALL    detect_line_ending
+    CALL    update_le_label
     MOV     WORD [top_line], 0
     MOV     WORD [cur_line], 0
     MOV     WORD [cur_col], 0
@@ -3564,6 +3617,11 @@ ec_byte_count:     RESW 1      ; total bytes to copy to clipboard
 ; ---- ed_paste scratch ----
 ep_save_add:       RESW 1      ; saved add_used before paste append
 
+; ---- Save conversion buffer ----
+save_conv_buf:      RESB 512    ; staging buffer for line ending conversion
+save_conv_pos:      RESW 1      ; current position in save_conv_buf
+save_prev_byte:     RESB 1      ; previous byte written (for CRLF insertion)
+
 ; ---- Find state ----
 find_buf:            RESB 65     ; null-terminated search term (max 64 + null)
 find_len:            RESW 1      ; needle byte length
@@ -3614,6 +3672,9 @@ ed_sb_active:       RESB 1      ; 1 if vertical scrollbar visible
 
 ; ---- Overwrite mode ----
 overwrite_mode:     RESB 1      ; 0 = insert, 1 = overwrite
+
+; ---- Line ending mode ----
+line_ending:        RESB 1      ; 0 = CRLF (LE_CRLF), 1 = LF (LE_LF)
 
 ; ---- Document side panel ----
 panel_visible:      RESB 1      ; 0 = hidden, 1 = shown
