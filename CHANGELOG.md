@@ -74,6 +74,16 @@
   **N**ew, **O**pen, **C**lose, Clos**e** All, **S**ave, Save **A**s,
   Save A**l**l, Loa**d** Project, Save **P**roject, S**h**ell to DOS, E**x**it
 
+### Fix: Document Panel Garbage After Shell Swap Restore
+- **`shell_swap_in`** (`ed_shell.inc`): freshly allocated `doc_table_seg` was not
+  zeroed before reading back saved slots. Only `doc_count` slots (e.g. 152 bytes
+  for 1 document) were restored from the swap file; the remaining ~2900 bytes
+  contained uninitialized memory from DOS. If any garbage byte had `DOCF_OCCUPIED`
+  (bit 0) set, `ed_draw_panel` rendered it as an occupied slot with a junk
+  filename. Fixed by zeroing the entire 3 KB segment (`REP STOSW`,
+  `DOC_TBL_SEG_PARA * 8` words) immediately after allocation, matching the
+  `doc_table_init` pattern used at normal startup.
+
 ### BSS Additions (`TEDIT.ASM`)
 - `shell_dump_mode` (RESB 1) — `/d` flag state
 - `shell_recovering` (RESB 1) — orphan recovery in progress

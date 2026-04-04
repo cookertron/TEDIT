@@ -394,6 +394,16 @@ shell_swap_in PROC
     JC      .fatal
     MOV     [doc_table_seg], AX
 
+    ; Zero doc_table_seg so unoccupied slots have DOC_FLAGS=0
+    ; (only doc_count slots are restored from swap file)
+    PUSH    ES
+    MOV     ES, AX
+    XOR     DI, DI
+    XOR     AX, AX
+    MOV     CX, DOC_TBL_SEG_PARA * 8   ; paragraph count * 8 = word count
+    REP     STOSW
+    POP     ES
+
     ; shadow_seg
     MOV     BX, SHADOW_SEG_PARA
     MOV     AH, 48h
