@@ -962,6 +962,8 @@ ed_draw_panel PROC
     ; ---- Right shadow column ----
     ; Darken col PANEL_WIDTH, rows 1..ED_TEXT_ROWS
 .ep_shadow:
+    ; Restore DS before calling tui_darken_cell (needs DS=CS for row_offsets/shadow_seg)
+    POP     DS                      ; restore DS (pushed before doc_table_seg walk)
     MOV     DH, 1
     MOV     DL, PANEL_WIDTH
 .ep_shadow_loop:
@@ -972,7 +974,6 @@ ed_draw_panel PROC
     JMP     .ep_shadow_loop
 
 .ep_done:
-    POP     DS                      ; restore DS (pushed before doc_table_seg walk)
 .ep_done_early:
     RET
 

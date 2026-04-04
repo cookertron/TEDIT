@@ -118,31 +118,30 @@ doc_slot_init PROC
 
 .untitled:
     MOV     BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED | DOCF_UNTITLED
-    ; Generate "unsavedNN.txt" where NN = slot index + 1 (01-20)
+    ; Generate "nonameNN.txt" where NN = slot index + 1 (01-20)
     PUSH    DI
     PUSH    AX
     ADD     DI, DOC_FILENAME
-    MOV     BYTE ES:[DI+0], 'u'
-    MOV     BYTE ES:[DI+1], 'n'
-    MOV     BYTE ES:[DI+2], 's'
+    MOV     BYTE ES:[DI+0], 'n'
+    MOV     BYTE ES:[DI+1], 'o'
+    MOV     BYTE ES:[DI+2], 'n'
     MOV     BYTE ES:[DI+3], 'a'
-    MOV     BYTE ES:[DI+4], 'v'
+    MOV     BYTE ES:[DI+4], 'm'
     MOV     BYTE ES:[DI+5], 'e'
-    MOV     BYTE ES:[DI+6], 'd'
     INC     AL                      ; slot+1 → 1-20
     XOR     AH, AH
     MOV     CL, 10
     DIV     CL                      ; AL = tens, AH = ones
     ADD     AL, '0'
-    MOV     ES:[DI+7], AL
+    MOV     ES:[DI+6], AL
     MOV     AL, AH
     ADD     AL, '0'
-    MOV     ES:[DI+8], AL
-    MOV     BYTE ES:[DI+9], '.'
-    MOV     BYTE ES:[DI+10], 't'
-    MOV     BYTE ES:[DI+11], 'x'
-    MOV     BYTE ES:[DI+12], 't'
-    MOV     BYTE ES:[DI+13], 0
+    MOV     ES:[DI+7], AL
+    MOV     BYTE ES:[DI+8], '.'
+    MOV     BYTE ES:[DI+9], 't'
+    MOV     BYTE ES:[DI+10], 'x'
+    MOV     BYTE ES:[DI+11], 't'
+    MOV     BYTE ES:[DI+12], 0
     POP     AX
     POP     DI
     JMP     .gen_swap

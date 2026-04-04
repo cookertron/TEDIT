@@ -97,6 +97,28 @@
   this feature only works in DOSBox-X and real DOS. It compiles and is
   harmless under agent86.
 
+### Fix: Side Panel DS Clobber (`ed_draw.inc`)
+- **`ed_draw_panel`** called `tui_darken_cell` for the right shadow column
+  while DS still pointed to `doc_table_seg` (set earlier for slot access).
+  `tui_darken_cell` → `calc_vram_offset` reads `row_offsets` and `shadow_seg`
+  via DS, so it read garbage from the wrong segment. This corrupted memory and
+  caused a hang in DOSBox-X when pressing F1 to open the document panel.
+  Fixed by moving `POP DS` (restoring original DS) from `.ep_done` to the
+  start of `.ep_shadow`, before the `tui_darken_cell` loop.
+
+### Fix: INT 2Fh Handler Left Resident on Error Exit (`TEDIT.ASM`)
+- The early error paths (`.err_nofile`, `.err_nomem`, `.err_mixed`) exited via
+  `INT 20h` without restoring the INT 2Fh vector installed at startup. If TEDIT
+  failed to open a file (e.g. `TEDIT noexists.txt`), the multiplex handler
+  remained resident, causing subsequent runs to print "TEDIT is already running."
+  Fixed by routing all three error exits through a new `.err_exit` label that
+  restores INT 2Fh before terminating.
+
+### Changed: Untitled Document Naming (`ed_multidoc.inc`)
+- Renamed default filename from `unsavedNN.txt` to `nonameNN.txt`. The old name
+  had a 9-character basename ("unsaved01") which exceeds the DOS 8.3 limit.
+  "noname" (6 chars) + 2-digit number = 8 characters, fully 8.3 compliant.
+
 ### About Dialog
 - Version bumped from v0.65 to v0.68.
 

@@ -665,7 +665,7 @@ menu_new_handler:
     CALL    doc_slot_init
     INC     BYTE [doc_count]
 
-    ; ---- Copy generated "unsavedN.txt" to BSS filename ----
+    ; ---- Copy generated "nonameNN.txt" to BSS filename ----
     POP     AX
     PUSH    AX                      ; AL = new slot index (peek from stack)
     CALL    doc_get_slot            ; ES:DI = slot
@@ -3105,7 +3105,7 @@ main:
     MOV     DX, s_err_mixed
     MOV     AH, 09h
     INT     21h
-    INT     20h
+    JMP     .err_exit
 
 .no_file:
     CALL    ed_new_doc
@@ -3118,7 +3118,7 @@ main:
     MOV     BYTE [active_doc], 0
     MOV     BYTE [doc_count], 1
 
-    ; ---- Copy generated "unsaved1.txt" to BSS filename ----
+    ; ---- Copy generated "noname01.txt" to BSS filename ----
     MOV     ES, [doc_table_seg]
     MOV     SI, DOC_FILENAME        ; SI = offset within doc_table_seg
     PUSH    DS
@@ -3364,13 +3364,24 @@ main:
     MOV     DX, s_nofile
     MOV     AH, 09h
     INT     21h
-    INT     20h
+    JMP     .err_exit
 
 .err_nomem:
     MOV     DX, s_nomem
     MOV     AH, 09h
     INT     21h
     CALL    free_all
+    JMP     .err_exit
+
+; ---- Common early-error exit: restore INT 2Fh vector then terminate ----
+.err_exit:
+    PUSH    DS
+    MOV     DX, [_int2f_prev]
+    MOV     AX, [_int2f_prev + 2]
+    MOV     DS, AX
+    MOV     AX, 252Fh
+    INT     21h
+    POP     DS
     INT     20h
 
 ; ============================================================
