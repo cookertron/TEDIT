@@ -73,9 +73,9 @@ read_seg_data ENDP
 ; Clobbers: AX, BX, CX, DX, SI, DI, ES
 ; ============================================================
 shell_swap_out PROC
-    ; ---- CHDIR to startup dir ----
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
+    ; ---- CHDIR to startup_cwd\_TEDIT ----
+    CALL    swap_ensure_dir
+    JC      .fail                   ; path too long
 
     ; ---- Create swap file ----
     MOV     DX, s_shell_swap_name
@@ -264,6 +264,10 @@ shell_swap_out PROC
     MOV     AH, 3Eh
     INT     21h
 
+    ; ==== CHDIR back to startup directory (out of _TEDIT) ====
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
+
     ; ==== FREE ALL SEGMENTS ====
     ; Close file-backed original handle
     MOV     BX, [orig_file_hnd]
@@ -384,9 +388,9 @@ shell_swap_out ENDP
 ; Clobbers: AX, BX, CX, DX, SI, DI, ES
 ; ============================================================
 shell_swap_in PROC
-    ; ---- CHDIR to startup dir ----
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
+    ; ---- CHDIR to startup_cwd\_TEDIT ----
+    CALL    swap_ensure_dir
+    ; (ignore CF — dir must exist if swap was written; allocations proceed regardless)
 
     ; ---- Allocate shared segments ----
     ; doc_table_seg
@@ -649,12 +653,12 @@ shell_swap_in PROC
     MOV     AH, 3Eh
     INT     21h
 
-    ; CHDIR to startup for delete, then back to doc_cwd
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
+    ; CHDIR to _TEDIT for delete, then remove dir, then back to doc_cwd
+    CALL    swap_ensure_dir         ; CHDIR to startup_cwd\_TEDIT
     MOV     DX, s_shell_swap_name
     MOV     AH, 41h
     INT     21h                     ; ignore error
+    CALL    swap_remove_dir         ; try removing _TEDIT (if now empty)
     MOV     SI, doc_cwd
     CALL    swap_chdir
 
@@ -815,9 +819,9 @@ shell_swap_in ENDP
 ; Clobbers: AX, BX, CX, DX, SI
 ; ============================================================
 shell_check_orphan PROC
-    ; CHDIR to startup dir (already there early in main, but be safe)
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
+    ; CHDIR to startup_cwd\_TEDIT (if it exists)
+    CALL    swap_ensure_dir
+    JC      .no_orphan              ; no _TEDIT dir — no orphan
 
     ; Try to open the swap file
     MOV     DX, s_shell_swap_name
@@ -876,6 +880,9 @@ shell_check_orphan PROC
     CALL    doc_cleanup_orphans
 
 .no_orphan:
+    ; ---- CHDIR back to startup directory (may be in _TEDIT) ----
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
     CLC
     RET
 

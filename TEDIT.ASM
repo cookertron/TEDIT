@@ -141,6 +141,8 @@ s_swap_prompt:  DB 'Swap file detected. Restore[R] or Delete[D]? $'
 s_err_shl_swap:  DB 'Shell swap failed: disk error. Shell aborted.', 0
 s_err_shl_lost:  DB 'Swap file missing. Unsaved changes lost.', 0
 s_err_shl_fatal: DB 0Dh, 0Ah, 'FATAL: Out of memory restoring editor.', 0Dh, 0Ah, '$'
+s_swap_dirname:  DB '_TEDIT', 0
+s_err_path_long: DB 'Path too long for swap directory.', 0
 m_str_quit:     DB 'Exit', 0
 m_str_acc_cn:   DB 'Ctrl+N', 0
 m_str_acc_co:   DB 'Ctrl+O', 0
@@ -159,7 +161,7 @@ m_str_to_lf:     DB 'Convert to LF', 0
 m_str_to_crlf:   DB 'Convert to CRLF', 0
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.69', 0
+m_str_about_1:   DB 'TEDIT v0.70', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -617,6 +619,9 @@ menu_quit_handler:
     JMP     .quit_done              ; No or Cancel = abort quit
 
 .quit_now:
+    ; ---- CHDIR to _TEDIT dir for swap file deletion ----
+    CALL    swap_ensure_dir
+
     ; ---- Delete all swap files ----
     MOV     ES, [doc_table_seg]
     XOR     DI, DI
@@ -645,6 +650,9 @@ menu_quit_handler:
     INC     CL
     JMP     .quit_del
 .quit_del_done:
+
+    ; ---- Remove _TEDIT directory (now empty) ----
+    CALL    swap_remove_dir
 
     MOV     BYTE [fw_state + FW_RUNNING], 0
 
@@ -998,7 +1006,8 @@ menu_close_handler:
     ; ---- Free active document memory ----
     CALL    free_all
 
-    ; ---- Delete swap file if it exists ----
+    ; ---- Delete swap file if it exists (in _TEDIT dir) ----
+    CALL    swap_ensure_dir
     MOV     AL, [active_doc]
     CALL    doc_get_slot            ; ES:DI = slot in doc_table_seg
     MOV     DX, DI
@@ -1009,6 +1018,9 @@ menu_close_handler:
     MOV     AH, 41h
     INT     21h                     ; ignore error
     POP     DS
+    ; ---- CHDIR back to document directory ----
+    MOV     SI, doc_cwd
+    CALL    swap_chdir
 
     ; ---- Clear the slot ----
     MOV     AL, [active_doc]
@@ -1135,6 +1147,9 @@ menu_closeall_handler:
     JMP     .ca_prompt_loop
 
 .ca_do_close:
+    ; ---- CHDIR to _TEDIT dir for swap file deletion ----
+    CALL    swap_ensure_dir
+
     ; ---- Free all documents and their swap files ----
     XOR     CL, CL
 .ca_free_loop:
@@ -1171,6 +1186,9 @@ menu_closeall_handler:
     JMP     .ca_free_loop
 
 .ca_reset:
+    ; ---- Remove _TEDIT directory (now empty) ----
+    CALL    swap_remove_dir
+
     ; ---- Free active doc memory and create fresh untitled ----
     CALL    free_all
     CALL    ed_new_doc
@@ -1737,6 +1755,10 @@ menu_shell_handler:
     CALL    shell_swap_out
     JC      .sh_dump_failed
 .sh_no_dump:
+
+    ; ---- Ensure CWD is startup directory before EXEC ----
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
 
     ; ---- Clear screen and print shell message ----
     MOV     AX, 0003h               ; INT 10h: set mode 3 (80x25 text, clears screen)
@@ -2786,9 +2808,6 @@ main:
     JC      .err_nomem
     MOV     [shadow_seg], AX
 
-    ; ---- Clean up orphaned swap files from previous crashes ----
-    CALL    doc_cleanup_orphans
-
     ; ---- Initialize document table ----
     CALL    doc_table_init
     MOV     AX, DS
@@ -2812,6 +2831,10 @@ main:
     MOV     DI, doc_cwd
     MOV     CX, 68
     REP     MOVSB
+
+    ; ---- Clean up orphaned swap files from previous crashes ----
+    ; (must be after startup_cwd is built, since cleanup uses _TEDIT dir)
+    CALL    doc_cleanup_orphans
 
     ; ---- Initialize tab defaults (before parse_args may override) ----
     MOV     WORD [tab_width], ED_TAB_DEFAULT
@@ -3311,7 +3334,8 @@ main:
     ; ---- Run event loop ----
     CALL    tui_run
 
-    ; ---- Delete all swap files (safety net) ----
+    ; ---- Delete all swap files in _TEDIT (safety net) ----
+    CALL    swap_ensure_dir         ; CHDIR to startup_cwd\_TEDIT
     MOV     ES, [doc_table_seg]
     XOR     DI, DI
     XOR     CX, CX
@@ -3339,6 +3363,9 @@ main:
     INC     CL
     JMP     .exit_del_swp
 .exit_del_done:
+
+    ; ---- Remove _TEDIT directory (now empty) ----
+    CALL    swap_remove_dir
 
     ; ---- Cleanup and exit ----
     CALL    free_all

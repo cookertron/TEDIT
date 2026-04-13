@@ -1,5 +1,49 @@
 # TEDIT Changelog
 
+## v0.70.0 — Swap Directory (2026-04-13)
+
+### New Feature: Hidden `_TEDIT` Swap Directory
+- **All swap files now stored in `_TEDIT` subdirectory** under the startup
+  working directory, instead of cluttering the working directory itself.
+  Applies to both per-document swap files (`TEDT00NN.SWP`) and shell swap
+  (`TEDTSHEL.SWP`).
+- **Directory created on demand** via INT 21h AH=39h (MKDIR) when any swap
+  operation occurs. Hidden attribute (02h) applied via INT 21h AH=43h
+  (read-modify-write to preserve existing bits). Hidden attribute works on
+  real DOS/FAT; no-op on DOSBox-X with host-mounted directories.
+- **Clean exit removes directory**: quit handler, close-all handler, and the
+  exit safety net all delete swap files from `_TEDIT`, then RMDIR the
+  directory. On clean exit, no trace is left behind.
+- **Crash recovery searches `_TEDIT`**: `doc_cleanup_orphans` and
+  `shell_check_orphan` now look inside `_TEDIT` for orphaned swap files on
+  startup, matching the new location.
+- **CWD correctly restored** after all swap I/O operations. Every call to
+  `swap_ensure_dir` (which CHDIRs into `_TEDIT`) is paired with a CHDIR
+  back to `doc_cwd` or `startup_cwd`. Safety-net CHDIR to `startup_cwd`
+  added before EXEC in Shell to DOS handler.
+
+### New Procedures (`ed_multidoc.inc`)
+- `swap_ensure_dir` — CHDIRs to `startup_cwd`, MKDIRs `_TEDIT` (ignore
+  exists), sets hidden attribute (read-modify-write), CHDIRs into `_TEDIT`.
+  Returns CF=1 if directory cannot be entered.
+- `swap_remove_dir` — CHDIRs to `startup_cwd`, RMDIRs `_TEDIT` (ignore
+  error if non-empty or non-existent).
+
+### New String Constants (`TEDIT.ASM`)
+- `s_swap_dirname` — `"_TEDIT"` directory name
+- `s_err_path_long` — error message for path length exceeded
+
+### Modified: Startup Ordering (`TEDIT.ASM`)
+- `doc_cleanup_orphans` call moved after `startup_cwd` is built (was called
+  before `startup_cwd` was initialised, which would pass uninitialised memory
+  to `swap_ensure_dir`).
+
+### Bug Fix: CWD Leaks
+- `doc_swap_out` now CHDIRs back to `doc_cwd` after writing swap file.
+- `shell_check_orphan` now CHDIRs back to `startup_cwd` on all exit paths.
+- `menu_close_handler` now CHDIRs back to `doc_cwd` after deleting swap file.
+- `menu_shell_handler` CHDIRs to `startup_cwd` before EXEC (safety net).
+
 ## v0.69.0 — Line Ending Support (2026-04-04)
 
 ### New Feature: CRLF / LF Line Ending Detection & Conversion

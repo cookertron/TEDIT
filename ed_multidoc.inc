@@ -349,11 +349,9 @@ doc_swap_out PROC
     LOG "swap_hdr_pt_count", WORD [swap_hdr_buf + SWH_PT_COUNT]
     LOG "swap_hdr_add_used", WORD [swap_hdr_buf + SWH_ADD_USED]
 
-    ; ---- CHDIR to startup dir for swap file I/O ----
-    PUSH    SI
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
-    POP     SI
+    ; ---- CHDIR to startup_cwd\_TEDIT for swap file I/O ----
+    CALL    swap_ensure_dir
+    JC      .fail                   ; path too long or dir missing
 
     ; ---- Create/truncate swap file ----
     POP     DI                      ; restore slot offset
@@ -456,6 +454,12 @@ doc_swap_out PROC
     MOV     BX, [file_hnd]
     MOV     AH, 3Eh
     INT     21h
+
+    ; ---- CHDIR back to document directory (out of _TEDIT) ----
+    PUSH    SI
+    MOV     SI, doc_cwd
+    CALL    swap_chdir
+    POP     SI
 
     ; ---- Free document memory segments ----
     CALL    .free_doc_segs
@@ -568,13 +572,11 @@ doc_swap_in PROC
     CALL    doc_get_slot            ; ES:DI = slot pointer
     PUSH    DI                      ; save slot offset [BP-4]
 
-    ; ---- CHDIR to startup dir for swap file access ----
-    PUSH    SI
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
-    POP     SI
+    ; ---- CHDIR to startup_cwd\_TEDIT for swap file access ----
+    CALL    swap_ensure_dir
+    JC      .fail_noswap            ; path too long or dir missing
 
-    ; ---- Open swap file (in startup dir) ----
+    ; ---- Open swap file (in _TEDIT dir) ----
     MOV     DX, DI
     ADD     DX, DOC_SWAP_PATH       ; DX = offset in doc_table_seg
     PUSH    DS
@@ -770,11 +772,8 @@ doc_swap_in PROC
     MOV     AH, 3Eh
     INT     21h
 
-    ; ---- Delete swap file (CHDIR to startup, delete, CHDIR back) ----
-    PUSH    SI
-    MOV     SI, startup_cwd
-    CALL    swap_chdir
-    POP     SI
+    ; ---- Delete swap file (CHDIR to _TEDIT, delete, CHDIR back) ----
+    CALL    swap_ensure_dir         ; CHDIR to startup_cwd\_TEDIT
     POP     DI                      ; restore slot offset
     PUSH    DI
     MOV     DX, DI
@@ -1134,6 +1133,76 @@ swap_get_cwd PROC
 swap_get_cwd ENDP
 
 ; ============================================================
+; swap_ensure_dir — CHDIR to startup_cwd\_TEDIT, creating it
+;                   with hidden attribute if it doesn't exist.
+;
+; Checks that startup_cwd path length + 7 (\_TEDIT) <= 63.
+;
+; Output: CF=0 success (CWD is now _TEDIT), CF=1 path too long
+; Clobbers: AX, CX, DX, SI, DI
+; ============================================================
+swap_ensure_dir PROC
+    ; ---- Return to startup_cwd first ----
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
+
+    ; ---- MKDIR _TEDIT (ignore error = already exists) ----
+    MOV     DX, s_swap_dirname
+    MOV     AH, 39h
+    INT     21h
+    ; Ignore error — directory may already exist
+
+    ; ---- Set hidden attribute on _TEDIT ----
+    ; Read current attributes first, then OR in hidden bit.
+    ; This preserves existing bits (archive, etc.) and is more
+    ; compatible across DOS implementations.
+    MOV     DX, s_swap_dirname
+    XOR     AL, AL                  ; AL=0 = get attributes
+    MOV     AH, 43h
+    INT     21h
+    JC      .skip_attr              ; can't read — skip
+    OR      CX, 02h                 ; set hidden bit
+    MOV     DX, s_swap_dirname
+    MOV     AL, 1                   ; AL=1 = set attributes
+    MOV     AH, 43h
+    INT     21h                     ; ignore error
+.skip_attr:
+
+    ; ---- CHDIR into _TEDIT ----
+    MOV     DX, s_swap_dirname
+    MOV     AH, 3Bh
+    INT     21h
+    JC      .too_long               ; dir doesn't exist
+
+    CLC
+    RET
+
+.too_long:
+    STC
+    RET
+swap_ensure_dir ENDP
+
+; ============================================================
+; swap_remove_dir — Remove the _TEDIT directory under startup_cwd
+;
+; CHDIRs to startup_cwd first (so _TEDIT is not the CWD),
+; then removes the directory. Ignores errors (dir may not exist
+; or may not be empty).
+;
+; Clobbers: AX, DX, SI
+; ============================================================
+swap_remove_dir PROC
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
+
+    ; ---- RMDIR _TEDIT ----
+    MOV     DX, s_swap_dirname
+    MOV     AH, 3Ah
+    INT     21h                     ; ignore error
+    RET
+swap_remove_dir ENDP
+
+; ============================================================
 ; doc_cleanup_orphans — Delete any orphaned swap files
 ;
 ; Scans current directory for TEDT????.SWP and deletes them.
@@ -1144,6 +1213,10 @@ swap_get_cwd ENDP
 ; Clobbers: AX, CX, DX
 ; ============================================================
 doc_cleanup_orphans PROC
+    ; ---- CHDIR into startup_cwd\_TEDIT ----
+    CALL    swap_ensure_dir
+    JC      .done                   ; no dir or path too long — nothing to clean
+
     ; Set DTA to swap_hdr_buf (64 bytes, DTA needs 43)
     MOV     DX, swap_hdr_buf
     MOV     AH, 1Ah
@@ -1154,7 +1227,7 @@ doc_cleanup_orphans PROC
     XOR     CX, CX                  ; normal files only
     MOV     AH, 4Eh
     INT     21h
-    JC      .done                   ; no matches
+    JC      .cleanup_dir            ; no matches — try removing empty dir
 
 .del_loop:
     ; DTA+1Eh = found filename (13 bytes, 8.3 null-terminated)
@@ -1167,6 +1240,11 @@ doc_cleanup_orphans PROC
     MOV     AH, 4Fh
     INT     21h
     JNC     .del_loop               ; more matches
+
+.cleanup_dir:
+    ; CHDIR back to startup_cwd (leave _TEDIT for later use)
+    MOV     SI, startup_cwd
+    CALL    swap_chdir
 
 .done:
     RET
