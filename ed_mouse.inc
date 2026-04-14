@@ -172,21 +172,75 @@ tui_ed_mouse_press:
     ; ---- Reset insert tracking ----
     MOV     WORD [last_ins_pi], 0FFFFh
 
-    ; ---- Clear any existing selection ----
-    CALL    sel_clear
+    ; ---- Classify click: single / double / triple ----
+    ; Read BIOS tick counter (0040:006C)
+    PUSH    ES
+    MOV     DX, 0040h
+    MOV     ES, DX
+    MOV     DX, ES:[006Ch]         ; DX = current BIOS tick
+    POP     ES
 
-    ; ---- Save click position as potential anchor ----
+    ; Check if same position as last click
+    MOV     CX, [cur_line]
+    CMP     CX, [ms_ed_click_line]
+    JNE     .press_single_new
+    MOV     CX, [cur_col]
+    CMP     CX, [ms_ed_click_col]
+    JNE     .press_single_new
+
+    ; Same position — check timing
+    MOV     CX, DX
+    SUB     CX, [ms_ed_click_tick]
+    CMP     CX, DBLCLICK_TICKS
+    JA      .press_single_new
+
+    ; Within window + same position: increment count
+    CMP     BYTE [ms_ed_click_count], 2
+    JAE     .press_triclick
+    ; count was 1, now 2 → double click
+    MOV     BYTE [ms_ed_click_count], 2
+    MOV     [ms_ed_click_tick], DX
+    JMP     .press_dblclick
+
+.press_triclick:
+    ; count was 2, now 3 → triple click, reset cycle
+    MOV     BYTE [ms_ed_click_count], 0
+    MOV     [ms_ed_click_tick], DX
+    JMP     .press_triclick_action
+
+.press_single_new:
+    ; New position or timed out — record state, count = 1
+    MOV     [ms_ed_click_tick], DX
+    MOV     CX, [cur_line]
+    MOV     [ms_ed_click_line], CX
+    MOV     CX, [cur_col]
+    MOV     [ms_ed_click_col], CX
+    MOV     BYTE [ms_ed_click_count], 1
+
+    ; ---- Single click: clear selection, set anchor ----
+.press_single:
+    CALL    sel_clear
     MOV     AX, [cur_line]
     MOV     [sel_anchor_line], AX
     MOV     AX, [cur_col]
     MOV     [sel_anchor_col], AX
     ; NOTE: sel_active stays 0 — only drag activates selection
+    JMP     .press_click_done
 
-    ; ---- Start control drag (for continuous cursor tracking) ----
+    ; ---- Double click: select word ----
+.press_dblclick:
+    CALL    ed_select_word
+    JMP     .press_click_done
+
+    ; ---- Triple click: select line ----
+.press_triclick_action:
+    CALL    ed_select_line
+    JMP     .press_click_done
+
+    ; ---- Common tail: start drag tracking, request redraw ----
+.press_click_done:
     MOV     [mouse_state + MS_PRESSED], BX
     OR      BYTE [mouse_state + MS_FLAGS], MSF_CTRL_DRAG
-
-    ; ---- Request redraw ----
     MOV     BYTE [fw_state + FW_DIRTY], 1
 
     JMP     .press_done
@@ -305,6 +359,15 @@ tui_ed_mouse_drag:
     PUSH    CX
     PUSH    DX
     PUSH    SI
+
+    ; ---- Skip if mouse hasn't moved since last poll ----
+    MOV     AL, [mouse_state + MS_COL]
+    CMP     AL, [mouse_state + MS_PCOL]
+    JNE     .drag_moved
+    MOV     AL, [mouse_state + MS_ROW]
+    CMP     AL, [mouse_state + MS_PROW]
+    JE      .drag_done
+.drag_moved:
 
     ; Get top window struct
     MOV     AL, [fw_state + FW_TOPWIN]
@@ -452,3 +515,216 @@ tui_ed_mouse_drag:
     POP     BX
     POP     AX
     RET
+
+; ============================================================
+; is_word_char — Classify character as word or non-word
+;
+; Entry: AL = character byte
+; Exit:  CF = 0 if word char (A-Z, a-z, 0-9, _)
+;        CF = 1 if non-word char
+; Preserves: all registers except flags
+; ============================================================
+
+is_word_char PROC
+    CMP     AL, '_'
+    JE      .yes
+    CMP     AL, '0'
+    JB      .no
+    CMP     AL, '9'
+    JBE     .yes
+    CMP     AL, 'A'
+    JB      .no
+    CMP     AL, 'Z'
+    JBE     .yes
+    CMP     AL, 'a'
+    JB      .no
+    CMP     AL, 'z'
+    JBE     .yes
+.no:
+    STC
+    RET
+.yes:
+    CLC
+    RET
+is_word_char ENDP
+
+; ============================================================
+; ed_read_line_buf — Read current line content into word_scan_buf
+;
+; Reads up to 255 visible characters from cur_line into
+; word_scan_buf[]. Stops at line ending (CR/LF) or 255 chars.
+; Sets word_scan_len to the number of bytes read.
+;
+; Entry: cur_line set to target line
+; Exit:  word_scan_buf filled, word_scan_len set
+; Clobbers: AX, BX, CX, DX, SI, DI
+; ============================================================
+
+ed_read_line_buf PROC
+    MOV     AX, [cur_line]
+    CALL    seek_to_line            ; sets rnd_pi, rnd_off
+    MOV     DI, word_scan_buf       ; DI = write pointer into buf
+    XOR     CX, CX                  ; CX = bytes read so far
+
+.rlb_piece:
+    MOV     BX, [rnd_pi]
+    CMP     BX, [pt_count]
+    JAE     .rlb_done
+    PUSH    CX
+    CALL    resolve_piece           ; AX=seg, SI=base, DX=piece_len
+    POP     CX
+    JC      .rlb_done
+
+    PUSH    DS
+    MOV     DS, AX
+    ADD     DX, SI                  ; DX = piece end (absolute)
+    ADD     SI, CS:[rnd_off]        ; SI = start position in piece
+
+.rlb_byte:
+    CMP     SI, DX
+    JAE     .rlb_next_piece         ; piece exhausted
+    CMP     CX, 255
+    JAE     .rlb_done_ds            ; buffer full
+
+    MOV     AL, [SI]
+    CMP     AL, 0Dh
+    JE      .rlb_done_ds            ; CR = line end
+    CMP     AL, 0Ah
+    JE      .rlb_done_ds            ; LF = line end
+
+    MOV     CS:[DI], AL             ; write to buf (in CS/default segment)
+    INC     DI
+    INC     SI
+    INC     CX
+    JMP     .rlb_byte
+
+.rlb_next_piece:
+    POP     DS
+    INC     WORD [rnd_pi]
+    MOV     WORD [rnd_off], 0
+    JMP     .rlb_piece
+
+.rlb_done_ds:
+    POP     DS
+.rlb_done:
+    MOV     [word_scan_len], CX
+    RET
+ed_read_line_buf ENDP
+
+; ============================================================
+; ed_select_word — Select word at cursor position (double-click)
+;
+; Reads the current line into word_scan_buf, finds word
+; boundaries around cur_col, and sets up a selection spanning
+; the word. If cursor is on a non-word character, selects just
+; that single character.
+;
+; Entry: cur_line, cur_col set to clicked position
+; Exit:  sel_active = 1, sel_anchor_line/col and cur_col
+;        updated to span the word
+; Preserves: BX (editor control pointer)
+; ============================================================
+
+ed_select_word PROC
+    PUSH    BX
+
+    ; ---- Step 1: Read line content into scratch buffer ----
+    CALL    ed_read_line_buf        ; word_scan_buf filled, word_scan_len set
+
+    ; ---- Step 2: Validate cur_col is within line ----
+    MOV     AX, [cur_col]
+    CMP     AX, [word_scan_len]
+    JAE     .sw_at_eol
+
+    ; ---- Step 3: Read char under cursor, classify ----
+    MOV     SI, word_scan_buf
+    ADD     SI, AX                  ; SI = &word_scan_buf[cur_col]
+    MOV     AL, [SI]
+    CALL    is_word_char
+    JC      .sw_non_word
+
+    ; ---- Step 4a: Word char — scan left for word start ----
+    MOV     CX, [cur_col]          ; CX = col index (for left scan)
+    MOV     SI, word_scan_buf
+    ADD     SI, CX                  ; SI = &buf[cur_col]
+
+.sw_scan_left:
+    TEST    CX, CX
+    JZ      .sw_left_done           ; at column 0, stop
+    DEC     SI
+    MOV     AL, [SI]
+    CALL    is_word_char
+    JC      .sw_left_done           ; non-word char at [CX-1], word starts at CX
+    DEC     CX
+    JMP     .sw_scan_left
+
+.sw_left_done:
+    ; CX = word start column
+    MOV     [sel_anchor_col], CX
+    MOV     AX, [cur_line]
+    MOV     [sel_anchor_line], AX
+
+    ; ---- Step 4b: Scan right for word end ----
+    MOV     DX, [cur_col]          ; DX = col index (for right scan)
+    MOV     SI, word_scan_buf
+    ADD     SI, DX                  ; SI = &buf[cur_col]
+
+.sw_scan_right:
+    CMP     DX, [word_scan_len]
+    JAE     .sw_right_done          ; at line end, stop
+    MOV     AL, [SI]
+    CALL    is_word_char
+    JC      .sw_right_done          ; non-word char, stop
+    INC     SI
+    INC     DX
+    JMP     .sw_scan_right
+
+.sw_right_done:
+    ; DX = word end column (exclusive = first char past word)
+    MOV     [cur_col], DX
+    MOV     BYTE [sel_active], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    POP     BX
+    RET
+
+    ; ---- Non-word character: select single char ----
+.sw_non_word:
+    MOV     AX, [cur_line]
+    MOV     [sel_anchor_line], AX
+    MOV     AX, [cur_col]
+    MOV     [sel_anchor_col], AX
+    INC     AX
+    MOV     [cur_col], AX
+    MOV     BYTE [sel_active], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    POP     BX
+    RET
+
+    ; ---- Click at or past end of line: no selection ----
+.sw_at_eol:
+    POP     BX
+    RET
+
+ed_select_word ENDP
+
+; ============================================================
+; ed_select_line — Select entire line at cursor (triple-click)
+;
+; Sets selection anchor to (cur_line, 0) and cursor to
+; (cur_line, line_length). Activates selection.
+;
+; Entry: cur_line set to clicked line
+; Exit:  sel_active = 1, anchor at line start, cursor at line end
+; Preserves: BX (editor control pointer)
+; ============================================================
+
+ed_select_line PROC
+    MOV     AX, [cur_line]
+    MOV     [sel_anchor_line], AX
+    MOV     WORD [sel_anchor_col], 0
+    CALL    line_length             ; AX = visible chars on cur_line
+    MOV     [cur_col], AX
+    MOV     BYTE [sel_active], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    RET
+ed_select_line ENDP

@@ -157,11 +157,24 @@ m_str_view:      DB 'View', 0
 m_str_options:   DB 'Options', 0
 m_str_doclist:   DB 'Document List', 0
 m_str_acc_f1:    DB 'F1', 0
+m_str_clock:     DB 'Clock', 0
 m_str_to_lf:     DB 'Convert to LF', 0
 m_str_to_crlf:   DB 'Convert to CRLF', 0
+m_str_settings:  DB 'Settings...', 0
+s_stg_title:     DB 'Settings', 0
+s_stg_tabw:      DB 'Tab Width:', 0
+s_stg_tw2:       DB '2', 0
+s_stg_tw4:       DB '4', 0
+s_stg_tw8:       DB '8', 0
+s_stg_shdump:    DB 'Shell memory dump', 0
+s_stg_clock:     DB 'Show clock', 0
+cfg_path:        DB 'TEDIT.CFG', 0
+CFG_MAGIC        EQU 4543h          ; 'CE' (little-endian: 43h='C', 45h='E' for Config Editor)
+CFG_VERSION      EQU 3
+stg_tw_items:    DW s_stg_tw2, s_stg_tw4, s_stg_tw8
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.70', 0
+m_str_about_1:   DB 'TEDIT v0.71', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -314,24 +327,6 @@ m_file_entries:
     DW 0
     DB 0, 0
 
-    ; Load Project...
-    DW m_str_loadprj, menu_loadprj_handler
-    DB 3, 'D'
-    DW 0
-    DB 0, 0
-
-    ; Save Project...
-    DW m_str_saveprj, menu_saveprj_handler
-    DB 5, 'P'
-    DW 0
-    DB 0, 0
-
-    ; ---- divider ----
-    DW 0, 0
-    DB 0, 0
-    DW 0
-    DB 0, 0
-
     ; Shell to DOS
     DW m_str_shell, menu_shell_handler
     DB 1, 'H'
@@ -349,6 +344,48 @@ m_file_entries:
     DB 1, 'X'
     DW m_str_acc_ax
     DB 2Dh, 0                       ; accelkey=2Dh (Alt+X global dispatch)
+
+    ; ---- Recent files (divider + 7 slots, patched at runtime) ----
+m_recent_div:
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+m_recent_0:
+    DW 0, recent_handler_0
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_1:
+    DW 0, recent_handler_1
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_2:
+    DW 0, recent_handler_2
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_3:
+    DW 0, recent_handler_3
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_4:
+    DW 0, recent_handler_4
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_5:
+    DW 0, recent_handler_5
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
+m_recent_6:
+    DW 0, recent_handler_6
+    DB 0FFh, 0
+    DW 0
+    DB 0, 0
 
 m_edit_entries:
     ; Undo — hotidx=0, hotkey='U'
@@ -449,11 +486,41 @@ m_view_entries:
     DB 0, 0
 
 m_options_entries:
+    ; Settings...
+    DW m_str_settings, menu_settings_handler
+    DB 0, 'S'
+    DW 0
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
     ; Convert to LF / Convert to CRLF (dynamic label)
 m_le_label:
     DW m_str_to_lf
     DW menu_line_ending_handler
     DB 0, 'C'
+    DW 0
+    DB 0, 0
+
+    ; ---- divider ----
+    DW 0, 0
+    DB 0, 0
+    DW 0
+    DB 0, 0
+
+    ; Load Project...
+    DW m_str_loadprj, menu_loadprj_handler
+    DB 0, 'L'
+    DW 0
+    DB 0, 0
+
+    ; Save Project...
+    DW m_str_saveprj, menu_saveprj_handler
+    DB 5, 'P'
     DW 0
     DB 0, 0
 
@@ -467,7 +534,8 @@ m_menu_items:
     DW m_str_file
     DB 0, 6                         ; MI_X=0, MI_W=6
     DW m_file_entries
-    DB 15, 28                       ; MI_ECOUNT=15 (11+4 dividers), MI_DDW=28
+m_file_ecount:
+    DB 12, 28                       ; MI_ECOUNT=12 (base), MI_DDW=28
     DB 0, 21h                       ; MI_HOTIDX=0, MI_ALTKEY=21h (Alt+F)
 
     ; Edit menu (NEW)
@@ -488,7 +556,7 @@ m_menu_items:
     DW m_str_options
     DB 18, 9                        ; MI_X=18, MI_W=9
     DW m_options_entries
-    DB 1, 22                        ; MI_ECOUNT=1, MI_DDW=22
+    DB 6, 22                        ; MI_ECOUNT=6 (4+2 dividers), MI_DDW=22
     DB 0, 18h                       ; MI_HOTIDX=0 ('O'), MI_ALTKEY=18h (Alt+O)
 
     DW m_str_info
@@ -855,6 +923,9 @@ menu_open_handler:
     ; ---- Load file into current slot ----
     CALL    ed_load_file
     JC      .open_load_failed
+
+    ; ---- Add to recent files list ----
+    CALL    recent_add
 
     ; ---- Update document table slot with new filename ----
     MOV     AL, [active_doc]
@@ -2554,6 +2625,969 @@ menu_doclist_handler:
     RET
 
 ; ============================================================
+; menu_clock_handler — Toggle status bar clock display
+; ============================================================
+menu_clock_handler:
+    XOR     BYTE [clock_visible], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    RET
+
+; ============================================================
+; menu_settings_handler — Show Settings dialog
+; ============================================================
+menu_settings_handler:
+    PushAll
+
+    ; ---- Determine which radio to pre-select from tab_width ----
+    ; Default all off, then set the matching one
+    MOV     BYTE [_stg_r2], 0
+    MOV     BYTE [_stg_r4], 0
+    MOV     BYTE [_stg_r8], 0
+    CMP     WORD [tab_width], 2
+    JE      .stg_pre_2
+    CMP     WORD [tab_width], 4
+    JE      .stg_pre_4
+    MOV     BYTE [_stg_r8], 1
+    JMP     .stg_pre_done
+.stg_pre_2:
+    MOV     BYTE [_stg_r2], 1
+    JMP     .stg_pre_done
+.stg_pre_4:
+    MOV     BYTE [_stg_r4], 1
+.stg_pre_done:
+
+    ; ---- Label: "Tab Width:" at row 0 ----
+    MOV     DI, dlg_label
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_LABEL
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 0
+    MOV     BYTE [DI + CTRL_W], 10
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_chk1
+    MOV     WORD [DI + CTRL_TEXT], s_stg_tabw
+    MOV     BYTE [DI + CTRL_ATTR], CLR_LABEL
+    MOV     BYTE [DI + CTRL_FATTR], CLR_LABEL
+    MOV     WORD [DI + CTRL_HANDLER], 0
+
+    ; ---- Radio 1: "2" at row 1 ----
+    MOV     DI, dlg_chk1
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_RADIO
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 1
+    MOV     BYTE [DI + CTRL_W], 7
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_chk2
+    MOV     WORD [DI + CTRL_TEXT], s_stg_tw2
+    MOV     BYTE [DI + CTRL_ATTR], CLR_CHECKBOX
+    MOV     BYTE [DI + CTRL_FATTR], CLR_CB_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], 0
+    MOV     AL, [_stg_r2]
+    MOV     [DI + CTRL_CB_STATE], AL
+
+    ; ---- Radio 2: "4" at row 2 ----
+    MOV     DI, dlg_chk2
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_RADIO
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 2
+    MOV     BYTE [DI + CTRL_W], 7
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_chk3
+    MOV     WORD [DI + CTRL_TEXT], s_stg_tw4
+    MOV     BYTE [DI + CTRL_ATTR], CLR_CHECKBOX
+    MOV     BYTE [DI + CTRL_FATTR], CLR_CB_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], 0
+    MOV     AL, [_stg_r4]
+    MOV     [DI + CTRL_CB_STATE], AL
+
+    ; ---- Radio 3: "8" at row 3 ----
+    MOV     DI, dlg_chk3
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_RADIO
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 3
+    MOV     BYTE [DI + CTRL_W], 7
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_textbox
+    MOV     WORD [DI + CTRL_TEXT], s_stg_tw8
+    MOV     BYTE [DI + CTRL_ATTR], CLR_CHECKBOX
+    MOV     BYTE [DI + CTRL_FATTR], CLR_CB_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], 0
+    MOV     AL, [_stg_r8]
+    MOV     [DI + CTRL_CB_STATE], AL
+
+    ; ---- Checkbox: "Shell memory dump" at row 5 ----
+    MOV     DI, dlg_textbox
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_CHECKBOX
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 5
+    MOV     BYTE [DI + CTRL_W], 21
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_textbox2
+    MOV     WORD [DI + CTRL_TEXT], s_stg_shdump
+    MOV     BYTE [DI + CTRL_ATTR], CLR_CHECKBOX
+    MOV     BYTE [DI + CTRL_FATTR], CLR_CB_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], 0
+    MOV     AL, [shell_dump_mode]
+    MOV     [DI + CTRL_CB_STATE], AL
+
+    ; ---- Checkbox: "Show clock" at row 6 ----
+    MOV     DI, dlg_textbox2
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_CHECKBOX
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 6
+    MOV     BYTE [DI + CTRL_W], 14
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_btn1
+    MOV     WORD [DI + CTRL_TEXT], s_stg_clock
+    MOV     BYTE [DI + CTRL_ATTR], CLR_CHECKBOX
+    MOV     BYTE [DI + CTRL_FATTR], CLR_CB_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], 0
+    MOV     AL, [clock_visible]
+    MOV     [DI + CTRL_CB_STATE], AL
+
+    ; ---- OK button at row 8 ----
+    MOV     DI, dlg_btn1
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 1
+    MOV     BYTE [DI + CTRL_Y], 8
+    MOV     BYTE [DI + CTRL_W], DLG_BTN_OK_W
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], dlg_btn2
+    MOV     WORD [DI + CTRL_TEXT], dlg_str_ok
+    MOV     BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV     BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], dlg_handler_ok
+
+    ; ---- Cancel button ----
+    MOV     DI, dlg_btn2
+    MOV     BYTE [DI + CTRL_TYPE], CTYPE_BUTTON
+    MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE + CTRLF_ENABLED + CTRLF_FOCUSABLE
+    MOV     BYTE [DI + CTRL_X], 11
+    MOV     BYTE [DI + CTRL_Y], 8
+    MOV     BYTE [DI + CTRL_W], DLG_BTN_CAN_W
+    MOV     BYTE [DI + CTRL_H], 1
+    MOV     WORD [DI + CTRL_NEXT], 0
+    MOV     WORD [DI + CTRL_TEXT], dlg_str_cancel
+    MOV     BYTE [DI + CTRL_ATTR], CLR_BTN
+    MOV     BYTE [DI + CTRL_FATTR], CLR_BTN_FOCUS
+    MOV     WORD [DI + CTRL_HANDLER], dlg_handler_cancel
+
+    ; ---- Window template ----
+    ; Interior: 23 wide, 10 rows → WIN_W=25, WIN_H=12
+    MOV     DI, dlg_tmpl
+    MOV     BYTE [DI + WIN_FLAGS], WINF_VISIBLE + WINF_BORDER + WINF_TITLE + WINF_SHADOW
+    MOV     BYTE [DI + WIN_X], (SCR_W - 25) / 2
+    MOV     BYTE [DI + WIN_Y], (SCR_H - 12) / 2
+    MOV     BYTE [DI + WIN_W], 25
+    MOV     BYTE [DI + WIN_H], 12
+    MOV     BYTE [DI + WIN_ATTR], CLR_WIN_BG
+    MOV     BYTE [DI + WIN_BATTR], CLR_WIN_BDR
+    MOV     BYTE [DI + WIN_TATTR], CLR_WIN_TTL
+    MOV     WORD [DI + WIN_TITLE], s_stg_title
+    MOV     WORD [DI + WIN_FIRST], dlg_label
+    MOV     WORD [DI + WIN_FOCUS], dlg_chk1
+    MOV     WORD [DI + WIN_HANDLER], 0
+    MOV     BYTE [DI + WIN_ZORDER], 0
+    MOV     BYTE [DI + WIN_ID], 0
+    MOV     BYTE [DI + WIN_SCROLLX], 0
+    MOV     BYTE [DI + WIN_SCROLLY], 0
+
+    CALL    tui_dlg_run_modal
+
+    ; ---- Apply settings if OK ----
+    CMP     BYTE [fw_state + FW_DLG_RESULT], DLG_OK
+    JNE     .stg_done
+
+    ; Read radio button states → set tab_width and tab_mask
+    CMP     BYTE [dlg_chk1 + CTRL_CB_STATE], 1
+    JE      .stg_tab2
+    CMP     BYTE [dlg_chk2 + CTRL_CB_STATE], 1
+    JE      .stg_tab4
+    ; Default: 8
+    MOV     WORD [tab_width], 8
+    MOV     WORD [tab_mask], 7
+    JMP     .stg_apply
+.stg_tab2:
+    MOV     WORD [tab_width], 2
+    MOV     WORD [tab_mask], 1
+    JMP     .stg_apply
+.stg_tab4:
+    MOV     WORD [tab_width], 4
+    MOV     WORD [tab_mask], 3
+.stg_apply:
+    ; Read shell dump checkbox
+    MOV     AL, [dlg_textbox + CTRL_CB_STATE]
+    MOV     [shell_dump_mode], AL
+
+    ; Read clock checkbox — controls both session and startup
+    MOV     AL, [dlg_textbox2 + CTRL_CB_STATE]
+    MOV     [clock_on_start], AL
+    MOV     [clock_visible], AL
+
+    CALL    cfg_save
+    MOV     BYTE [meta_dirty], 1
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+
+.stg_done:
+    PopAll
+    RET
+
+; ============================================================
+; cfg_save — Write settings to TEDIT.CFG
+;
+; Format v3: [magic:2][ver:1][tab:1][clock:1][shdump:1]
+;            [recent_count:1][recent_files: count*128]
+; ============================================================
+cfg_save PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+
+    ; Build header
+    MOV     WORD [cfg_buf], CFG_MAGIC
+    MOV     BYTE [cfg_buf + 2], CFG_VERSION
+    MOV     AL, [tab_width]
+    MOV     [cfg_buf + 3], AL
+    MOV     AL, [clock_on_start]
+    MOV     [cfg_buf + 4], AL
+    MOV     AL, [shell_dump_mode]
+    MOV     [cfg_buf + 5], AL
+    MOV     AL, [recent_count]
+    MOV     [cfg_buf + 6], AL
+
+    ; Create file
+    MOV     AH, 3Ch
+    XOR     CX, CX                     ; normal attributes
+    MOV     DX, cfg_path
+    INT     21h
+    JC      .cs_done                    ; create failed, skip silently
+
+    MOV     BX, AX                      ; BX = file handle
+
+    ; Write 7-byte header
+    MOV     AH, 40h
+    MOV     CX, 7
+    MOV     DX, cfg_buf
+    INT     21h
+    JC      .cs_close
+
+    ; Write recent files (count * 128 bytes)
+    MOV     AL, [recent_count]
+    XOR     AH, AH
+    TEST    AL, AL
+    JZ      .cs_close
+    MOV     CL, RECENT_SLOT_SZ
+    MUL     CL                          ; AX = count * 128
+    MOV     CX, AX
+    MOV     DX, recent_files
+    MOV     AH, 40h
+    INT     21h
+
+.cs_close:
+    ; Close file
+    MOV     AH, 3Eh
+    INT     21h
+
+.cs_done:
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    RET
+cfg_save ENDP
+
+; ============================================================
+; cfg_load — Read settings from TEDIT.CFG
+;
+; Accepts version 2 (6 bytes, no recent) or version 3 (7-byte
+; header + recent files). Silently ignores missing/corrupt file.
+; ============================================================
+cfg_load PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+
+    ; Open file (read-only)
+    MOV     AH, 3Dh
+    MOV     AL, 0                       ; read-only
+    MOV     DX, cfg_path
+    INT     21h
+    JC      .cl_done                    ; file not found, use defaults
+
+    MOV     BX, AX                      ; BX = file handle
+
+    ; Read 7-byte header (v3) — v2 files will yield 6 bytes
+    MOV     AH, 3Fh
+    MOV     CX, 7
+    MOV     DX, cfg_buf
+    INT     21h
+    MOV     CX, AX                      ; CX = bytes read (keep handle open)
+
+    ; Validate magic
+    CMP     CX, 6
+    JB      .cl_close                   ; too short
+    CMP     WORD [cfg_buf], CFG_MAGIC
+    JNE     .cl_close                   ; bad magic
+
+    ; Check version: accept 2 or 3
+    MOV     AL, [cfg_buf + 2]
+    CMP     AL, 2
+    JE      .cl_apply_header
+    CMP     AL, 3
+    JE      .cl_apply_header
+    JMP     .cl_close                   ; unknown version
+
+.cl_apply_header:
+    ; Apply tab_width (validate: must be 2, 4, or 8)
+    MOV     AL, [cfg_buf + 3]
+    CMP     AL, 2
+    JE      .cl_tw_ok
+    CMP     AL, 4
+    JE      .cl_tw_ok
+    CMP     AL, 8
+    JE      .cl_tw_ok
+    JMP     .cl_clock                   ; invalid tab_width, skip
+.cl_tw_ok:
+    XOR     AH, AH
+    MOV     [tab_width], AX
+    DEC     AX
+    MOV     [tab_mask], AX
+
+.cl_clock:
+    ; Apply clock startup preference (validate: must be 0 or 1)
+    MOV     AL, [cfg_buf + 4]
+    CMP     AL, 1
+    JA      .cl_shdump                  ; invalid, skip
+    MOV     [clock_on_start], AL
+    MOV     [clock_visible], AL
+
+.cl_shdump:
+    ; Apply shell_dump_mode (validate: must be 0 or 1)
+    MOV     AL, [cfg_buf + 5]
+    CMP     AL, 1
+    JA      .cl_recent                  ; invalid, skip
+    MOV     [shell_dump_mode], AL
+
+.cl_recent:
+    ; Read recent files (version 3 only, need 7 bytes read)
+    CMP     BYTE [cfg_buf + 2], 3
+    JNE     .cl_close                   ; v2: no recent data
+    CMP     CX, 7
+    JB      .cl_close                   ; short read (no count byte)
+
+    ; Validate count (byte 6)
+    MOV     AL, [cfg_buf + 6]
+    CMP     AL, RECENT_MAX
+    JA      .cl_close                   ; invalid count
+    MOV     [recent_count], AL
+    TEST    AL, AL
+    JZ      .cl_close                   ; 0 entries, nothing to read
+
+    ; Read count * 128 bytes into recent_files
+    XOR     AH, AH
+    MOV     CL, RECENT_SLOT_SZ
+    MUL     CL                          ; AX = bytes to read
+    MOV     CX, AX
+    MOV     DX, recent_files
+    MOV     AH, 3Fh
+    INT     21h
+    ; Validate read length
+    CMP     AX, CX
+    JNE     .cl_recent_fail             ; short read: clear recent list
+
+    ; Validate each entry: must be non-empty with null within 127 bytes
+    PUSH    BX                          ; save file handle
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX                      ; ES = DS for SCASB and MOVSB
+    XOR     CX, CX                      ; CX = validate index
+.cl_validate:
+    CMP     CL, [recent_count]
+    JAE     .cl_validate_done
+    ; Compute slot address: SI = recent_files + CX * 128
+    MOV     AX, CX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL
+    MOV     SI, AX
+    ADD     SI, recent_files
+    ; Check non-empty (first byte != 0)
+    CMP     BYTE [SI], 0
+    JE      .cl_entry_bad
+    ; Check null-terminated within 127 bytes
+    PUSH    CX
+    MOV     DI, SI
+    MOV     CX, 127
+    XOR     AL, AL
+    CLD
+    REPNE   SCASB
+    POP     CX
+    JNE     .cl_entry_bad               ; no null found
+    INC     CX
+    JMP     .cl_validate
+
+.cl_entry_bad:
+    ; Remove entry CX by shifting remaining up and decrementing count
+    MOV     AL, CL
+    MOV     DL, [recent_count]
+    XOR     DH, DH
+    PUSH    CX
+    MOV     AX, CX
+    INC     AX
+.cl_compact:
+    CMP     AX, DX
+    JAE     .cl_compact_done
+    PUSH    AX
+    PUSH    DX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL
+    MOV     SI, AX
+    ADD     SI, recent_files
+    MOV     DI, SI
+    SUB     DI, RECENT_SLOT_SZ
+    MOV     CX, RECENT_SLOT_SZ
+    REP     MOVSB
+    POP     DX
+    POP     AX
+    INC     AX
+    JMP     .cl_compact
+.cl_compact_done:
+    DEC     BYTE [recent_count]
+    POP     CX                          ; re-check same index (new entry shifted in)
+    JMP     .cl_validate
+
+.cl_validate_done:
+    POP     ES
+    POP     BX                          ; restore file handle
+    CALL    recent_build_labels
+    JMP     .cl_close
+
+.cl_recent_fail:
+    MOV     BYTE [recent_count], 0      ; corrupt: reset
+
+.cl_close:
+    MOV     AH, 3Eh
+    INT     21h
+
+.cl_done:
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    RET
+cfg_load ENDP
+
+; ============================================================
+; recent_add — Add [filename] to recent files list
+;
+; Deduplicates (if already present, removes old entry first),
+; shifts all entries down by one slot, inserts [filename] at
+; index 0. Caps at RECENT_MAX entries. Skips empty filenames.
+; Calls recent_build_labels after updating the list.
+; Preserves all registers.
+; ============================================================
+
+recent_add PROC
+    PushAll
+    PUSH    ES
+    MOV     AX, DS
+    MOV     ES, AX                      ; ES = DS for REP MOVSB
+
+    ; ---- Skip if filename is empty ----
+    CMP     BYTE [filename], 0
+    JE      .ra_done
+
+    ; ---- Step 1: Check for duplicate ----
+    XOR     CX, CX                      ; CX = scan index
+    MOV     DL, [recent_count]
+    XOR     DH, DH                      ; DX = count
+
+.ra_dedup_loop:
+    CMP     CX, DX
+    JAE     .ra_dedup_done
+
+    ; Compute slot address: DI = recent_files + CX * 128
+    MOV     AX, CX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL
+    MOV     DI, AX
+    ADD     DI, recent_files            ; DI = slot[CX]
+
+    ; Compare with [filename]
+    MOV     SI, filename
+    PUSH    CX
+    PUSH    DX
+.ra_cmp:
+    MOV     AL, [SI]
+    MOV     AH, [DI]
+    CMP     AL, AH
+    JNE     .ra_cmp_diff
+    TEST    AL, AL
+    JZ      .ra_cmp_match               ; both null → match
+    INC     SI
+    INC     DI
+    JMP     .ra_cmp
+.ra_cmp_diff:
+    POP     DX
+    POP     CX
+    INC     CX
+    JMP     .ra_dedup_loop
+
+.ra_cmp_match:
+    ; Found duplicate at index CX — remove it by shifting entries up
+    POP     DX                          ; DX = count
+    POP     CX                          ; CX = dup index
+    ; Shift slots CX+1..count-1 into CX..count-2
+    MOV     AX, CX                      ; AX = source start index (CX+1)
+    INC     AX
+.ra_shift_up:
+    CMP     AX, DX
+    JAE     .ra_shift_up_done
+    ; Copy slot[AX] → slot[AX-1]
+    PUSH    AX
+    PUSH    DX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL                          ; AX = src offset
+    MOV     SI, AX
+    ADD     SI, recent_files
+    MOV     DI, SI
+    SUB     DI, RECENT_SLOT_SZ          ; DI = dst (one slot earlier)
+    MOV     CX, RECENT_SLOT_SZ
+    CLD
+    REP     MOVSB
+    POP     DX
+    POP     AX
+    INC     AX
+    JMP     .ra_shift_up
+.ra_shift_up_done:
+    DEC     DX                          ; count-- (removed dup)
+    MOV     [recent_count], DL
+
+.ra_dedup_done:
+    ; ---- Step 2: Shift all entries down by one slot ----
+    ; Move slots count-1..0 → count..1 (work backward to avoid overwrite)
+    MOV     DL, [recent_count]
+    XOR     DH, DH                      ; DX = current count
+
+    ; Cap: if count >= RECENT_MAX, we'll overwrite the last slot
+    MOV     CX, DX                      ; CX = slots to shift
+    CMP     CX, RECENT_MAX
+    JB      .ra_shift_cap_ok
+    MOV     CX, RECENT_MAX - 1          ; only shift 6 slots (7th falls off)
+.ra_shift_cap_ok:
+    ; Shift from index CX-1 down to 0, moving each to index+1
+    JCXZ    .ra_shift_done              ; count=0, nothing to shift
+    MOV     BX, CX                      ; BX = index of last slot to shift (CX-1+1=CX is dst)
+.ra_shift_down:
+    DEC     BX                          ; BX = source index
+    ; Copy slot[BX] → slot[BX+1]
+    PUSH    BX
+    PUSH    CX
+    MOV     AX, BX
+    MOV     CL, RECENT_SLOT_SZ
+    MUL     CL                          ; AX = src offset
+    MOV     SI, AX
+    ADD     SI, recent_files
+    MOV     DI, SI
+    ADD     DI, RECENT_SLOT_SZ          ; DI = dst (one slot later)
+    MOV     CX, RECENT_SLOT_SZ
+    CLD
+    REP     MOVSB
+    POP     CX
+    POP     BX
+    TEST    BX, BX
+    JNZ     .ra_shift_down
+.ra_shift_done:
+
+    ; ---- Step 3: Copy [filename] to slot 0 ----
+    MOV     SI, filename
+    MOV     DI, recent_files
+    MOV     CX, RECENT_SLOT_SZ
+.ra_copy:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     DI
+    TEST    AL, AL
+    JZ      .ra_copy_pad
+    INC     SI
+    DEC     CX
+    JNZ     .ra_copy
+    JMP     .ra_copy_done
+.ra_copy_pad:
+    ; Zero-fill remainder of slot
+    DEC     CX
+    JCXZ    .ra_copy_done
+    XOR     AL, AL
+    REP     STOSB
+.ra_copy_done:
+
+    ; ---- Step 4: Increment count (cap at RECENT_MAX) ----
+    MOV     AL, [recent_count]
+    CMP     AL, RECENT_MAX
+    JAE     .ra_count_ok
+    INC     AL
+    MOV     [recent_count], AL
+.ra_count_ok:
+
+    ; ---- Step 5: Rebuild display labels, update menu, save config ----
+    CALL    recent_build_labels
+    CALL    recent_update_menu
+    CALL    cfg_save
+
+.ra_done:
+    POP     ES
+    PopAll
+    RET
+recent_add ENDP
+
+; ============================================================
+; recent_build_labels — Build display labels from recent_files
+;
+; For each entry 0..recent_count-1, extracts the basename from
+; the full path and formats "N BASENAME" (max 30 chars + null)
+; into recent_labels[I * RECENT_LBL_SZ].
+; Preserves all registers.
+; ============================================================
+
+recent_build_labels PROC
+    PushAll
+
+    XOR     CX, CX                      ; CX = entry index
+    MOV     DL, [recent_count]
+    XOR     DH, DH                      ; DX = count
+
+.rbl_loop:
+    CMP     CX, DX
+    JAE     .rbl_done
+
+    ; ---- Compute source slot: SI = recent_files + CX * 128 ----
+    MOV     AX, CX
+    PUSH    DX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL
+    POP     DX
+    MOV     SI, AX
+    ADD     SI, recent_files
+
+    ; ---- Compute dest label: DI = recent_labels + CX * 32 ----
+    MOV     AX, CX
+    PUSH    DX
+    MOV     BL, RECENT_LBL_SZ
+    MUL     BL
+    POP     DX
+    MOV     DI, AX
+    ADD     DI, recent_labels
+
+    ; ---- Write index digit: "1"-"7" ----
+    MOV     AL, CL
+    ADD     AL, '1'
+    MOV     [DI], AL
+    INC     DI
+    MOV     BYTE [DI], ' '
+    INC     DI
+
+    ; ---- Find basename: scan SI for last '\' ----
+    PUSH    SI                          ; save path start
+    MOV     BX, SI                      ; BX = basename candidate (default = start)
+.rbl_scan:
+    MOV     AL, [SI]
+    TEST    AL, AL
+    JZ      .rbl_scan_done
+    CMP     AL, '\'
+    JNE     .rbl_scan_next
+    MOV     BX, SI
+    INC     BX                          ; basename starts after '\'
+.rbl_scan_next:
+    INC     SI
+    JMP     .rbl_scan
+.rbl_scan_done:
+    POP     SI                          ; discard saved start
+
+    ; ---- Copy basename to label (max RECENT_LBL_SZ - 3 chars) ----
+    MOV     SI, BX                      ; SI = basename
+    MOV     AH, RECENT_LBL_SZ - 3      ; max chars to copy
+.rbl_copy:
+    MOV     AL, [SI]
+    TEST    AL, AL
+    JZ      .rbl_null
+    MOV     [DI], AL
+    INC     DI
+    INC     SI
+    DEC     AH
+    JNZ     .rbl_copy
+.rbl_null:
+    MOV     BYTE [DI], 0               ; null-terminate
+
+    INC     CX
+    JMP     .rbl_loop
+
+.rbl_done:
+    PopAll
+    RET
+recent_build_labels ENDP
+
+; ============================================================
+; recent_remove — Remove entry at index AL from recent list
+;
+; Shifts entries above the removed index up by one slot,
+; decrements recent_count, rebuilds labels/menu, saves config.
+; Entry: AL = index to remove (0-based, must be < recent_count)
+; Preserves all registers.
+; ============================================================
+
+recent_remove PROC
+    PushAll
+    PUSH    ES
+    PUSH    AX
+    MOV     AX, DS
+    MOV     ES, AX                      ; ES = DS for REP MOVSB
+    POP     AX
+    XOR     AH, AH
+    MOV     CX, AX                      ; CX = index to remove
+    MOV     DL, [recent_count]
+    XOR     DH, DH                      ; DX = count
+
+    ; ---- Shift slots CX+1..count-1 into CX..count-2 ----
+    MOV     AX, CX
+    INC     AX                          ; AX = first source index
+.rr_shift:
+    CMP     AX, DX
+    JAE     .rr_shift_done
+    PUSH    AX
+    PUSH    DX
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL                          ; AX = src byte offset
+    MOV     SI, AX
+    ADD     SI, recent_files
+    MOV     DI, SI
+    SUB     DI, RECENT_SLOT_SZ          ; DI = dst (one slot earlier)
+    MOV     CX, RECENT_SLOT_SZ
+    CLD
+    REP     MOVSB
+    POP     DX
+    POP     AX
+    INC     AX
+    JMP     .rr_shift
+.rr_shift_done:
+    DEC     BYTE [recent_count]
+    CALL    recent_build_labels
+    CALL    recent_update_menu
+    CALL    cfg_save
+    POP     ES
+    PopAll
+    RET
+recent_remove ENDP
+
+; ============================================================
+; recent_update_menu — Patch File menu MI_ECOUNT and MDE_TEXT
+;
+; If recent_count == 0: MI_ECOUNT = FILE_MENU_BASE (hide slots).
+; If recent_count > 0:  MI_ECOUNT = FILE_MENU_BASE + 1 + count
+;   (divider + count entries). Patches MDE_TEXT for each visible
+;   recent entry to point at its label in recent_labels[].
+; Preserves all registers.
+; ============================================================
+
+recent_update_menu PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DI
+
+    MOV     AL, [recent_count]
+    TEST    AL, AL
+    JZ      .rum_hide
+
+    ; ---- Show: MI_ECOUNT = base + 1 (divider) + count ----
+    ADD     AL, FILE_MENU_BASE + 1
+    MOV     [m_file_ecount], AL
+
+    ; ---- Patch MDE_TEXT for each visible entry ----
+    XOR     CX, CX                      ; CX = index
+    MOV     DI, m_recent_0              ; DI = first recent MDE slot
+.rum_patch:
+    CMP     CL, [recent_count]
+    JAE     .rum_done
+    ; Label address = recent_labels + CX * RECENT_LBL_SZ
+    MOV     AX, CX
+    MOV     BL, RECENT_LBL_SZ
+    MUL     BL
+    ADD     AX, recent_labels
+    MOV     [DI], AX                    ; patch MDE_TEXT (offset 0 in MDE)
+    ADD     DI, 10                      ; advance to next MDE slot (MDE_SIZE=10)
+    INC     CX
+    JMP     .rum_patch
+
+.rum_hide:
+    MOV     BYTE [m_file_ecount], FILE_MENU_BASE
+.rum_done:
+    POP     DI
+    POP     CX
+    POP     BX
+    POP     AX
+    RET
+recent_update_menu ENDP
+
+; ============================================================
+; recent_handler_0..6 — Handler stubs for recent file menu items
+; Each sets recent_clicked_idx and jumps to recent_open.
+; ============================================================
+
+recent_handler_0:
+    MOV     BYTE [recent_clicked_idx], 0
+    JMP     recent_open
+recent_handler_1:
+    MOV     BYTE [recent_clicked_idx], 1
+    JMP     recent_open
+recent_handler_2:
+    MOV     BYTE [recent_clicked_idx], 2
+    JMP     recent_open
+recent_handler_3:
+    MOV     BYTE [recent_clicked_idx], 3
+    JMP     recent_open
+recent_handler_4:
+    MOV     BYTE [recent_clicked_idx], 4
+    JMP     recent_open
+recent_handler_5:
+    MOV     BYTE [recent_clicked_idx], 5
+    JMP     recent_open
+recent_handler_6:
+    MOV     BYTE [recent_clicked_idx], 6
+    JMP     recent_open
+
+; ============================================================
+; recent_open — Open a file from the recent files list
+;
+; Reads recent_clicked_idx, copies path to [filename], and
+; opens it using the same flow as menu_open_handler.
+; ============================================================
+
+recent_open:
+    PushAll
+
+    ; ---- Copy recent path to [filename] ----
+    MOV     AL, [recent_clicked_idx]
+    XOR     AH, AH
+    MOV     BL, RECENT_SLOT_SZ
+    MUL     BL
+    MOV     SI, AX
+    ADD     SI, recent_files            ; SI = source path
+    MOV     DI, filename
+.ro_copy:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .ro_copy
+
+    ; ---- Check for duplicate: is this file already open? ----
+    MOV     SI, filename
+    CALL    doc_find_by_name
+    JC      .ro_not_dup
+    ; Already open — switch to it
+    CALL    doc_switch
+    CALL    recent_add
+    JMP     .ro_done
+
+.ro_not_dup:
+    ; ---- Determine slot: reuse if untitled+clean, else new ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    TEST    BYTE ES:[DI + DOC_FLAGS], DOCF_UNTITLED
+    JZ      .ro_need_new
+    CMP     BYTE [dirty], 0
+    JNE     .ro_need_new
+    JMP     .ro_load                    ; reuse current slot
+
+.ro_need_new:
+    CALL    doc_find_free_slot
+    JNC     .ro_have_slot
+    MOV     SI, s_err_max_docs
+    CALL    show_error_msg
+    JMP     .ro_done
+.ro_have_slot:
+    PUSH    AX
+    CALL    doc_swap_out
+    JC      .ro_swap_fail
+    POP     AX
+    PUSH    AX
+    MOV     SI, filename
+    CALL    doc_slot_init
+    INC     BYTE [doc_count]
+    POP     AX
+    MOV     [active_doc], AL
+    MOV     [panel_sel], AL
+
+.ro_load:
+    ; ---- Pre-flight: verify file exists before ed_load_file ----
+    MOV     AH, 3Dh
+    MOV     AL, 0                       ; read-only
+    MOV     DX, filename
+    INT     21h
+    JC      .ro_load_failed             ; file not found → remove + error
+    ; File exists — close the test handle
+    MOV     BX, AX
+    MOV     AH, 3Eh
+    INT     21h
+
+    CALL    ed_load_file
+    JC      .ro_done                    ; ed_load_file shows its own error
+
+    ; ---- Add to recent files (moves to top) ----
+    CALL    recent_add
+
+    ; ---- Update document table ----
+    MOV     AL, [active_doc]
+    CALL    doc_get_slot
+    PUSH    DI
+    MOV     SI, filename
+    ADD     DI, DOC_FILENAME
+    PUSH    DS
+    PUSH    ES
+    MOV     AX, DS
+    MOV     DX, ES
+    MOV     DS, AX
+    MOV     ES, DX
+.ro_name_copy:
+    MOV     AL, [SI]
+    MOV     ES:[DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .ro_name_copy
+    POP     ES
+    POP     DS
+    POP     DI
+    OR      BYTE ES:[DI + DOC_FLAGS], DOCF_OCCUPIED
+    AND     BYTE ES:[DI + DOC_FLAGS], 0FFh - DOCF_UNTITLED
+
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .ro_done
+
+.ro_load_failed:
+    ; Remove stale entry from recent list
+    MOV     AL, [recent_clicked_idx]
+    CALL    recent_remove
+    MOV     SI, m_str_err_open
+    CALL    show_error_msg
+    MOV     BYTE [fw_state + FW_DIRTY], 1
+    JMP     .ro_done
+
+.ro_swap_fail:
+    POP     AX
+.ro_done:
+    PopAll
+    RET
+
+; ============================================================
 ; menu_line_ending_handler — Toggle line ending mode (CRLF/LF)
 ; ============================================================
 menu_line_ending_handler:
@@ -2842,6 +3876,10 @@ main:
     MOV     WORD [ed_text_cols], ED_COLS
     MOV     BYTE [filename], 0          ; ensure clean for parse_args flag check
 
+    ; ---- Load saved settings (overrides defaults, before CLI args) ----
+    CALL    cfg_load
+    CALL    recent_update_menu
+
     ; ---- Check for orphan shell swap file (crash recovery) ----
     CALL    shell_check_orphan
     JC      .do_recovery
@@ -2899,6 +3937,9 @@ main:
     MOV     SI, filename
     CALL    doc_slot_init
     MOV     BYTE [active_doc], 0
+
+    ; ---- Add to recent files list ----
+    CALL    recent_add
     MOV     BYTE [doc_count], 1
 
     ; ---- Runtime verification (--build_trace only) ----
@@ -3069,6 +4110,9 @@ main:
 
     CALL    .load_startup_file
     JC      .lm_fail
+
+    ; ---- Add to recent files list ----
+    CALL    recent_add
 
     POP     BX
     INC     BL
@@ -3782,4 +4826,33 @@ shell_save_ss:      RESW 1          ; saved SS before EXEC
 shell_save_sp:      RESW 1          ; saved SP before EXEC
 shell_dump_mode:    RESB 1          ; 1 = /d flag: dump memory to disk on shell
 shell_recovering:   RESB 1          ; 1 = orphan swap recovery in progress
+
+; ---- Double/triple click state ----
+ms_ed_click_tick:   RESW 1          ; BIOS tick of last editor click
+ms_ed_click_line:   RESW 1          ; line of last editor click
+ms_ed_click_col:    RESW 1          ; column of last editor click
+ms_ed_click_count:  RESB 1          ; click count (0=none, 1=single, 2=double)
+
+; ---- Word scan scratch (double-click word select) ----
+word_scan_buf:      RESB 256        ; line content for word boundary scan
+word_scan_len:      RESW 1          ; actual bytes read into word_scan_buf
+
+; ---- Status bar clock ----
+clock_visible:      RESB 1          ; 0 = off, 1 = on (runtime session toggle)
+clock_on_start:     RESB 1          ; 0 = off, 1 = on (startup preference, saved to cfg)
+
+; ---- Config file scratch ----
+cfg_buf:            RESB 8          ; small buffer for TEDIT.CFG read/write
+
+; ---- Settings dialog scratch ----
+_stg_r2:            RESB 1          ; radio pre-select: tab width 2
+_stg_r4:            RESB 1          ; radio pre-select: tab width 4
+_stg_r8:            RESB 1          ; radio pre-select: tab width 8
+
+; ---- Recent files ----
+recent_count:       RESB 1          ; number of entries (0-7)
+recent_files:       RESB 896        ; 7 x 128-byte filename slots (index 0 = most recent)
+recent_labels:      RESB 224        ; 7 x 32-byte display label slots ("N BASENAME")
+recent_clicked_idx: RESB 1          ; index of recent menu item clicked (0-6)
+
 BSS_END:

@@ -62,6 +62,8 @@ tui_ctrl_draw_all: PROC
     JZ .draw_textbox
     CMP BYTE [BX + CTRL_TYPE], CTYPE_CHECKBOX
     JZ .draw_checkbox
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
+    JZ .draw_radio
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
     JZ .draw_listbox
     CMP BYTE [BX + CTRL_TYPE], CTYPE_EDITOR
@@ -82,6 +84,10 @@ tui_ctrl_draw_all: PROC
 
 .draw_checkbox:
     CALL tui_ctrl_draw_checkbox
+    JMP .next_ctrl
+
+.draw_radio:
+    CALL tui_ctrl_draw_radio
     JMP .next_ctrl
 
 .draw_listbox:
@@ -430,6 +436,8 @@ tui_ctrl_activate: PROC
     JZ .do_button
     CMP BYTE [BX + CTRL_TYPE], CTYPE_CHECKBOX
     JZ .do_checkbox
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
+    JZ .do_radio
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
     JZ .call_handler
     CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTBOX
@@ -455,6 +463,25 @@ tui_ctrl_activate: PROC
     MOV AL, [BX + CTRL_CB_STATE]
     XOR AL, 1
     MOV [BX + CTRL_CB_STATE], AL
+    MOV BYTE [fw_state + FW_DIRTY], 1
+    JMP .call_handler
+
+.do_radio:
+    ; Mutual exclusion: clear all radios in window, set this one
+    PUSH BX                     ; save activated radio
+    MOV BX, [SI + WIN_FIRST]
+.radio_clear:
+    OR BX, BX
+    JZ .radio_clear_done
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
+    JNE .radio_clear_next
+    MOV BYTE [BX + CTRL_CB_STATE], 0
+.radio_clear_next:
+    MOV BX, [BX + CTRL_NEXT]
+    JMP .radio_clear
+.radio_clear_done:
+    POP BX                      ; restore activated radio
+    MOV BYTE [BX + CTRL_CB_STATE], 1
     MOV BYTE [fw_state + FW_DIRTY], 1
     JMP .call_handler
 
@@ -610,6 +637,66 @@ tui_ctrl_draw_checkbox: PROC
     ; Draw ']' at col+2
     INC DL
     MOV AL, ']'
+    CALL tui_putchar
+
+    ; Draw label at col+4 (skip 1 space)
+    INC DL
+    INC DL
+    MOV SI, [BX + CTRL_TEXT]
+    CALL tui_putstr
+
+    POP DX
+    POP CX
+    POP AX
+    POP SI
+    RET
+ENDP
+
+; ----------------------------------------------------------------------------
+; tui_ctrl_draw_radio - Draw a Radio button control
+; Input: BX = control pointer, DH = abs row, DL = abs col, CH = focused flag
+; Renders: (*) Label  or  ( ) Label
+; Uses CTRL_CB_STATE for selected state (same layout as checkbox).
+; Preserves: BX, DI, DH, DL
+; ----------------------------------------------------------------------------
+tui_ctrl_draw_radio: PROC
+    PUSH SI
+    PUSH AX
+    PUSH CX
+    PUSH DX
+
+    ; Select attribute based on focus
+    OR CH, CH
+    JZ .rb_normal_attr
+    MOV AH, [BX + CTRL_FATTR]
+    JMP .rb_attr_set
+.rb_normal_attr:
+    MOV AH, [BX + CTRL_ATTR]
+.rb_attr_set:
+
+    ; Fill CTRL_W cells with spaces (background)
+    MOV AL, 20h
+    MOV CL, [BX + CTRL_W]
+    CALL tui_hline
+
+    ; Draw '(' at col
+    MOV AL, '('
+    CALL tui_putchar
+
+    ; Draw * or space at col+1
+    INC DL
+    CMP BYTE [BX + CTRL_CB_STATE], 0
+    JZ .rb_unselected
+    MOV AL, '*'
+    JMP .rb_draw_mark
+.rb_unselected:
+    MOV AL, 20h
+.rb_draw_mark:
+    CALL tui_putchar
+
+    ; Draw ')' at col+2
+    INC DL
+    MOV AL, ')'
     CALL tui_putchar
 
     ; Draw label at col+4 (skip 1 space)

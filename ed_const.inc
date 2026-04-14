@@ -104,6 +104,15 @@ UR_INS_RANGE    EQU 5              ; range insertion (paste)
 ; ---- Selection grace period ----
 SEL_GRACE_TICKS EQU 9              ; ~500ms at 18.2 ticks/sec
 
+; ---- Double/triple click ----
+DBLCLICK_TICKS  EQU 9              ; ~500ms double-click window (18.2 Hz)
+
+; ---- Recent files ----
+RECENT_MAX      EQU 7               ; max recent file entries
+RECENT_SLOT_SZ  EQU 128             ; bytes per filename slot
+RECENT_LBL_SZ   EQU 32              ; bytes per display label
+FILE_MENU_BASE  EQU 12              ; base MI_ECOUNT for File menu (without recent)
+
 ; ---- INT 2Fh Multiplex (instance detection) ----
 TEDIT_MUX_ID    EQU 0C0h           ; multiplex ID (C0h-FFh = application range)
 

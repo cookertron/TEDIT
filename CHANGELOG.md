@@ -1,5 +1,138 @@
 # TEDIT Changelog
 
+## v0.71.0 — Mouse Selection, Settings, Clock & Recent Files (2026-04-14)
+
+### New Feature: Double-Click Word Select / Triple-Click Line Select
+- **Double-click** on a word selects it (contiguous run of A-Z, a-z, 0-9, _).
+  Non-word characters (space, punctuation) get single-character selection.
+- **Triple-click** selects the entire line (column 0 to line end).
+- Click counting state machine using BIOS tick timing (9-tick / ~500ms window),
+  same position required between clicks. Count resets to 0 after triple-click.
+- Drag after double/triple-click extends selection at character granularity.
+- Drag handler no-motion guard prevents stationary mouse polls from collapsing
+  the word/line selection.
+
+### New Procedures (`ed_mouse.inc`)
+- `is_word_char` — character classification (CF=0 for word chars, CF=1 otherwise)
+- `ed_read_line_buf` — reads current line into 256-byte scratch buffer via piece table
+- `ed_select_word` — finds word boundaries around cursor, sets selection
+- `ed_select_line` — selects entire line (anchor at col 0, cursor at line end)
+
+### New BSS Variables (`TEDIT.ASM`)
+- `ms_ed_click_tick/line/col/count` — click counting state (7 bytes)
+- `word_scan_buf/len` — word boundary scan scratch (258 bytes)
+
+### New Constants (`ed_const.inc`)
+- `DBLCLICK_TICKS EQU 9` — double-click timing window
+
+### New Feature: TUI Radio Button Control
+- **Full radio button support** added to TUI framework (`CTYPE_RADIO = 5`).
+- Renders as `(*) Label` (selected) or `( ) Label` (unselected).
+- **Keyboard activation** (Enter/Space): clears all radio buttons in the window,
+  sets the activated one (mutual exclusion).
+- **Mouse click activation**: same mutual exclusion logic on left-button press.
+
+### New Procedures (`TUI/tui_control.inc`, `TUI/tui_mouse.inc`)
+- `tui_ctrl_draw_radio` — renders radio button with `(*)` / `( )` indicator
+- `.do_radio` in `tui_ctrl_activate` — keyboard mutual exclusion handler
+- `.press_radio` in `tui_mouse_on_press` — mouse click mutual exclusion handler
+
+### New Feature: Status Bar Clock
+- **HH:MM clock** displayed at the far right of the status bar (columns 74-79).
+- Reads time via INT 21h AH=2Ch. Always right-aligned, never conflicts with
+  left-side status content.
+- Toggled via Settings dialog "Show clock" checkbox. Persists in TEDIT.CFG.
+
+### New Procedures (`ed_draw.inc`)
+- `ed_draw_clock` — renders ` HH:MM` at fixed right-side position using
+  `.clock_put2` helper for 2-digit formatting
+
+### New Feature: Settings Dialog (`Options > Settings...`)
+- Modal dialog with:
+  - **Tab Width** radio buttons (2, 4, 8) — changes tab rendering width
+  - **Shell memory dump** checkbox — toggles /d flag for Shell to DOS
+  - **Show clock** checkbox — toggles status bar clock visibility
+- All settings saved to TEDIT.CFG on OK.
+- Pre-selects current values when opened.
+
+### New Feature: TEDIT.CFG Configuration File
+- **Binary config file** persists settings across sessions.
+- Format v3: 7-byte header (magic 'CE', version, tab_width, clock, shell_dump,
+  recent_count) + recent file entries (count * 128 bytes).
+- **Loaded at startup** after defaults, before command-line args (priority:
+  defaults < config < CLI flags).
+- **Backward compatible**: v2 configs (from previous sessions) load cleanly
+  with an empty recent file list.
+- Silently ignores missing or corrupt config files.
+
+### New Feature: Recent Files List (File Menu)
+- **Up to 7 recent files** displayed at the bottom of the File menu, below Exit.
+- Most recently opened file at position 1; older files shift down.
+- **Deduplication**: re-opening a file moves it to the top instead of adding
+  a duplicate entry.
+- **Persisted in TEDIT.CFG**: recent list survives editor restarts.
+- **Click to open**: selecting a recent entry opens the file (handles slot
+  reuse for untitled docs, new slot allocation, duplicate detection).
+- **Stale entry removal**: if a recent file no longer exists, an error is shown
+  and the entry is automatically purged from the list and config.
+- **Entry validation on load**: empty or malformed entries in the config are
+  filtered out during startup.
+- **Exclusion**: files opened via Project Load are NOT added to the recent list.
+
+### New Procedures (`TEDIT.ASM`)
+- `recent_add` — add filename to list (dedup, shift, cap at 7, rebuild labels)
+- `recent_build_labels` — extract basenames, format "N FILENAME" display strings
+- `recent_remove` — remove entry by index (shift, save config)
+- `recent_update_menu` — patch File menu MI_ECOUNT and MDE_TEXT pointers
+- `recent_open` — open file from recent list (with pre-flight existence check)
+- `recent_handler_0..6` — 7 menu handler stubs dispatching to `recent_open`
+- `cfg_save` / `cfg_load` — extended for v3 format with recent file data
+- `menu_settings_handler` — builds and runs Settings dialog
+- `menu_clock_handler` — session clock toggle (View menu, removed in v0.71)
+
+### New BSS Variables (`TEDIT.ASM`)
+- `clock_visible` / `clock_on_start` — runtime and startup clock state
+- `cfg_buf` (8 bytes) — config file I/O scratch
+- `recent_count` / `recent_files` (896 bytes) / `recent_labels` (224 bytes) /
+  `recent_clicked_idx` — recent file list storage and menu state
+- `_stg_r2/_stg_r4/_stg_r8` — settings dialog radio pre-selection scratch
+
+### New Constants (`ed_const.inc`)
+- `RECENT_MAX EQU 7`, `RECENT_SLOT_SZ EQU 128`, `RECENT_LBL_SZ EQU 32`
+- `FILE_MENU_BASE EQU 12`
+
+### Menu Reorganisation
+- **File menu**: Project Load/Save moved to Options menu. Recent files added
+  below Exit.
+- **View menu**: Clock entry removed (clock now controlled solely via Settings).
+- **Options menu**: Settings moved to top. Divider added. Project Load/Save
+  added below Convert line ending entry.
+
+### Bug Fixes
+- **ES segment bug in recent_add/recent_remove**: `REP MOVSB` writes to ES:DI,
+  but ES pointed to `doc_table_seg` instead of DS when called from menu/startup
+  paths. Fixed by saving/setting ES=DS at entry.
+- **Stale recent entry not removed**: `ed_load_file` shows its own modal error
+  dialog internally, causing IDLE termination before `recent_remove` could run.
+  Fixed by adding a pre-flight file existence check (open + close) before
+  calling `ed_load_file`.
+- **Double-click selection collapsed by drag handler**: stationary mouse polls
+  with `MSF_CTRL_DRAG` active caused the drag handler to recompute cursor
+  position and clear selection. Fixed by adding an early-out guard in
+  `tui_ed_mouse_drag` that skips processing when mouse cell hasn't changed.
+- **Word select left-boundary off-by-one**: `is_word_char` left-scan had a
+  spurious `INC CX` that shifted the word start one column right. Removed.
+
+### Files Changed
+- `TEDIT.ASM` — menu data, handlers, settings dialog, config I/O, recent files,
+  BSS variables, startup hooks, About dialog version string
+- `ed_const.inc` — new constants for click timing, recent files, tab settings
+- `ed_mouse.inc` — click counting state machine, word/line selection procedures,
+  drag handler no-motion guard
+- `ed_draw.inc` — clock rendering in status bar
+- `TUI/tui_control.inc` — radio button draw, activate, dispatch
+- `TUI/tui_mouse.inc` — radio button mouse click handler
+
 ## v0.70.0 — Swap Directory (2026-04-13)
 
 ### New Feature: Hidden `_TEDIT` Swap Directory

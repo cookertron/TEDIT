@@ -756,6 +756,8 @@ tui_mouse_on_press: PROC
     JZ .press_button
     CMP BYTE [BX + CTRL_TYPE], CTYPE_CHECKBOX
     JZ .press_checkbox
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
+    JZ .press_radio
     CMP BYTE [BX + CTRL_TYPE], CTYPE_TEXTBOX
     JZ .press_textbox
     CMP BYTE [BX + CTRL_TYPE], CTYPE_LISTBOX
@@ -779,6 +781,25 @@ tui_mouse_on_press: PROC
     XOR AL, 1
     MOV [BX + CTRL_CB_STATE], AL
     ; Call handler if any
+    CALL tui_mouse_call_handler
+    JMP .press_done
+
+.press_radio:
+    ; Mutual exclusion: clear all radios in window, set clicked one
+    PUSH BX
+    MOV BX, [SI + WIN_FIRST]
+.pr_clear:
+    OR BX, BX
+    JZ .pr_clear_done
+    CMP BYTE [BX + CTRL_TYPE], CTYPE_RADIO
+    JNE .pr_next
+    MOV BYTE [BX + CTRL_CB_STATE], 0
+.pr_next:
+    MOV BX, [BX + CTRL_NEXT]
+    JMP .pr_clear
+.pr_clear_done:
+    POP BX
+    MOV BYTE [BX + CTRL_CB_STATE], 1
     CALL tui_mouse_call_handler
     JMP .press_done
 

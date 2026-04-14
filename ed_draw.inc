@@ -559,12 +559,20 @@ tui_ctrl_draw_editor:
     POP     AX                  ; AX = status bar start DI
     ; Pad remainder of row
     ADD     AX, ED_COLS * 2     ; AX = end of status bar row
+    MOV     BX, AX              ; BX = row end offset (save for clock)
     SUB     AX, DI              ; AX = remaining bytes
-    JBE     .status_done
+    JBE     .pad_done
     SHR     AX, 1               ; AX = remaining words
     MOV     CX, AX
     MOV     AX, ED_ATTR_STAT * 256 + 20h
     REP     STOSW
+.pad_done:
+    MOV     DI, BX              ; DI = row end (for clock positioning)
+
+    ; ---- Clock display (right-aligned) ----
+    CMP     BYTE [clock_visible], 0
+    JE      .status_done
+    CALL    ed_draw_clock
 
 .status_done:
 .draw_cursor_now:
@@ -799,6 +807,73 @@ ed_wdec PROC
     POP     AX
     RET
 ed_wdec ENDP
+
+; ============================================================
+; ed_draw_clock — write HH:MM at right end of status bar
+;
+; Overwrites columns 74-79 with " HH:MM" using ED_ATTR_STAT.
+; DI = end of status bar row (row_start + 160).
+; Uses INT 21h AH=2Ch to read current time.
+; ============================================================
+
+ed_draw_clock PROC
+    PUSH    AX
+    PUSH    BX
+    PUSH    CX
+    PUSH    DX
+
+    ; ---- Get current time ----
+    MOV     AH, 2Ch
+    INT     21h                     ; CH=hour, CL=minute
+    MOV     BL, CH                  ; BL=hour
+    MOV     BH, CL                  ; BH=minute
+
+    ; ---- Position at column 74 (DI points past row end) ----
+    SUB     DI, 12                  ; DI = col 74 in shadow_seg
+
+    ; ---- Write leading space ----
+    MOV     AL, ' '
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    ; ---- Write hour as 2 digits ----
+    MOV     AL, BL                  ; AL=hour (0-23)
+    CALL    .clock_put2
+
+    ; ---- Write ':' ----
+    MOV     AL, ':'
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+
+    ; ---- Write minute as 2 digits ----
+    MOV     AL, BH                  ; AL=minute (0-59)
+    CALL    .clock_put2
+
+    POP     DX
+    POP     CX
+    POP     BX
+    POP     AX
+    RET
+
+    ; Helper: write AL (0-99) as 2 ASCII digits to ES:DI, advance DI by 4
+.clock_put2:
+    XOR     AH, AH
+    MOV     DL, 10
+    DIV     DL                      ; AL=tens, AH=ones
+    ADD     AL, '0'
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+    MOV     AL, AH
+    ADD     AL, '0'
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT
+    ADD     DI, 2
+    RET
+
+ed_draw_clock ENDP
 
 ; ============================================================
 ; ed_draw_cursor — software block cursor (swap attribute nibbles)
