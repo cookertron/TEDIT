@@ -16,9 +16,10 @@ ED_COLS         EQU 80          ; visible columns
 ED_TEXT_ROWS    EQU 23          ; text rows (23 text + 1 status = 24 total)
 
 ; ---- Text attributes for rendering ----
-ED_ATTR_NORM    EQU 1Fh         ; bright white on blue (text content)
-ED_ATTR_STAT    EQU 70h         ; black on light gray (status bar)
-ED_ATTR_SEL     EQU 71h         ; blue on light gray (selected text)
+ED_ATTR_NORM      EQU 1Fh       ; bright white on blue (text content)
+ED_ATTR_STAT      EQU 70h       ; black on light gray (status bar)
+ED_ATTR_SEL       EQU 71h       ; blue on light gray (selected text)
+ED_ATTR_STAT_WARN EQU 4Fh       ; bright white on red (status warning)
 
 ; Side panel constants
 PANEL_WIDTH     EQU 18          ; total columns (│»N FILENAME.EXT*│)

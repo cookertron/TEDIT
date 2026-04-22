@@ -3,6 +3,35 @@
 ; ============================================================
 
 ; ============================================================
+; open_ensure_drive — SelectDrive to match filename's drive prefix
+;
+; If [filename] begins with "X:" (A..Z / a..z + colon), calls
+; INT 21h AH=0Eh to set the DOS default drive. Defends against
+; divergence between TEDIT's tracked CWD and DOS's current drive
+; after prior CHDIR activity (P1-#2 workaround).
+; ============================================================
+open_ensure_drive PROC
+    PUSH    AX
+    PUSH    DX
+    MOV     AL, [filename]
+    CMP     BYTE [filename + 1], ':'
+    JNE     .oed_done
+    OR      AL, 20h                 ; to lowercase
+    CMP     AL, 'a'
+    JB      .oed_done
+    CMP     AL, 'z'
+    JA      .oed_done
+    SUB     AL, 'a'
+    MOV     DL, AL
+    MOV     AH, 0Eh
+    INT     21h
+.oed_done:
+    POP     DX
+    POP     AX
+    RET
+open_ensure_drive ENDP
+
+; ============================================================
 ; ed_load_file — Load the file named in [filename] into editor
 ; Frees existing document data first.
 ; Returns: CF=0 success, CF=1 failure
@@ -18,6 +47,9 @@ ed_load_file PROC
 
     ; ---- Free existing document ----
     CALL    free_all
+
+    ; ---- Align DOS default drive with filename's drive prefix ----
+    CALL    open_ensure_drive
 
     ; ---- Open file ----
     CALL    open_file

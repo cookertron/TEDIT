@@ -1,5 +1,57 @@
 # TEDIT Changelog
 
+## v0.72.0 — Config Path Anchored to Executable Directory (2026-04-22)
+
+### Bug Fix: TEDIT.CFG created in CWD instead of executable's directory
+- **Reported on VOGONS** by user Yoghoo: running TEDIT from different current
+  directories (e.g. `c:\`, `c:\temp`) created a new `TEDIT.CFG` at each CWD,
+  scattering config files across the drive instead of keeping a single copy
+  alongside the executable.
+- **Root cause**: `cfg_save` / `cfg_load` used a bare `'TEDIT.CFG'` filename,
+  which DOS resolves against the current directory.
+- **Fix**: new `init_cfg_path` PROC (`TEDIT.ASM`) runs once at startup, reads
+  the executable's full path from the environment block via `PSP[0x2Ch]`
+  (DOS 3.0+ convention), and builds `cfg_path_buf = [exe_dir]TEDIT.CFG`.
+  `cfg_save` / `cfg_load` now use this path exclusively.
+- **Graceful fallback**: if the env segment is missing/malformed (DOS < 3.0
+  or other non-standard environments), falls back to bare `'TEDIT.CFG'`,
+  preserving prior current-directory behaviour rather than failing.
+
+### New Procedures (`TEDIT.ASM`)
+- `init_cfg_path` — walks env block, copies exe path into `cfg_path_buf`,
+  overwrites basename with `'TEDIT.CFG'`. Tracks offset after the last `\`
+  during copy to avoid a second pass. Bounds-checked against 80-byte buffer.
+
+### New BSS Variables (`TEDIT.ASM`)
+- `cfg_path_buf` (80 bytes) — full path built at startup, used by both save
+  and load.
+
+### Changed
+- `cfg_save` (`INT 21h AH=3Ch`) and `cfg_load` (`INT 21h AH=3Dh`) now take
+  `DX = cfg_path_buf` instead of `DX = cfg_filename`.
+- `cfg_filename` string (`'TEDIT.CFG'`) retained as the basename source for
+  `init_cfg_path` and as fallback content for `cfg_path_buf`.
+- About dialog version bumped to `TEDIT v0.72`.
+
+### Testing
+- Verified against agent86 v0.22.1, which exposes a DOS-style env block at
+  `PSP[0x2Ch]` and accepts `--exe-path <dos-path>` to control the path the
+  guest sees.
+- Test harness `cfgtest.asm` extracts `init_cfg_path` verbatim and confirms:
+  - `C:\UTILS\TEDIT.COM` → `C:\UTILS\TEDIT.CFG`
+  - `C:\TEDIT.COM` → `C:\TEDIT.CFG`
+  - `D:\FLOPPY\TEDIT.COM` → `D:\FLOPPY\TEDIT.CFG`
+  - `TEDIT.COM` (no backslash) → `TEDIT.CFG` (fallback)
+  - Deep nesting preserves the full directory chain.
+- CWD-independence verified: launching with `--exe-path 'C:\UTILS\TEDIT.COM'`
+  from four different `--cwd` values (`C:\`, `C:\UTILS`, `C:\TEMP`,
+  `C:\DEEP\SUB`) all produced `C:\UTILS\TEDIT.CFG` — CWD has no effect on
+  the config path.
+- Live end-to-end on a mounted FAT12 image: drove the Settings dialog to
+  trigger `cfg_save` with `--exe-path 'C:\UTILS\TEDIT.COM' --cwd 'C:\TEMP'`.
+  Probe (`findcfg.asm`) confirmed `TEDIT.CFG` landed in `\UTILS\` only —
+  root and `\TEMP\` stayed empty.
+
 ## v0.71.0 — Mouse Selection, Settings, Clock & Recent Files (2026-04-14)
 
 ### New Feature: Double-Click Word Select / Triple-Click Line Select

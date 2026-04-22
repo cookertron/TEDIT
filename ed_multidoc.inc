@@ -496,7 +496,9 @@ doc_swap_out PROC
     ; Do NOT free segments — document remains active
     POP     DI                      ; balance the stack
     POP     BP
-    STC
+    MOV     SI, s_err_swap_out
+    CALL    show_error_msg
+    STC                             ; set AFTER msgbox to avoid flag clobber
     RET
 
 ; ---- .free_doc_segs — Close file handle, free pt_seg, add_seg ----
@@ -976,14 +978,9 @@ doc_switch PROC
     RET
 
 .swap_out_fail:
-    ; Swap-out failed — document is still active, segments intact.
+    ; Swap-out failed — doc_swap_out already reported the error.
+    ; Document is still active, segments intact.
     POP     AX                      ; balance target slot index
-    PUSH    SI
-    PUSH    DI
-    MOV     SI, s_err_swap_out
-    CALL    show_error_msg
-    POP     DI
-    POP     SI
     STC
     RET
 

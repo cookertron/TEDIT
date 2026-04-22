@@ -1010,6 +1010,60 @@ dlg_file_ok_handler:
     LOOP .dfoh_cpat
     MOV BYTE [DI], 0
 .dfoh_cpat_done:
+    ; ---- Drive prefix handling (P1-#1) ----
+    ; If dlg_file_pattern starts with "X:" (letter + colon), select
+    ; that drive, CHDIR to root, strip "X:" and optional leading "\"
+    ; from the pattern, then refresh the path display before enum.
+    MOV AL, [dlg_file_pattern]
+    CMP BYTE [dlg_file_pattern + 1], ':'
+    JNE .dfoh_no_drive
+    OR  AL, 20h                          ; to lowercase
+    CMP AL, 'a'
+    JB  .dfoh_no_drive
+    CMP AL, 'z'
+    JA  .dfoh_no_drive
+
+    SUB AL, 'a'
+    MOV DL, AL
+    MOV AH, 0Eh
+    INT 21h                              ; select default drive
+
+    MOV DX, dlg_file_rootdir
+    MOV AH, 3Bh
+    INT 21h                              ; CHDIR "\" (ignore error)
+
+    PUSH DS
+    POP  ES
+    MOV  SI, dlg_file_pattern + 2
+    MOV  DI, dlg_file_pattern
+.dfoh_strip_drv:
+    LODSB
+    STOSB
+    TEST AL, AL
+    JNZ  .dfoh_strip_drv
+
+    CMP  BYTE [dlg_file_pattern], '\'
+    JNE  .dfoh_drv_empty
+    MOV  SI, dlg_file_pattern + 1
+    MOV  DI, dlg_file_pattern
+.dfoh_strip_bs:
+    LODSB
+    STOSB
+    TEST AL, AL
+    JNZ  .dfoh_strip_bs
+
+.dfoh_drv_empty:
+    CMP  BYTE [dlg_file_pattern], 0
+    JNE  .dfoh_drv_refresh
+    MOV  BYTE [dlg_file_pattern],     '*'
+    MOV  BYTE [dlg_file_pattern + 1], '.'
+    MOV  BYTE [dlg_file_pattern + 2], '*'
+    MOV  BYTE [dlg_file_pattern + 3], 0
+
+.dfoh_drv_refresh:
+    CALL tui_file_get_path
+.dfoh_no_drive:
+    ; ---- end drive prefix handling ----
     CALL tui_file_enumerate
     MOV SI, dlg_listbox
     MOV AL, [dlg_file_count]

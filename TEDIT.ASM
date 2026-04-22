@@ -168,13 +168,13 @@ s_stg_tw4:       DB '4', 0
 s_stg_tw8:       DB '8', 0
 s_stg_shdump:    DB 'Shell memory dump', 0
 s_stg_clock:     DB 'Show clock', 0
-cfg_path:        DB 'TEDIT.CFG', 0
+cfg_filename:    DB 'TEDIT.CFG', 0    ; basename; real path built at startup in cfg_path_buf
 CFG_MAGIC        EQU 4543h          ; 'CE' (little-endian: 43h='C', 45h='E' for Config Editor)
 CFG_VERSION      EQU 3
 stg_tw_items:    DW s_stg_tw2, s_stg_tw4, s_stg_tw8
 m_str_info:      DB 'Info', 0
 m_str_about:     DB 'About...', 0
-m_str_about_1:   DB 'TEDIT v0.71', 0
+m_str_about_1:   DB 'TEDIT v0.72', 0
 m_str_about_2:   DB 'Directed by Cookertron', 0
 m_str_about_3:   DB 'Coded by Claude Opus 4.6', 0
 m_str_about_4:   DB 'Thanks to the VOGONS community', 0
@@ -207,6 +207,7 @@ s_err_paste_pt:    DB 'Paste failed: table full.', 0
 s_err_redo_noop:   DB 'Redo not available for paste.', 0
 s_err_swap_out:    DB 'Cannot swap document to disk.', 0
 s_err_swap_in:     DB 'Cannot load target document.', 0
+s_err_cfg_save:    DB 'Could not save TEDIT.CFG.', 0
 s_err_max_docs:    DB 'Maximum 20 documents open.', 0
 s_quit_unsaved:    DB 'Discard unsaved changes?', 0
 
@@ -2839,6 +2840,125 @@ menu_settings_handler:
     RET
 
 ; ============================================================
+; init_cfg_path — Build cfg_path_buf = [exe_dir]TEDIT.CFG
+;
+; DOS 3.0+ stores the executable's full path in the environment
+; block: after the NUL-terminated env strings, a final NUL marks
+; the end, then a WORD count (usually 1), then an ASCIIZ full
+; exe path.  PSP offset 2Ch holds the segment of this block.
+;
+; Result:
+;   cfg_path_buf = "C:\UTILS\TEDIT.CFG",0   (normal case)
+;                = "TEDIT.CFG",0            (env missing/malformed
+;                                            — preserves prior
+;                                            current-dir behaviour
+;                                            on DOS < 3.0 or in
+;                                            environments that do
+;                                            not expose the block,
+;                                            e.g. agent86 tests)
+;
+; Called once at startup, before cfg_load.
+; ============================================================
+init_cfg_path PROC
+    PushAll
+    PUSH    ES
+
+    ; ---- Get env segment from PSP offset 2Ch ----
+    MOV     AX, [002Ch]
+    TEST    AX, AX
+    JZ      .icp_fallback           ; no env block — use bare filename
+    MOV     ES, AX
+
+    ; ---- Walk past env strings to the terminating empty string ----
+    ; Env layout: "VAR=VAL\0VAR=VAL\0...\0" then "\0" (empty string),
+    ; then WORD count, then ASCIIZ exe path.
+    XOR     DI, DI
+    MOV     CX, 32767               ; safety ceiling on scan length
+
+.icp_env_scan:
+    DEC     CX
+    JZ      .icp_fallback           ; malformed env — bail
+    CMP     BYTE ES:[DI], 0
+    JE      .icp_env_end            ; empty string = terminator
+.icp_skip:
+    INC     DI
+    DEC     CX
+    JZ      .icp_fallback
+    CMP     BYTE ES:[DI], 0
+    JNE     .icp_skip
+    INC     DI                      ; step past this string's NUL
+    JMP     .icp_env_scan
+
+.icp_env_end:
+    INC     DI                      ; step past terminating NUL
+    ADD     DI, 2                   ; skip count word
+    ; ES:DI now points at ASCIIZ exe path
+
+    ; ---- Copy exe path into cfg_path_buf, tracking last backslash ----
+    MOV     SI, DI                  ; SI = env-seg offset of exe path
+    MOV     DI, cfg_path_buf
+    MOV     BX, 0FFFFh              ; BX = offset-after-last-'\' (FFFFh = none)
+    MOV     CX, 80                  ; buffer size
+
+.icp_copy:
+    DEC     CX
+    JZ      .icp_fallback           ; exe path too long to fit
+    MOV     AL, ES:[SI]
+    TEST    AL, AL
+    JZ      .icp_copy_done
+    MOV     [DI], AL
+    CMP     AL, '\'
+    JNE     .icp_no_sep
+    MOV     BX, DI
+    INC     BX
+    SUB     BX, cfg_path_buf        ; BX = offset in buf right after this '\'
+.icp_no_sep:
+    INC     SI
+    INC     DI
+    JMP     .icp_copy
+
+.icp_copy_done:
+    CMP     BX, 0FFFFh
+    JE      .icp_fallback           ; no '\' in exe path — safer to fall back
+
+    ; Bounds check: room for "TEDIT.CFG" + NUL (10 bytes) starting at BX?
+    MOV     AX, BX
+    ADD     AX, 10
+    CMP     AX, 80
+    JA      .icp_fallback
+
+    ; Overwrite basename with "TEDIT.CFG\0"
+    MOV     DI, cfg_path_buf
+    ADD     DI, BX
+    MOV     SI, cfg_filename
+.icp_append:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .icp_append
+    JMP     .icp_done
+
+.icp_fallback:
+    ; No usable env path — write plain "TEDIT.CFG" (current-dir behaviour)
+    MOV     SI, cfg_filename
+    MOV     DI, cfg_path_buf
+.icp_fb_copy:
+    MOV     AL, [SI]
+    MOV     [DI], AL
+    INC     SI
+    INC     DI
+    TEST    AL, AL
+    JNZ     .icp_fb_copy
+
+.icp_done:
+    POP     ES
+    PopAll
+    RET
+init_cfg_path ENDP
+
+; ============================================================
 ; cfg_save — Write settings to TEDIT.CFG
 ;
 ; Format v3: [magic:2][ver:1][tab:1][clock:1][shdump:1]
@@ -2865,10 +2985,13 @@ cfg_save PROC
     ; Create file
     MOV     AH, 3Ch
     XOR     CX, CX                     ; normal attributes
-    MOV     DX, cfg_path
+    MOV     DX, cfg_path_buf
     INT     21h
-    JC      .cs_done                    ; create failed, skip silently
-
+    JNC     .cs_got_handle
+    MOV     SI, s_err_cfg_save
+    CALL    show_error_msg
+    JMP     .cs_done
+.cs_got_handle:
     MOV     BX, AX                      ; BX = file handle
 
     ; Write 7-byte header
@@ -2876,7 +2999,7 @@ cfg_save PROC
     MOV     CX, 7
     MOV     DX, cfg_buf
     INT     21h
-    JC      .cs_close
+    JC      .cs_write_err
 
     ; Write recent files (count * 128 bytes)
     MOV     AL, [recent_count]
@@ -2889,6 +3012,13 @@ cfg_save PROC
     MOV     DX, recent_files
     MOV     AH, 40h
     INT     21h
+    JC      .cs_write_err
+    JMP     .cs_close
+
+.cs_write_err:
+    MOV     SI, s_err_cfg_save
+    CALL    show_error_msg
+    ; fall through to close so handle is not leaked
 
 .cs_close:
     ; Close file
@@ -2918,7 +3048,7 @@ cfg_load PROC
     ; Open file (read-only)
     MOV     AH, 3Dh
     MOV     AL, 0                       ; read-only
-    MOV     DX, cfg_path
+    MOV     DX, cfg_path_buf
     INT     21h
     JC      .cl_done                    ; file not found, use defaults
 
@@ -3619,7 +3749,7 @@ menu_about_handler:
     ; Interior: 34 wide, 9 rows (5 lines + 1 blank + 1 blank + 1 button + 1 pad)
     ; WIN_W = 36, WIN_H = 11
 
-    ; ---- Line 1: "TEDIT v0.69" (centered label) ----
+    ; ---- Line 1: "TEDIT v0.72" (centered label) ----
     MOV     DI, dlg_label
     MOV     BYTE [DI + CTRL_TYPE], CTYPE_LABEL
     MOV     BYTE [DI + CTRL_FLAGS], CTRLF_VISIBLE
@@ -3875,6 +4005,9 @@ main:
     MOV     WORD [tab_mask], ED_TAB_DEFAULT - 1
     MOV     WORD [ed_text_cols], ED_COLS
     MOV     BYTE [filename], 0          ; ensure clean for parse_args flag check
+
+    ; ---- Resolve TEDIT.CFG path to the executable's directory ----
+    CALL    init_cfg_path
 
     ; ---- Load saved settings (overrides defaults, before CLI args) ----
     CALL    cfg_load
@@ -4843,6 +4976,9 @@ clock_on_start:     RESB 1          ; 0 = off, 1 = on (startup preference, saved
 
 ; ---- Config file scratch ----
 cfg_buf:            RESB 8          ; small buffer for TEDIT.CFG read/write
+cfg_path_buf:       RESB 80         ; full path: [exe_dir]TEDIT.CFG, built at startup
+                                    ; from PSP:2Ch env block. Falls back to bare
+                                    ; "TEDIT.CFG" (current dir) if env unavailable.
 
 ; ---- Settings dialog scratch ----
 _stg_r2:            RESB 1          ; radio pre-select: tab width 2

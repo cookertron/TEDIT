@@ -690,12 +690,15 @@ ed_draw_status_line PROC
 .no_ovr:
 
     ; ---- Line ending indicator ----
-    MOV     SI, s_stat_crlf
     CMP     BYTE [line_ending], LE_LF
-    JNE     .show_le
-    MOV     SI, s_stat_lf
-.show_le:
+    JE      .show_le_lf
+    MOV     SI, s_stat_crlf
     CALL    ed_wstr
+    JMP     .show_le_done
+.show_le_lf:
+    MOV     SI, s_stat_lf
+    CALL    ed_wstr_warn
+.show_le_done:
 
     ; ---- Document counter [N/M] (only if multiple docs open) ----
     CMP     BYTE [doc_count], 1
@@ -764,6 +767,24 @@ ed_wstr PROC
 .done:
     RET
 ed_wstr ENDP
+
+; ============================================================
+; ed_wstr_warn — same as ed_wstr but with ED_ATTR_STAT_WARN
+; ============================================================
+
+ed_wstr_warn PROC
+.lp:
+    MOV     AL, [SI]
+    CMP     AL, 0
+    JE      .done
+    MOV     ES:[DI], AL
+    MOV     BYTE ES:[DI+1], ED_ATTR_STAT_WARN
+    ADD     DI, 2
+    INC     SI
+    JMP     .lp
+.done:
+    RET
+ed_wstr_warn ENDP
 
 ; ============================================================
 ; ed_wdec — write AX as decimal digits to ES:DI with ED_ATTR_STAT
