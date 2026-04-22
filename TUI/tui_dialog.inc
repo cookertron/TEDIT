@@ -933,6 +933,128 @@ dlg_file_ok_handler:
     PUSH SI
     PUSH DI                              ; DI = window struct from caller
 
+    ; ---- Drive-prefix pre-check (P1-#1) ----
+    ; Recognise "X:", "X:\", "X:pat", "X:\pat" at the start of the textbox.
+    ; - Bare drive / drive+wildcard: switch drive (and CHDIR "\" when the
+    ;   user wrote a backslash), rewrite pattern + textbox, refresh listing,
+    ;   keep dialog open.
+    ; - Sub-path ("X:\SUB\...") or drive+plain-filename ("X:FOO.TXT"): fall
+    ;   through to Test 1; the caller / DOS resolves the full path.
+    MOV BX, [dlg_save_buf]
+    MOV AL, [BX]
+    CMP BYTE [BX + 1], ':'
+    JNE .dfoh_drv_pre_done
+    OR  AL, 20h                          ; tolower
+    CMP AL, 'a'
+    JB  .dfoh_drv_pre_done
+    CMP AL, 'z'
+    JA  .dfoh_drv_pre_done
+
+    ; First two bytes are "X:". Look past them.
+    MOV SI, BX
+    ADD SI, 2                            ; SI -> char after ':'
+    XOR CL, CL                           ; CL = 1 if leading '\' present
+    CMP BYTE [SI], '\'
+    JNE .dfoh_drv_scan_init
+    INC SI
+    MOV CL, 1
+.dfoh_drv_scan_init:
+    MOV BX, SI                           ; BX = start of remainder
+    XOR CH, CH                           ; CH = 1 if remainder has wildcard
+.dfoh_drv_scan_loop:
+    MOV AL, [SI]
+    TEST AL, AL
+    JZ  .dfoh_drv_scan_done
+    CMP AL, '\'
+    JE  .dfoh_drv_pre_done               ; sub-path -> pass through
+    CMP AL, '*'
+    JE  .dfoh_drv_scan_wild
+    CMP AL, '?'
+    JE  .dfoh_drv_scan_wild
+    INC SI
+    JMP .dfoh_drv_scan_loop
+.dfoh_drv_scan_wild:
+    MOV CH, 1
+    INC SI
+    JMP .dfoh_drv_scan_loop
+.dfoh_drv_scan_done:
+    ; BX = remainder start, CL = root_flag, CH = has_wildcard.
+    ; Handle here iff remainder is empty OR contains a wildcard.
+    CMP BYTE [BX], 0
+    JE  .dfoh_drv_do
+    TEST CH, CH
+    JZ  .dfoh_drv_pre_done               ; plain filename -> pass through
+
+.dfoh_drv_do:
+    ; ---- Switch default drive ----
+    PUSH BX                              ; preserve remainder pointer
+    MOV BX, [dlg_save_buf]
+    MOV AL, [BX]
+    OR  AL, 20h
+    SUB AL, 'a'
+    MOV DL, AL
+    MOV AH, 0Eh
+    INT 21h
+
+    ; ---- CHDIR to root iff user wrote "X:\" ----
+    TEST CL, CL
+    JZ  .dfoh_drv_no_chdir
+    MOV DX, dlg_file_rootdir
+    MOV AH, 3Bh
+    INT 21h                              ; ignore CF
+.dfoh_drv_no_chdir:
+    POP BX                               ; BX = remainder
+
+    ; ---- Write dlg_file_pattern = remainder (or "*.*" when empty) ----
+    CMP BYTE [BX], 0
+    JNE .dfoh_drv_copy_pat
+    MOV BYTE [dlg_file_pattern],     '*'
+    MOV BYTE [dlg_file_pattern + 1], '.'
+    MOV BYTE [dlg_file_pattern + 2], '*'
+    MOV BYTE [dlg_file_pattern + 3], 0
+    JMP .dfoh_drv_sync_tb
+.dfoh_drv_copy_pat:
+    PUSH DS
+    POP  ES
+    MOV  SI, BX
+    MOV  DI, dlg_file_pattern
+    MOV  CX, 13
+.dfoh_drv_cp_loop:
+    LODSB
+    STOSB
+    TEST AL, AL
+    JZ   .dfoh_drv_cp_done
+    LOOP .dfoh_drv_cp_loop
+    MOV  BYTE [DI], 0
+.dfoh_drv_cp_done:
+
+.dfoh_drv_sync_tb:
+    ; ---- Mirror the new pattern into the textbox buffer ----
+    PUSH DS
+    POP  ES
+    MOV  SI, dlg_file_pattern
+    MOV  DI, [dlg_save_buf]
+    XOR  CL, CL
+.dfoh_drv_tb_loop:
+    LODSB
+    MOV  [DI], AL
+    TEST AL, AL
+    JZ   .dfoh_drv_tb_done
+    INC  DI
+    INC  CL
+    JMP  .dfoh_drv_tb_loop
+.dfoh_drv_tb_done:
+    MOV  DI, dlg_textbox
+    MOV  [DI + CTRL_TB_LEN], CL
+    MOV  [DI + CTRL_TB_CURPOS], CL
+    MOV  BYTE [DI + CTRL_TB_SCROLL], 0
+
+    ; ---- Refresh path + fall into the shared enumerate/focus path ----
+    CALL tui_file_get_path
+    JMP  .dfoh_no_drive
+
+.dfoh_drv_pre_done:
+
     ; ---- Test 1: plain filename in textbox? ----
     MOV BX, [dlg_save_buf]
     CMP BYTE [BX], 0
@@ -1010,60 +1132,9 @@ dlg_file_ok_handler:
     LOOP .dfoh_cpat
     MOV BYTE [DI], 0
 .dfoh_cpat_done:
-    ; ---- Drive prefix handling (P1-#1) ----
-    ; If dlg_file_pattern starts with "X:" (letter + colon), select
-    ; that drive, CHDIR to root, strip "X:" and optional leading "\"
-    ; from the pattern, then refresh the path display before enum.
-    MOV AL, [dlg_file_pattern]
-    CMP BYTE [dlg_file_pattern + 1], ':'
-    JNE .dfoh_no_drive
-    OR  AL, 20h                          ; to lowercase
-    CMP AL, 'a'
-    JB  .dfoh_no_drive
-    CMP AL, 'z'
-    JA  .dfoh_no_drive
-
-    SUB AL, 'a'
-    MOV DL, AL
-    MOV AH, 0Eh
-    INT 21h                              ; select default drive
-
-    MOV DX, dlg_file_rootdir
-    MOV AH, 3Bh
-    INT 21h                              ; CHDIR "\" (ignore error)
-
-    PUSH DS
-    POP  ES
-    MOV  SI, dlg_file_pattern + 2
-    MOV  DI, dlg_file_pattern
-.dfoh_strip_drv:
-    LODSB
-    STOSB
-    TEST AL, AL
-    JNZ  .dfoh_strip_drv
-
-    CMP  BYTE [dlg_file_pattern], '\'
-    JNE  .dfoh_drv_empty
-    MOV  SI, dlg_file_pattern + 1
-    MOV  DI, dlg_file_pattern
-.dfoh_strip_bs:
-    LODSB
-    STOSB
-    TEST AL, AL
-    JNZ  .dfoh_strip_bs
-
-.dfoh_drv_empty:
-    CMP  BYTE [dlg_file_pattern], 0
-    JNE  .dfoh_drv_refresh
-    MOV  BYTE [dlg_file_pattern],     '*'
-    MOV  BYTE [dlg_file_pattern + 1], '.'
-    MOV  BYTE [dlg_file_pattern + 2], '*'
-    MOV  BYTE [dlg_file_pattern + 3], 0
-
-.dfoh_drv_refresh:
-    CALL tui_file_get_path
 .dfoh_no_drive:
-    ; ---- end drive prefix handling ----
+    ; Drive handling now happens in the pre-check at the top of this PROC.
+    ; This label remains the shared refresh entry point.
     CALL tui_file_enumerate
     MOV SI, dlg_listbox
     MOV AL, [dlg_file_count]

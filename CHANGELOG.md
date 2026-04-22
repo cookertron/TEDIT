@@ -1,5 +1,85 @@
 # TEDIT Changelog
 
+## v0.72.1 — File Dialog: Bare Drive-Letter Inputs (2026-04-23)
+
+### Bug Fix: `A:` / `A:\` entered in the file dialog were treated as filenames
+- **Reported on VOGONS** by igully, confirmed by Yoghoo: typing a bare drive
+  prefix (e.g. `A:`, `C:`, `A:\`) into the file dialog's textbox and pressing
+  Enter produced a "could not open file" error instead of switching drives.
+  The listing remained on the original drive.
+- **Root cause**: the P1-#1 drive-prefix block added previously lived inside
+  `.dfoh_no_files` (the wildcard re-filter path), which was only reachable
+  when Test 1 in `dlg_file_ok_handler` had already classified the input as a
+  wildcard. Wildcard-free inputs like `A:` or `A:\` short-circuited to
+  `.dfoh_open_file` and returned the raw string to the caller as if it were
+  a filename. `menu_open_handler` → `ed_load_file` → `open_file` then called
+  `INT 21h AH=3Dh` with `"A:"`, DOS returned an error, and `open_ensure_drive`
+  had already changed the DOS default drive — leaving TEDIT's tracked CWD and
+  DOS's default drive out of sync.
+- **Fix**: moved drive-prefix detection to the top of `dlg_file_ok_handler`,
+  ahead of Test 1. The new pre-check recognises four shapes and handles them
+  without closing the dialog:
+  - `X:`    → select drive X, stay in X:'s current directory, pattern `*.*`
+  - `X:\`   → select drive X, `CHDIR \`, pattern `*.*`
+  - `X:pat` → select drive X, stay in CWD, pattern = remainder
+  - `X:\pat` → select drive X, `CHDIR \`, pattern = remainder
+  Sub-paths (`X:\SUB\FOO.TXT`) and drive-qualified filenames (`X:FOO.TXT`)
+  explicitly pass through to Test 1 unchanged, preserving the existing
+  `open_ensure_drive`-based absolute-path resolution.
+- The now-dead drive block inside `.dfoh_no_files` was removed; the
+  `.dfoh_no_drive` label is retained as the shared "refresh listing" entry
+  point.
+
+### Behaviour Delta vs v0.72.0
+- `A:*.TXT` previously forced CHDIR to A:\ (matching the old block's
+  always-CHDIR behaviour). Now correctly stays in A:'s current directory, per
+  real DOS convention that `A:pat` is A:-relative without root-resetting.
+- Pattern and textbox are both updated after a drive switch, so the user
+  sees the resolved pattern (`*.*` when they typed a bare drive) rather than
+  their literal input.
+
+### Changed (`TUI/tui_dialog.inc`)
+- `dlg_file_ok_handler` — drive-prefix pre-check inserted after the initial
+  PUSH sequence. New local labels: `.dfoh_drv_pre_done`, `.dfoh_drv_scan_init`,
+  `.dfoh_drv_scan_loop`, `.dfoh_drv_scan_wild`, `.dfoh_drv_scan_done`,
+  `.dfoh_drv_do`, `.dfoh_drv_no_chdir`, `.dfoh_drv_copy_pat`,
+  `.dfoh_drv_cp_loop`, `.dfoh_drv_cp_done`, `.dfoh_drv_sync_tb`,
+  `.dfoh_drv_tb_loop`, `.dfoh_drv_tb_done`.
+- Old `.dfoh_no_files` drive block removed (`.dfoh_strip_drv`,
+  `.dfoh_strip_bs`, `.dfoh_drv_empty`, `.dfoh_drv_refresh` gone).
+
+### Testing
+- Built with agent86 v0.22.1. Size 48021 → 48142 bytes (+121).
+- Two FAT12 images (`/tmp/drva.img`, `/tmp/drvc.img`) seeded with distinct
+  filenames via a one-shot `mkfile.com` helper. Full matrix driven through
+  Ctrl+O via sequential event injection, final dialog state captured from
+  the IDLE screen object:
+
+  | Input | Expected | Result |
+  |-------|----------|--------|
+  | `A:`       | Switch, stay in CWD, `*.*` pattern, 3 A-files | ✓ |
+  | `A:\`      | Switch + CHDIR root, `*.*`, 3 A-files         | ✓ |
+  | `A:*.DOC`  | Switch, stay in CWD, filter → A_HELLO.DOC     | ✓ |
+  | `A:\*.TXT` | Switch + CHDIR root, filter → A_FOO/A_BAR.TXT | ✓ |
+  | `C:` (on A:)| Switch back, 3 C-files + `_TEDIT` dir        | ✓ |
+  | `a:`       | Identical to `A:` (lowercase)                 | ✓ |
+  | `*.DOC` (no drive) | No drive change, filter only          | ✓ |
+  | `C_ONE.TXT` | Plain filename opens file (regression)       | ✓ |
+
+### Known Follow-ups (out of scope for this fix)
+- `Z:` (unmounted) — agent86's `HostFs` fall-through returns host-filesystem
+  contents. On bare DOS this would be an error; in the test harness it
+  "works" but shows host files. Validating the drive before switching (roll
+  back on failure) is a separate enhancement.
+- Cancel-after-drive-switch leaves DOS on the new drive while TEDIT's
+  tracked `doc_cwd` remains on the original — same class of CWD divergence
+  as P1-#2. Pre-existed for wildcarded inputs; now reachable for bare drives.
+  Fix is small (save/restore current drive across the dialog) but
+  independent of this change.
+- `X:\SUB\*.TXT` still confuses the path display (FindFirst honours the
+  prefix but the dialog's path label doesn't). Per PLAN_P1_1, subpath
+  traversal is a separate feature.
+
 ## v0.72.0 — Config Path Anchored to Executable Directory (2026-04-22)
 
 ### Bug Fix: TEDIT.CFG created in CWD instead of executable's directory
